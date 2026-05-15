@@ -1,0 +1,83 @@
+tenant:
+  id: default
+  allowed_domains:
+    - security
+    - finance
+    - customer
+    - policy
+    - support
+
+integration:
+  processing_project: ../data-processing-enrichment
+  retrieval_project: ../embedding-retrieval-intelligence
+  retrieval_config: ../embedding-retrieval-intelligence/configs/retrieval.yaml
+  vector_index_uri: ../embedding-retrieval-intelligence/data/indexes/vector_index.json
+  lexical_index_uri: ../embedding-retrieval-intelligence/data/indexes/lexical_index.json
+  graph_index_uri: ../embedding-retrieval-intelligence/data/indexes/graph_index.json
+
+prompt_security:
+  blocked_patterns:
+    - ignore previous instructions
+    - reveal system prompt
+    - print hidden instructions
+    - exfiltrate
+    - bypass policy
+    - developer message
+  leakage_terms:
+    - api key
+    - password
+    - secret
+    - token
+
+pii:
+  enabled: true
+  mask: true
+  detectors:
+    - email
+    - ssn
+    - phone
+    - credit_card
+
+policies:
+  - id: no_secret_disclosure
+    description: Prevent disclosure of secrets and credentials.
+    blocked_terms:
+      - password
+      - api key
+      - secret
+      - token
+    action: block
+  - id: require_grounding
+    description: Responses must include retrieved source citations.
+    require_citations: true
+    action: warn
+  - id: privacy_masking
+    description: PII must be masked in inputs and outputs.
+    require_pii_masking: true
+    action: warn
+
+off_topic:
+  enabled: true
+  min_keyword_overlap: 1
+  allowed_keywords:
+    - security
+    - access
+    - mfa
+    - encryption
+    - invoice
+    - payment
+    - finance
+    - customer
+    - renewal
+    - support
+    - policy
+
+rag:
+  top_k: 3
+  min_context_score: 0.05
+  require_citations: true
+
+verification:
+  min_confidence: 0.2
+  require_grounded_terms: true
+

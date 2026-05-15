@@ -1,0 +1,167 @@
+{
+  "edges": [
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c001",
+      "target": "entity:Account"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c001",
+      "target": "entity:Contact"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c001",
+      "target": "tag:customer"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c002",
+      "target": "entity:Expected"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c002",
+      "target": "entity:Payment"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c002",
+      "target": "tag:finance"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-001:0",
+      "target": "parent:doc-001"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-001:0",
+      "target": "entity:Access"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-001:0",
+      "target": "entity:Contact"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-001:0",
+      "target": "entity:Encryption"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-001:0",
+      "target": "entity:Security Access Policy All"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-001:0",
+      "target": "tag:security"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-002:0",
+      "target": "parent:doc-002"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-002:0",
+      "target": "entity:Invoice Handling Procedure Invoices"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-002:0",
+      "target": "entity:Revenue"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-002:0",
+      "target": "entity:Send"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-002:0",
+      "target": "tag:finance"
+    }
+  ],
+  "nodes": {
+    "document:c001": {
+      "id": "c001",
+      "type": "document"
+    },
+    "document:c002": {
+      "id": "c002",
+      "type": "document"
+    },
+    "document:doc-001:0": {
+      "id": "doc-001:0",
+      "type": "document"
+    },
+    "document:doc-002:0": {
+      "id": "doc-002:0",
+      "type": "document"
+    },
+    "entity:Access": {
+      "type": "entity",
+      "value": "Access"
+    },
+    "entity:Account": {
+      "type": "entity",
+      "value": "Account"
+    },
+    "entity:Contact": {
+      "type": "entity",
+      "value": "Contact"
+    },
+    "entity:Encryption": {
+      "type": "entity",
+      "value": "Encryption"
+    },
+    "entity:Expected": {
+      "type": "entity",
+      "value": "Expected"
+    },
+    "entity:Invoice Handling Procedure Invoices": {
+      "type": "entity",
+      "value": "Invoice Handling Procedure Invoices"
+    },
+    "entity:Payment": {
+      "type": "entity",
+      "value": "Payment"
+    },
+    "entity:Revenue": {
+      "type": "entity",
+      "value": "Revenue"
+    },
+    "entity:Security Access Policy All": {
+      "type": "entity",
+      "value": "Security Access Policy All"
+    },
+    "entity:Send": {
+      "type": "entity",
+      "value": "Send"
+    },
+    "parent:doc-001": {
+      "id": "doc-001",
+      "type": "parent"
+    },
+    "parent:doc-002": {
+      "id": "doc-002",
+      "type": "parent"
+    },
+    "tag:customer": {
+      "type": "tag",
+      "value": "customer"
+    },
+    "tag:finance": {
+      "type": "tag",
+      "value": "finance"
+    },
+    "tag:security": {
+      "type": "tag",
+      "value": "security"
+    }
+  }
+}

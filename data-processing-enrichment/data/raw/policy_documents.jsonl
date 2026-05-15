@@ -1,0 +1,3 @@
+{"document_id":"doc-001","title":" Security Access Policy ","department":"information security","body":"All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@example.com for exceptions."}
+{"document_id":"doc-002","title":"Invoice Handling Procedure","department":"finance","body":"Invoices must be reviewed before payment. Revenue-impacting adjustments require approval. Send questions to ap@example.com by 2026-07-01."}
+

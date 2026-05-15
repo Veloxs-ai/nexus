@@ -1,0 +1,284 @@
+# Data Processing & Enrichment Layer
+
+Transforms raw, ingested data into structured, standardized, and AI-ready formats. This layer improves data quality, enriches records with contextual metadata, and prepares documents for downstream analytics, retrieval, and AI/ML workflows.
+
+## Capabilities
+
+- **ETL/ELT Processing**: Cleansing, normalization, transformation, and standardization of raw records.
+- **Document Chunking**: Splits large documents into context-preserving chunks optimized for retrieval and AI workflows.
+- **Metadata Extraction**: Adds tags, entities, classifications, and relationships to records and chunks.
+- **Loose Pipeline Integration**: Reads raw landing outputs and source contracts from `enterprise-data-pipeline` without importing or coupling to its code.
+
+## Current Status
+
+This project is runnable locally and includes:
+
+- config-driven processing
+- JSONL raw input reader
+- JSONL enriched output writer
+- reusable transformation functions
+- document chunking with overlap
+- lightweight metadata extraction
+- CLI commands
+- automated tests
+
+The implementation intentionally uses local JSONL files for the first integration contract. This keeps the processing layer loosely coupled to the ingestion layer and makes it easy to swap in S3, MinIO, warehouse, queue, or platform storage readers later.
+
+## Project Layout
+
+```text
+data-processing-enrichment/
+  configs/
+    processing.yaml
+  data/
+    raw/
+      customer_profiles.jsonl
+      policy_documents.jsonl
+    processed/
+      .gitkeep
+  docs/
+    architecture.md
+  src/nexus_processing/
+    chunking.py
+    cli.py
+    config.py
+    enrichment.py
+    io.py
+    models.py
+    pipeline.py
+    transforms.py
+  tests/
+    conftest.py
+    test_chunking.py
+    test_cli.py
+    test_config.py
+    test_enrichment.py
+    test_pipeline.py
+    test_transforms.py
+  pyproject.toml
+```
+
+## Prerequisites
+
+Install:
+
+- Python 3.11 or newer
+- `pip`
+
+Check your Python version:
+
+```bash
+python3 --version
+```
+
+## Setup
+
+From the repository root:
+
+```bash
+cd path/to/nexus/data-processing-enrichment
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+Confirm the CLI is available:
+
+```bash
+processing --help
+```
+
+If you do not install the package, run commands with:
+
+```bash
+PYTHONPATH=src python -m nexus_processing.cli --help
+```
+
+## Configuration
+
+Processing jobs are configured in [configs/processing.yaml](configs/processing.yaml).
+
+The config has three main sections:
+
+- `integration`: optional references to the ingestion project and shared contracts
+- `defaults`: global chunking, metadata, and output settings
+- `jobs`: record or document processing jobs
+
+Example:
+
+```yaml
+integration:
+  upstream_project: ../enterprise-data-pipeline
+  upstream_sources_config: ../enterprise-data-pipeline/configs/sources.yaml
+  raw_landing_contract: jsonl
+
+jobs:
+  customer_profiles:
+    mode: records
+    input_uri: data/raw/customer_profiles.jsonl
+    output_uri: data/processed/customer_profiles.enriched.jsonl
+    primary_key: customer_id
+    text_fields:
+      - notes
+    transformations:
+      trim_strings: true
+      normalize_case_fields:
+        status: lower
+      rename_fields:
+        customer_name: name
+```
+
+The project does not import from `enterprise-data-pipeline`. The connection is intentionally loose:
+
+- ingestion writes raw data to a landing location
+- processing reads that landing location through `input_uri`
+- both projects can share source naming and contracts through config
+
+## Input Format
+
+Raw inputs are JSONL files: one JSON object per line.
+
+Record example:
+
+```json
+{"customer_id":"c001","customer_name":"Acme Corp","status":" ACTIVE ","notes":"Contact jane.doe@acme.com about renewal on 2026-06-15."}
+```
+
+Document example:
+
+```json
+{"document_id":"doc-001","title":"Security Policy","body":"All employees must use MFA for sensitive systems."}
+```
+
+## Run Config Validation
+
+```bash
+processing validate-config configs/processing.yaml
+```
+
+Expected output:
+
+```text
+Loaded 2 processing jobs.
+```
+
+Without package installation:
+
+```bash
+PYTHONPATH=src python -m nexus_processing.cli validate-config configs/processing.yaml
+```
+
+## Run Record Processing
+
+The sample record job is `customer_profiles`.
+
+```bash
+processing run-job configs/processing.yaml customer_profiles
+```
+
+This command:
+
+- reads `data/raw/customer_profiles.jsonl`
+- trims strings
+- standardizes configured field casing
+- renames configured fields
+- extracts metadata from configured text fields
+- writes enriched records to `data/processed/customer_profiles.enriched.jsonl`
+
+Without package installation:
+
+```bash
+PYTHONPATH=src python -m nexus_processing.cli run-job configs/processing.yaml customer_profiles
+```
+
+## Run Document Processing
+
+The sample document job is `policy_documents`.
+
+```bash
+processing run-job configs/processing.yaml policy_documents
+```
+
+This command:
+
+- reads `data/raw/policy_documents.jsonl`
+- cleans and standardizes document fields
+- chunks document text with overlap
+- preserves source document context on each chunk
+- extracts tags, entities, dates, emails, and classifications
+- writes AI-ready chunks to `data/processed/policy_documents.chunks.jsonl`
+
+## Run All Jobs
+
+```bash
+processing run-all configs/processing.yaml
+```
+
+This runs every job declared in the config.
+
+## Output Format
+
+Processed records and chunks are written as JSONL.
+
+Record output includes:
+
+- `record_id`
+- `source_job`
+- `payload`
+- `metadata`
+
+Document chunk output includes:
+
+- `chunk_id`
+- `document_id`
+- `chunk_index`
+- `text`
+- `metadata`
+
+## Run Tests
+
+Run all tests:
+
+```bash
+python -m pytest
+```
+
+Run one test file:
+
+```bash
+python -m pytest tests/test_chunking.py
+```
+
+Run with verbose output:
+
+```bash
+python -m pytest -v
+```
+
+Expected result:
+
+```text
+13 passed
+```
+
+## Integration With Enterprise Data Pipeline
+
+The expected integration flow is:
+
+1. `enterprise-data-pipeline` ingests raw source records.
+2. Ingestion lands raw records in a shared location such as local JSONL, S3, MinIO, or platform object storage.
+3. `data-processing-enrichment` reads those raw records using `input_uri`.
+4. Processing writes standardized, enriched outputs to `output_uri`.
+5. Downstream analytics, retrieval, and AI/ML systems consume enriched outputs.
+
+No Python imports are shared between the two projects. Integration happens through config and data contracts, which keeps deployment, scaling, and versioning independent.
+
+## Recommended Next Implementation Steps
+
+1. Add S3/MinIO readers and writers for production raw landing zones.
+2. Add schema registry or data contract validation.
+3. Add PII detection and masking policies.
+4. Add model-backed entity extraction behind an interface.
+5. Add vector embedding generation for document chunks.
+6. Add orchestration manifests for scheduled and event-triggered processing.

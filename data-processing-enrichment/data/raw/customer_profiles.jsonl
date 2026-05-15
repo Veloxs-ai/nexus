@@ -1,0 +1,3 @@
+{"customer_id":"c001","customer_name":" Acme Corp ","status":" ACTIVE ","notes":"Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions."}
+{"customer_id":"c002","customer_name":"Northwind","status":"prospect","notes":"Payment discussion scheduled with finance team. Expected revenue review next month.","lifecycle_stage":"sales"}
+

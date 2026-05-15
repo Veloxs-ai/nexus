@@ -1,0 +1,56 @@
+integration:
+  upstream_project: ../enterprise-data-pipeline
+  upstream_sources_config: ../enterprise-data-pipeline/configs/sources.yaml
+  raw_landing_contract: jsonl
+
+defaults:
+  chunking:
+    max_tokens: 80
+    overlap_tokens: 12
+  metadata:
+    keyword_tags:
+      finance:
+        - invoice
+        - payment
+        - revenue
+      security:
+        - mfa
+        - encryption
+        - access
+      customer:
+        - renewal
+        - account
+        - support
+
+jobs:
+  customer_profiles:
+    mode: records
+    input_uri: data/raw/customer_profiles.jsonl
+    output_uri: data/processed/customer_profiles.enriched.jsonl
+    primary_key: customer_id
+    text_fields:
+      - notes
+    transformations:
+      trim_strings: true
+      normalize_case_fields:
+        status: lower
+      rename_fields:
+        customer_name: name
+      default_values:
+        lifecycle_stage: unknown
+
+  policy_documents:
+    mode: documents
+    input_uri: data/raw/policy_documents.jsonl
+    output_uri: data/processed/policy_documents.chunks.jsonl
+    primary_key: document_id
+    document_text_field: body
+    document_title_field: title
+    text_fields:
+      - title
+      - body
+    transformations:
+      trim_strings: true
+      normalize_case_fields:
+        department: title
+
