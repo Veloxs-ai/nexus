@@ -4,10 +4,22 @@ import re
 
 from nexus_guardrails.config import PolicyRuleConfig
 from nexus_guardrails.models import Citation, Finding
+from nexus_guardrails.normalization import luhn_valid, normalize_text
 
-RAW_PII_PATTERN = re.compile(
+_EMAIL_OR_SSN = re.compile(
     r"(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\b\d{3}-\d{2}-\d{4}\b)"
 )
+_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+_CREDIT_CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+
+
+def _raw_pii_present(text: str) -> bool:
+    normalized = normalize_text(text)
+    if _EMAIL_OR_SSN.search(normalized):
+        return True
+    if _PHONE.search(normalized):
+        return True
+    return any(luhn_valid(match.group(0)) for match in _CREDIT_CARD.finditer(normalized))
 
 
 def enforce_input_policies(text: str, policies: list[PolicyRuleConfig]) -> list[Finding]:
@@ -42,7 +54,7 @@ def enforce_output_policies(
                     severity=policy.action,
                 )
             )
-        if policy.require_pii_masking and not pii_was_masked and RAW_PII_PATTERN.search(answer):
+        if policy.require_pii_masking and not pii_was_masked and _raw_pii_present(answer):
             findings.append(
                 Finding(
                     category="policy",

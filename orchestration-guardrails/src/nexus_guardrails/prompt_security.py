@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from nexus_guardrails.config import PromptSecurityConfig
 from nexus_guardrails.models import Finding
+from nexus_guardrails.normalization import normalize_text
 
 
 def inspect_prompt(prompt: str, config: PromptSecurityConfig) -> list[Finding]:
-    normalized = prompt.lower()
+    normalized = normalize_text(prompt).lower()
     findings: list[Finding] = []
     for pattern in config.blocked_patterns:
         if pattern.lower() in normalized:

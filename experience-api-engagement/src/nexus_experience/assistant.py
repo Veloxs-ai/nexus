@@ -9,9 +9,15 @@ class AssistantSessionStore:
         self.config = config
         self.sessions: dict[str, AssistantSession] = {}
 
-    def start_session(self, user_id: str | None = None, channel: str = "assistant") -> AssistantSession:
+    def start_session(
+        self,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        channel: str = "assistant",
+    ) -> AssistantSession:
         session = AssistantSession(
             user_id=user_id,
+            tenant_id=tenant_id,
             channel=channel,
             greeting=self.config.assistant.greeting,
         )

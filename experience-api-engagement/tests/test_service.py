@@ -1,4 +1,7 @@
-from nexus_experience.models import AskRequest
+import pytest
+
+from nexus_experience.auth import AuthError, anonymous_principal
+from nexus_experience.models import AskRequest, Principal
 
 
 def test_health_returns_tenant(sample_service):
@@ -6,7 +9,8 @@ def test_health_returns_tenant(sample_service):
 
 
 def test_ask_returns_standardized_response(sample_service):
-    response = sample_service.ask(AskRequest(query="What is MFA?", channel="assistant"))
+    principal = anonymous_principal(sample_service.config)
+    response = sample_service.ask(principal, AskRequest(query="What is MFA?", channel="assistant"))
 
     assert response.decision == "allowed"
     assert response.channel == "assistant"
@@ -15,10 +19,12 @@ def test_ask_returns_standardized_response(sample_service):
 
 
 def test_ask_updates_assistant_session_history(sample_service):
-    session = sample_service.start_session(user_id="u1", channel="assistant")
+    principal = anonymous_principal(sample_service.config)
+    session = sample_service.start_session(principal, channel="assistant")
 
     response = sample_service.ask(
-        AskRequest(query="What is MFA?", channel="assistant", session_id=session.session_id)
+        principal,
+        AskRequest(query="What is MFA?", channel="assistant", session_id=session.session_id),
     )
 
     assert response.session_id == session.session_id
@@ -26,10 +32,44 @@ def test_ask_updates_assistant_session_history(sample_service):
 
 
 def test_ask_rejects_channel_without_capability(sample_service):
-    try:
-        sample_service.ask(AskRequest(query="hello", channel="disabled"))
-    except ValueError as exc:
-        assert "disabled" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError")
+    principal = anonymous_principal(sample_service.config)
+    with pytest.raises(ValueError) as exc:
+        sample_service.ask(principal, AskRequest(query="hello", channel="disabled"))
+    assert "disabled" in str(exc.value)
 
+
+def test_ask_rejects_session_owned_by_other_principal(sample_service):
+    owner = anonymous_principal(sample_service.config)
+    session = sample_service.start_session(owner, channel="assistant")
+
+    intruder = Principal(user_id="someone-else", tenant_id="test", role="anonymous")
+    with pytest.raises(AuthError):
+        sample_service.ask(
+            intruder,
+            AskRequest(query="hi", channel="assistant", session_id=session.session_id),
+        )
+
+
+def test_ask_enforces_max_query_chars(sample_service):
+    sample_service.config.auth.max_query_chars = 10
+    principal = anonymous_principal(sample_service.config)
+
+    with pytest.raises(AuthError):
+        sample_service.ask(principal, AskRequest(query="x" * 11, channel="assistant"))
+
+
+def test_authorizer_denies_when_required_capability_missing(sample_config):
+    from nexus_experience.gateway import MockGuardrailsGateway
+    from nexus_experience.service import ExperienceService
+
+    sample_config.auth.enabled = True
+    service = ExperienceService(sample_config, MockGuardrailsGateway())
+    principal = Principal(
+        user_id="u1",
+        tenant_id="test",
+        role="reader",
+        permissions=["session"],
+    )
+
+    with pytest.raises(AuthError):
+        service.ask(principal, AskRequest(query="hi", channel="assistant"))

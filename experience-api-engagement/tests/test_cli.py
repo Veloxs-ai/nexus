@@ -60,7 +60,7 @@ channels:
         encoding="utf-8",
     )
 
-    result = runner.invoke(app, ["start-session", str(config_path), "--user-id", "u1"])
+    result = runner.invoke(app, ["start-session", str(config_path)])
 
     assert result.exit_code == 0
     assert "greeting: Hello there" in result.output

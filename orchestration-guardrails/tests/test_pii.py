@@ -21,3 +21,37 @@ def test_mask_pii_replaces_sensitive_values():
 
     assert masked == "[EMAIL] [SSN]"
 
+
+def test_credit_card_detected_only_when_luhn_valid():
+    config = PiiConfig(detectors=["credit_card"])
+
+    valid = detect_pii("card 4111 1111 1111 1111", config)
+    invalid = detect_pii("ticket 1234 5678 9012 3456", config)
+
+    assert valid and valid[0].message == "Detected credit_card"
+    assert invalid == []
+
+
+def test_credit_card_mask_only_replaces_luhn_valid():
+    config = PiiConfig(detectors=["credit_card"])
+
+    masked = mask_pii("a 4111 1111 1111 1111 b 1234 5678 9012 3456", config)
+
+    assert "[CREDIT_CARD]" in masked
+    assert "1234 5678 9012 3456" in masked
+
+
+def test_detect_pii_sees_through_zero_width_obfuscation():
+    config = PiiConfig(detectors=["email"])
+
+    findings = detect_pii("contact jane@​example.com please", config)
+
+    assert findings and findings[0].message == "Detected email"
+
+
+def test_detect_pii_sees_through_fullwidth_obfuscation():
+    config = PiiConfig(detectors=["ssn"])
+
+    findings = detect_pii("ssn １２３-４５-６７８９", config)
+
+    assert findings and findings[0].message == "Detected ssn"

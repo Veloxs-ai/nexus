@@ -19,9 +19,15 @@ class ChannelType(StrEnum):
 class AskRequest(BaseModel):
     query: str
     channel: str = "assistant"
-    user_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Principal(BaseModel):
+    user_id: str
+    tenant_id: str
+    role: str = "anonymous"
+    permissions: list[str] = Field(default_factory=list)
 
 
 class Citation(BaseModel):
@@ -45,6 +51,7 @@ class AskResponse(BaseModel):
 class AssistantSession(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     user_id: str | None = None
+    tenant_id: str | None = None
     channel: str = "assistant"
     greeting: str
     history: list[dict[str, str]] = Field(default_factory=list)

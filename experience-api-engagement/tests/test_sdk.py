@@ -13,8 +13,8 @@ def test_sdk_client_ask_uses_service(sample_service):
 def test_sdk_client_starts_session(sample_service):
     client = ExperienceClient(sample_service)
 
-    session = client.start_session(user_id="u1", channel="sdk")
+    session = client.start_session(channel="sdk")
 
-    assert session.user_id == "u1"
+    assert session.user_id == "anonymous"
+    assert session.tenant_id == "test"
     assert session.channel == "sdk"
-

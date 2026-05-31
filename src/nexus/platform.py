@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,11 +9,17 @@ from pathlib import Path
 from nexus.config import load_config
 from nexus.models import LayerStatus, NexusConfig
 
+_MODULE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+class PlatformSecurityError(Exception):
+    """Raised when platform config would invoke an unsafe subprocess or path."""
+
 
 class NexusPlatform:
     def __init__(self, config: NexusConfig, base_dir: Path) -> None:
         self.config = config
-        self.base_dir = base_dir
+        self.base_dir = base_dir.resolve()
 
     @classmethod
     def from_config(cls, config_path: Path) -> "NexusPlatform":
@@ -46,10 +53,12 @@ class NexusPlatform:
     def run_layer(self, layer_name: str, args: list[str]) -> subprocess.CompletedProcess[str]:
         layer = self.config.layers[layer_name]
         project_path = self.resolve(layer.project_path)
+        executable = _validate_python_executable(self.config.platform.python_executable)
+        module = _validate_cli_module(layer.cli_module)
         env = dict(os.environ)
         env["PYTHONPATH"] = str(project_path / "src")
         return subprocess.run(
-            [self.config.platform.python_executable or sys.executable, "-m", layer.cli_module, *args],
+            [executable, "-m", module, *args],
             cwd=project_path,
             env=env,
             text=True,
@@ -81,4 +90,39 @@ class NexusPlatform:
 
     def resolve(self, path: str) -> Path:
         candidate = Path(path)
-        return candidate if candidate.is_absolute() else (self.base_dir / candidate).resolve()
+        resolved = candidate if candidate.is_absolute() else (self.base_dir / candidate).resolve()
+        resolved = resolved.resolve()
+        if not _is_within(resolved, self.base_dir):
+            raise PlatformSecurityError(
+                f"path {path!r} resolves outside base directory {self.base_dir}"
+            )
+        return resolved
+
+
+def _validate_python_executable(executable: str | None) -> str:
+    if not executable:
+        return sys.executable
+    candidate = Path(executable)
+    if not candidate.is_absolute():
+        raise PlatformSecurityError(
+            f"python_executable must be an absolute path, got: {executable!r}"
+        )
+    if not candidate.is_file():
+        raise PlatformSecurityError(f"python_executable does not exist: {executable!r}")
+    if not os.access(candidate, os.X_OK):
+        raise PlatformSecurityError(f"python_executable is not executable: {executable!r}")
+    return str(candidate)
+
+
+def _validate_cli_module(module: str) -> str:
+    if not _MODULE_PATTERN.match(module):
+        raise PlatformSecurityError(f"cli_module is not a valid dotted module name: {module!r}")
+    return module
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True

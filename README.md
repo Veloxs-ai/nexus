@@ -1,100 +1,49 @@
 # Nexus Enterprise AI Platform
 
-Nexus is a layered enterprise AI platform that transforms fragmented enterprise data into actionable, secure, and context-aware insights.
+Nexus is a layered, open-source enterprise AI framework that turns
+fragmented data into secure, grounded, context-aware intelligence — usable
+from any Python project as a library, a CLI, or a REST service.
 
-It provides one external-facing library and CLI while keeping each architecture layer independently deployable and loosely coupled.
+It is built as seven loosely-coupled layers, each independently installable
+and replaceable. The root `nexus` package is the single external entry point
+and does not import any child-layer code.
 
 ## Layers
 
-- `enterprise-data-pipeline`: ingestion from APIs, batch, streaming, and CDC sources
-- `data-processing-enrichment`: ETL/ELT, document chunking, and metadata enrichment
-- `embedding-retrieval-intelligence`: vector search, graph context, hybrid retrieval, and ranking
-- `orchestration-guardrails`: prompt safety, policy enforcement, PII masking, and grounded RAG
-- `experience-api-engagement`: REST/API, SDK, assistant, web, and mobile engagement
-- `security-governance`: RBAC, tenant isolation, encryption, and audit logging
-- `observability-monitoring`: metrics, logs, traces, AI events, alerts, and third-party observability configuration
+| # | Layer | Responsibility |
+|---|---|---|
+| 1 | [enterprise-data-pipeline](enterprise-data-pipeline/) | API, batch, streaming, and CDC ingestion |
+| 2 | [data-processing-enrichment](data-processing-enrichment/) | ETL/ELT, document chunking, metadata extraction |
+| 3 | [embedding-retrieval-intelligence](embedding-retrieval-intelligence/) | Vector, lexical, hybrid, and graph retrieval |
+| 4 | [orchestration-guardrails](orchestration-guardrails/) | Prompt safety, PII masking, policy, grounded RAG |
+| 5 | [experience-api-engagement](experience-api-engagement/) | REST API, SDK, assistant, web/mobile channels |
+| 6 | [security-governance](security-governance/) | RBAC, tenant isolation, encryption, audit logging |
+| 7 | [observability-monitoring](observability-monitoring/) | Metrics, logs, traces, AI events, alerts |
 
-## Single Entry Point
-
-Install the root library:
+## Quick install
 
 ```bash
-cd path/to/nexus
-python3 -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/<your-org>/nexus.git
+cd nexus
+python3 -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-```
-
-Validate the complete platform contract:
-
-```bash
 nexus validate-platform configs/nexus.yaml
 ```
 
-List layers:
+## Full guide
 
-```bash
-nexus layers configs/nexus.yaml
-```
+**See [docs/USING_NEXUS.md](docs/USING_NEXUS.md) for the complete public
+user and integrator guide** — installation, per-layer reference, security
+model, integration patterns, configuration, deployment, and extension
+points.
 
-Rebuild local demo outputs and retrieval indexes:
+Also useful:
 
-```bash
-nexus prepare-demo configs/nexus.yaml
-```
+- [docs/architecture.md](docs/architecture.md) — high-level architecture diagram
+- Each layer's own `README.md` for layer-local detail
 
-Ask through the full engagement and guardrails path:
+## License
 
-```bash
-nexus ask configs/nexus.yaml "What does the security policy say about MFA?"
-```
-
-Without package installation:
-
-```bash
-PYTHONPATH=src python -m nexus.cli validate-platform configs/nexus.yaml
-```
-
-## Configuration
-
-The root platform contract is [configs/nexus.yaml](configs/nexus.yaml). It maps each layer to:
-
-- project path
-- CLI module
-- layer config path
-- layer responsibility
-- enterprise insight flow order
-
-The root `nexus` package does not import child layer code. It invokes layer CLIs through configured paths and `PYTHONPATH`, so each layer can be packaged, deployed, and scaled independently.
-
-## Run All Tests
-
-Run the root tests:
-
-```bash
-python -m pytest
-```
-
-Run layer tests from each project folder:
-
-```bash
-cd enterprise-data-pipeline && python -m pytest
-cd ../data-processing-enrichment && python -m pytest
-cd ../embedding-retrieval-intelligence && python -m pytest
-cd ../orchestration-guardrails && python -m pytest
-cd ../experience-api-engagement && python -m pytest
-cd ../security-governance && python -m pytest
-cd ../observability-monitoring && python -m pytest
-```
-
-## Enterprise Integration Pattern
-
-External enterprise projects should integrate through one of these stable entry points:
-
-- Python: `from nexus import NexusPlatform`
-- CLI: `nexus ...`
-- Layer CLIs for operational ownership boundaries
-- Layer configs for environment-specific deployment
-
-This keeps the platform open, portable, and usable across onshore, offshore, hybrid, and cloud enterprise delivery models.
+See [LICENSE](LICENSE). Apache-2.0 is recommended for enterprise OSS use;
+add the `LICENSE` file before tagging your first public release.

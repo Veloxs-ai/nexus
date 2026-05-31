@@ -39,11 +39,27 @@ class ChannelConfig(BaseModel):
     allowed_capabilities: list[str] = Field(default_factory=list)
 
 
+class ApiKeyEntry(BaseModel):
+    secret: str
+    user_id: str
+    tenant_id: str
+    role: str = "anonymous"
+    permissions: list[str] = Field(default_factory=list)
+
+
+class AuthConfig(BaseModel):
+    enabled: bool = False
+    header_name: str = "X-API-Key"
+    api_keys: list[ApiKeyEntry] = Field(default_factory=list)
+    max_query_chars: int = 8000
+
+
 class EngagementConfig(BaseModel):
     tenant: TenantConfig = Field(default_factory=TenantConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     channels: dict[str, ChannelConfig]
 
 

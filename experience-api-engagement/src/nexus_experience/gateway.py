@@ -10,6 +10,25 @@ from nexus_experience.config import EngagementConfig
 from nexus_experience.models import Citation
 
 
+class GatewaySecurityError(Exception):
+    """Raised when the configured subprocess gateway would be unsafe to run."""
+
+
+def _validate_python_executable(executable: str | None) -> str:
+    if not executable:
+        return sys.executable
+    candidate = Path(executable)
+    if not candidate.is_absolute():
+        raise GatewaySecurityError(
+            f"python_executable must be an absolute path, got: {executable!r}"
+        )
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        raise GatewaySecurityError(
+            f"python_executable does not exist or is not executable: {executable!r}"
+        )
+    return str(candidate)
+
+
 class AiGateway(Protocol):
     def ask(self, query: str) -> tuple[str, str, list[Citation], dict[str, str]]:
         """Return decision, answer, citations, and metadata."""
@@ -39,11 +58,12 @@ class SubprocessGuardrailsGateway:
 
         project_dir = resolve_path(integration.guardrails_project, self.base_dir)
         config_path = resolve_path(integration.guardrails_config, self.base_dir)
+        executable = _validate_python_executable(integration.python_executable)
         env = dict(os.environ)
         env["PYTHONPATH"] = str(project_dir / "src")
         completed = subprocess.run(
             [
-                integration.python_executable or sys.executable,
+                executable,
                 "-m",
                 "nexus_guardrails.cli",
                 "ask",
