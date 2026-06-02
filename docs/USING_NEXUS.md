@@ -169,7 +169,7 @@ Each layer follows the same shape:
 ### Install the root platform
 
 ```bash
-git clone https://github.com/<your-org>/nexus.git
+git clone https://github.com/Veloxs-ai/nexus.git
 cd nexus
 python3 -m venv .venv
 source .venv/bin/activate
@@ -986,9 +986,11 @@ local file stores — so they're appropriate for CI gates.
 
 ### Reporting vulnerabilities
 
-Do **not** open a public issue for security vulnerabilities. Email
-`<security@your-org.example>` with details and reproduction steps. We aim
-to acknowledge within 72 hours.
+Do **not** open a public issue for security vulnerabilities. See
+[SECURITY.md](../SECURITY.md) for the disclosure process; the short
+version is: open a [private security advisory](https://github.com/Veloxs-ai/nexus/security/advisories/new),
+or email `security@veloxs.ai`. We aim to acknowledge within 3 business
+days.
 
 ---
 

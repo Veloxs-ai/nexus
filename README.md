@@ -23,7 +23,7 @@ and does not import any child-layer code.
 ## Quick install
 
 ```bash
-git clone https://github.com/<your-org>/nexus.git
+git clone https://github.com/Veloxs-ai/nexus.git
 cd nexus
 python3 -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Veloxs-ai/nexus/security/advisories/new
+    about: Report a vulnerability privately. Do NOT open a public issue for security problems.
+  - name: Question or discussion
+    url: https://github.com/Veloxs-ai/nexus/discussions
+    about: Have a question, want feedback on an approach, or want to chat with maintainers? Start a Discussion.
+  - name: Code of Conduct concern
+    url: mailto:conduct@veloxs.ai
+    about: Report a Code of Conduct violation privately to maintainers.

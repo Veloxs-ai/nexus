@@ -3,6 +3,21 @@ name = "embedding-retrieval-intelligence"
 version = "0.1.0"
 description = "Embedding and retrieval intelligence layer with vector, graph, hybrid search, and ranking."
 requires-python = ">=3.11"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+  { name = "Veloxs AI", email = "hello@veloxs.ai" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "pydantic>=2.7.0",
   "pyyaml>=6.0.1",
@@ -14,6 +29,13 @@ dev = [
   "pytest>=8.2.0",
   "ruff>=0.5.0",
 ]
+
+[project.urls]
+Homepage      = "https://github.com/Veloxs-ai/nexus"
+Documentation = "https://github.com/Veloxs-ai/nexus/blob/main/docs/USING_NEXUS.md"
+Repository    = "https://github.com/Veloxs-ai/nexus"
+Issues        = "https://github.com/Veloxs-ai/nexus/issues"
+Security      = "https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md"
 
 [project.scripts]
 retrieval = "nexus_retrieval.cli:app"
