@@ -1,0 +1,73 @@
+platform:
+  raw_landing_uri: s3://enterprise-raw
+  checkpoint_store: .checkpoints
+  dead_letter_uri: s3://enterprise-dead-letter
+
+sources:
+  crm_accounts:
+    mode: api
+    connector: rest_api
+    destination: core.crm_accounts
+    primary_key: account_id
+    event_time_field: updated_at
+    schedule: "*/15 * * * *"
+    connection:
+      base_url: https://crm.example.com
+      auth_env: CRM_API_TOKEN
+      endpoint: /v1/accounts
+      page_size: 500
+    schema:
+      required_fields:
+        - account_id
+        - name
+        - updated_at
+
+  customer_events:
+    mode: streaming
+    connector: kafka
+    destination: event.customer_activity
+    primary_key: event_id
+    event_time_field: occurred_at
+    connection:
+      bootstrap_servers: localhost:9092
+      topic: customer.events
+      consumer_group: nexus-customer-events
+      source_uri: data/raw/customer_events.jsonl
+    schema:
+      required_fields:
+        - event_id
+        - customer_id
+        - event_type
+        - occurred_at
+
+  erp_orders:
+    mode: cdc
+    connector: debezium
+    destination: core.erp_orders
+    primary_key: order_id
+    event_time_field: source_ts_ms
+    connection:
+      bootstrap_servers: localhost:9092
+      topic: erp.public.orders
+      consumer_group: nexus-erp-orders-cdc
+    schema:
+      required_fields:
+        - order_id
+        - source_ts_ms
+
+  finance_transactions:
+    mode: batch
+    connector: file_drop
+    destination: core.finance_transactions
+    primary_key: transaction_id
+    event_time_field: posted_at
+    schedule: "0 * * * *"
+    connection:
+      source_uri: data/raw/finance_transactions.jsonl
+      file_format: jsonl
+    schema:
+      required_fields:
+        - transaction_id
+        - amount
+        - currency
+        - posted_at

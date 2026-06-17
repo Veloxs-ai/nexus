@@ -1,0 +1,1 @@
+{"attributes": {}, "event_id": "7e8f9862-ee46-4f16-b212-5c0b1cad237c", "message": "Guardrail decision allowed", "service": "orchestration-guardrails", "severity": "info", "tenant": "default", "timestamp": "2026-05-12T02:46:31.469964Z", "trace_id": null}

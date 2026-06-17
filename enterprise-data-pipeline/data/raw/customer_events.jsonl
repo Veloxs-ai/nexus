@@ -1,0 +1,2 @@
+{"event_id":"e001","customer_id":"c001","event_type":"login","occurred_at":"2026-05-06T00:00:00Z"}
+{"event_id":"e002","customer_id":"c002","event_type":"invoice_viewed","occurred_at":"2026-05-06T00:01:00Z"}

@@ -1,0 +1,75 @@
+Nexus — Proprietary Software License
+Copyright 2026 Veloxs AI Inc. All rights reserved.
+
+IMPORTANT — READ CAREFULLY. This is a legal agreement between you ("Licensee")
+and Veloxs AI Inc. ("Veloxs"). By accessing, installing, copying, or otherwise
+using the Nexus software and any associated documentation, data, models, and
+materials (collectively, the "Software"), you agree to be bound by the terms of
+this License. If you do not agree, you must not access or use the Software.
+
+1. OWNERSHIP
+   The Software is the confidential and proprietary property of Veloxs AI Inc.
+   and is protected by copyright, trade secret, and other intellectual property
+   laws. Veloxs retains all right, title, and interest in and to the Software,
+   including all intellectual property rights therein. No title to or ownership
+   of the Software is transferred to Licensee. All rights not expressly granted
+   are reserved by Veloxs.
+
+2. LICENSE GRANT
+   Subject to the terms of this License and any separate written agreement
+   executed between Licensee and Veloxs (including any pilot, evaluation, or
+   commercial subscription agreement, an "Order"), Veloxs grants Licensee a
+   limited, non-exclusive, non-transferable, non-sublicensable, revocable
+   license to use the Software solely for Licensee's internal business purposes
+   and only as permitted by the applicable Order. Absent an Order, no license
+   to use the Software is granted.
+
+3. RESTRICTIONS
+   Except as expressly permitted by an Order or by applicable law that cannot be
+   contractually waived, Licensee shall not, and shall not permit any third
+   party to: (a) copy, modify, or create derivative works of the Software;
+   (b) distribute, sell, sublicense, rent, lease, lend, or otherwise make the
+   Software available to any third party; (c) reverse engineer, decompile, or
+   disassemble the Software, or attempt to derive its source code; (d) remove,
+   alter, or obscure any proprietary notices; or (e) use the Software to build a
+   competing product or service.
+
+4. CONFIDENTIALITY
+   The Software and its source code constitute the confidential information and
+   trade secrets of Veloxs. Licensee shall protect the Software from
+   unauthorized use or disclosure using at least the same degree of care it uses
+   to protect its own confidential information of like importance, and in no
+   event less than a reasonable degree of care.
+
+5. THIRD-PARTY COMPONENTS
+   The Software incorporates third-party open-source components, each of which
+   remains subject to its own license. See the NOTICE file for attributions and
+   applicable terms. Nothing in this License limits Licensee's rights, or
+   Veloxs's obligations, under those third-party licenses.
+
+6. TERMINATION
+   This License is effective until terminated. It terminates automatically if
+   Licensee breaches any term. Upon termination, Licensee must cease all use of
+   the Software and destroy all copies in its possession or control.
+
+7. DISCLAIMER OF WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+   NON-INFRINGEMENT.
+
+8. LIMITATION OF LIABILITY
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL VELOXS BE LIABLE
+   FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR
+   ANY LOSS OF PROFITS, REVENUE, DATA, OR USE, ARISING OUT OF OR RELATED TO THIS
+   LICENSE OR THE SOFTWARE, WHETHER IN CONTRACT, TORT, OR OTHERWISE, EVEN IF
+   ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+9. GENERAL
+   This License is governed by the laws of the jurisdiction in which Veloxs AI
+   Inc. is incorporated, without regard to conflict-of-laws principles. If any
+   provision is held unenforceable, the remaining provisions remain in effect.
+   This License, together with any applicable Order, is the entire agreement
+   between the parties regarding the Software.
+
+For licensing inquiries, contact: legal@veloxs.ai

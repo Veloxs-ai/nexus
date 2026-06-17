@@ -1,0 +1,405 @@
+{
+  "documents": {
+    "c001": {
+      "collection": "customer_profiles",
+      "id": "c001",
+      "metadata": {
+        "classification": "customer",
+        "dates": [
+          "2026-06-15"
+        ],
+        "emails": [
+          "jane.doe@acme.com"
+        ],
+        "entities": [
+          "Account",
+          "Contact"
+        ],
+        "money": [],
+        "tags": [
+          "customer"
+        ]
+      },
+      "source": {
+        "metadata": {
+          "classification": "customer",
+          "dates": [
+            "2026-06-15"
+          ],
+          "emails": [
+            "jane.doe@acme.com"
+          ],
+          "entities": [
+            "Account",
+            "Contact"
+          ],
+          "money": [],
+          "tags": [
+            "customer"
+          ]
+        },
+        "payload": {
+          "customer_id": "c001",
+          "lifecycle_stage": "unknown",
+          "name": "Acme Corp",
+          "notes": "Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions.",
+          "status": "active"
+        },
+        "processed_at": "2026-05-12T02:58:13.300846Z",
+        "record_id": "c001",
+        "source_job": "customer_profiles"
+      },
+      "text": "Acme Corp Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions."
+    },
+    "c002": {
+      "collection": "customer_profiles",
+      "id": "c002",
+      "metadata": {
+        "classification": "finance",
+        "dates": [],
+        "emails": [],
+        "entities": [
+          "Expected",
+          "Payment"
+        ],
+        "money": [],
+        "tags": [
+          "finance"
+        ]
+      },
+      "source": {
+        "metadata": {
+          "classification": "finance",
+          "dates": [],
+          "emails": [],
+          "entities": [
+            "Expected",
+            "Payment"
+          ],
+          "money": [],
+          "tags": [
+            "finance"
+          ]
+        },
+        "payload": {
+          "customer_id": "c002",
+          "lifecycle_stage": "sales",
+          "name": "Northwind",
+          "notes": "Payment discussion scheduled with finance team. Expected revenue review next month.",
+          "status": "prospect"
+        },
+        "processed_at": "2026-05-12T02:58:13.300948Z",
+        "record_id": "c002",
+        "source_job": "customer_profiles"
+      },
+      "text": "Northwind Payment discussion scheduled with finance team. Expected revenue review next month."
+    },
+    "doc-001:0": {
+      "collection": "policy_documents",
+      "id": "doc-001:0",
+      "metadata": {
+        "classification": "security",
+        "dates": [],
+        "document_title": "Security Access Policy",
+        "emails": [
+          "security@example.com"
+        ],
+        "entities": [
+          "Access",
+          "Contact",
+          "Encryption",
+          "Security Access Policy All"
+        ],
+        "money": [],
+        "source_primary_key": "doc-001",
+        "tags": [
+          "security"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-001:0",
+        "chunk_index": 0,
+        "document_id": "doc-001",
+        "metadata": {
+          "classification": "security",
+          "dates": [],
+          "document_title": "Security Access Policy",
+          "emails": [
+            "security@example.com"
+          ],
+          "entities": [
+            "Access",
+            "Contact",
+            "Encryption",
+            "Security Access Policy All"
+          ],
+          "money": [],
+          "source_primary_key": "doc-001",
+          "tags": [
+            "security"
+          ]
+        },
+        "processed_at": "2026-05-12T02:58:13.302341Z",
+        "source_job": "policy_documents",
+        "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@example.com for exceptions."
+      },
+      "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@example.com for exceptions."
+    },
+    "doc-002:0": {
+      "collection": "policy_documents",
+      "id": "doc-002:0",
+      "metadata": {
+        "classification": "finance",
+        "dates": [
+          "2026-07-01"
+        ],
+        "document_title": "Invoice Handling Procedure",
+        "emails": [
+          "ap@example.com"
+        ],
+        "entities": [
+          "Invoice Handling Procedure Invoices",
+          "Revenue",
+          "Send"
+        ],
+        "money": [],
+        "source_primary_key": "doc-002",
+        "tags": [
+          "finance"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-002:0",
+        "chunk_index": 0,
+        "document_id": "doc-002",
+        "metadata": {
+          "classification": "finance",
+          "dates": [
+            "2026-07-01"
+          ],
+          "document_title": "Invoice Handling Procedure",
+          "emails": [
+            "ap@example.com"
+          ],
+          "entities": [
+            "Invoice Handling Procedure Invoices",
+            "Revenue",
+            "Send"
+          ],
+          "money": [],
+          "source_primary_key": "doc-002",
+          "tags": [
+            "finance"
+          ]
+        },
+        "processed_at": "2026-05-12T02:58:13.302364Z",
+        "source_job": "policy_documents",
+        "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require approval. Send questions to ap@example.com by 2026-07-01."
+      },
+      "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require approval. Send questions to ap@example.com by 2026-07-01."
+    }
+  },
+  "postings": {
+    "01": {
+      "doc-002:0": 1
+    },
+    "06": {
+      "c001": 1
+    },
+    "07": {
+      "doc-002:0": 1
+    },
+    "15": {
+      "c001": 1
+    },
+    "2026": {
+      "c001": 1,
+      "doc-002:0": 1
+    },
+    "about": {
+      "c001": 1
+    },
+    "access": {
+      "doc-001:0": 1
+    },
+    "account": {
+      "c001": 1
+    },
+    "acme": {
+      "c001": 2
+    },
+    "adjustments": {
+      "doc-002:0": 1
+    },
+    "all": {
+      "doc-001:0": 1
+    },
+    "ap": {
+      "doc-002:0": 1
+    },
+    "approval": {
+      "doc-002:0": 1
+    },
+    "are": {
+      "doc-001:0": 1
+    },
+    "be": {
+      "doc-002:0": 1
+    },
+    "before": {
+      "doc-002:0": 1
+    },
+    "by": {
+      "doc-002:0": 1
+    },
+    "com": {
+      "c001": 1,
+      "doc-001:0": 1,
+      "doc-002:0": 1
+    },
+    "confidential": {
+      "doc-001:0": 1
+    },
+    "contact": {
+      "c001": 1,
+      "doc-001:0": 1
+    },
+    "corp": {
+      "c001": 1
+    },
+    "discussion": {
+      "c002": 1
+    },
+    "doe": {
+      "c001": 1
+    },
+    "employees": {
+      "doc-001:0": 1
+    },
+    "encryption": {
+      "doc-001:0": 1
+    },
+    "example": {
+      "doc-001:0": 1,
+      "doc-002:0": 1
+    },
+    "exceptions": {
+      "doc-001:0": 1
+    },
+    "expected": {
+      "c002": 1
+    },
+    "exports": {
+      "doc-001:0": 1
+    },
+    "finance": {
+      "c002": 1
+    },
+    "for": {
+      "doc-001:0": 3
+    },
+    "has": {
+      "c001": 1
+    },
+    "impacting": {
+      "doc-002:0": 1
+    },
+    "invoices": {
+      "doc-002:0": 1
+    },
+    "is": {
+      "doc-001:0": 1
+    },
+    "jane": {
+      "c001": 1
+    },
+    "mandatory": {
+      "doc-001:0": 1
+    },
+    "mfa": {
+      "doc-001:0": 1
+    },
+    "month": {
+      "c002": 1
+    },
+    "must": {
+      "doc-001:0": 1,
+      "doc-002:0": 1
+    },
+    "next": {
+      "c002": 1
+    },
+    "northwind": {
+      "c002": 1
+    },
+    "on": {
+      "c001": 1
+    },
+    "open": {
+      "c001": 1
+    },
+    "payment": {
+      "c002": 1,
+      "doc-002:0": 1
+    },
+    "quarterly": {
+      "doc-001:0": 1
+    },
+    "questions": {
+      "c001": 1,
+      "doc-002:0": 1
+    },
+    "renewal": {
+      "c001": 1
+    },
+    "require": {
+      "doc-002:0": 1
+    },
+    "required": {
+      "doc-001:0": 1
+    },
+    "revenue": {
+      "c002": 1,
+      "doc-002:0": 1
+    },
+    "review": {
+      "c002": 1
+    },
+    "reviewed": {
+      "doc-002:0": 1
+    },
+    "reviews": {
+      "doc-001:0": 1
+    },
+    "scheduled": {
+      "c002": 1
+    },
+    "security": {
+      "doc-001:0": 1
+    },
+    "send": {
+      "doc-002:0": 1
+    },
+    "sensitive": {
+      "doc-001:0": 1
+    },
+    "support": {
+      "c001": 1
+    },
+    "systems": {
+      "doc-001:0": 1
+    },
+    "team": {
+      "c002": 1
+    },
+    "to": {
+      "doc-002:0": 1
+    },
+    "use": {
+      "doc-001:0": 1
+    },
+    "with": {
+      "c002": 1
+    }
+  }
+}

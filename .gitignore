@@ -1,0 +1,15 @@
+.DS_Store
+.idea/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.checkpoints/
+data/**/audit.jsonl
+data/**/events.jsonl
+data/**/metrics.jsonl
+data/**/logs.jsonl
+data/**/spans.jsonl
+data/**/alerts.jsonl
+

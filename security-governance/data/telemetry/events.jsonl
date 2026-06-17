@@ -1,0 +1,1 @@
+{"attributes": {"decision": "allowed", "permission": "read:data"}, "event_id": "7967a80c-f323-4863-bf41-5bcf57d38cd7", "metric_name": "access_check", "service_name": "nexus-security-governance", "timestamp": "2026-05-12T02:38:29.393280Z", "value": 1.0}

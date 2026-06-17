@@ -1,0 +1,2 @@
+{"actor_id": "analyst", "decision": "allowed", "details": {"permission": "read:data", "reason": "authorized"}, "event_id": "6bb4422e-4369-46f2-b369-d0b4aeea03e9", "event_type": "access.check", "tenant_id": "tenant-a", "timestamp": "2026-05-12T02:38:29.392774Z"}
+{"actor_id": "u001", "decision": "allowed", "details": {}, "event_id": "52eb5298-7ffd-4420-98af-38a203a3539a", "event_type": "user.login", "tenant_id": "tenant-a", "timestamp": "2026-05-12T02:38:29.563446Z"}

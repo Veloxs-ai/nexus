@@ -1,0 +1,30 @@
+Nexus
+Copyright 2026 Veloxs AI Inc.
+
+This product includes software developed by Veloxs AI Inc. and the Nexus
+project contributors. See the project's git history for the list of
+individual contributors.
+
+This software is proprietary and confidential. It is licensed, not sold,
+under the terms of the Nexus Proprietary Software License (see the LICENSE
+file). Unauthorized copying, distribution, modification, or use is strictly
+prohibited. All rights reserved.
+
+-------------------------------------------------------------------------------
+
+This product depends on the following third-party libraries. Each
+dependency retains its own license; see the dependency's distribution for
+full terms.
+
+- pydantic              (MIT)        https://github.com/pydantic/pydantic
+- pyyaml                (MIT)        https://github.com/yaml/pyyaml
+- typer                 (MIT)        https://github.com/tiangolo/typer
+- httpx                 (BSD-3)      https://github.com/encode/httpx
+- cryptography          (Apache-2.0 / BSD-3)
+                                     https://github.com/pyca/cryptography
+- fastapi               (MIT, optional, [api])
+                                     https://github.com/tiangolo/fastapi
+- uvicorn               (BSD-3, optional, [api])
+                                     https://github.com/encode/uvicorn
+- pytest                (MIT, dev)   https://github.com/pytest-dev/pytest
+- ruff                  (MIT, dev)   https://github.com/astral-sh/ruff

@@ -1,0 +1,1 @@
+{"attributes": {}, "event_id": "02456abc-4dda-40c5-97ee-3c97c57bcafa", "kind": "histogram", "name": "request_latency_ms", "service": "experience-api-engagement", "tenant": "default", "timestamp": "2026-05-12T02:46:31.469244Z", "value": 125.0}

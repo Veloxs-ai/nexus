@@ -1,0 +1,51 @@
+type Query {
+  health: Health!
+}
+
+type Mutation {
+  ask(input: AskInput!): AskResponse!
+  startSession(input: StartSessionInput!): AssistantSession!
+}
+
+input AskInput {
+  query: String!
+  channel: String = "assistant"
+  userId: String
+  sessionId: String
+  metadata: JSON
+}
+
+input StartSessionInput {
+  userId: String
+  channel: String = "assistant"
+}
+
+type Health {
+  status: String!
+  tenant: String!
+}
+
+type AssistantSession {
+  sessionId: String!
+  userId: String
+  channel: String!
+  greeting: String!
+}
+
+type AskResponse {
+  requestId: String!
+  decision: String!
+  answer: String!
+  citations: [Citation!]!
+  channel: String!
+  tenantId: String!
+}
+
+type Citation {
+  sourceId: String!
+  collection: String!
+  score: Float!
+}
+
+scalar JSON
+

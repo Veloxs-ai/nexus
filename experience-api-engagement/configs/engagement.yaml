@@ -1,0 +1,64 @@
+tenant:
+  id: default
+  display_name: Default Enterprise Tenant
+
+integration:
+  mode: subprocess_cli
+  guardrails_project: ../orchestration-guardrails
+  guardrails_config: ../orchestration-guardrails/configs/guardrails.yaml
+
+api:
+  title: Nexus Experience API
+  version: 0.1.0
+  default_channel: assistant
+
+assistant:
+  default_assistant_id: enterprise-copilot
+  max_history_messages: 8
+  greeting: How can I help with enterprise knowledge today?
+
+channels:
+  assistant:
+    type: assistant
+    enabled: true
+    description: Conversational copilot channel.
+    allowed_capabilities:
+      - ask
+      - summarize
+      - cite
+  rest:
+    type: api
+    enabled: true
+    description: REST API integration channel.
+    allowed_capabilities:
+      - ask
+      - health
+  graphql:
+    type: api
+    enabled: true
+    description: GraphQL contract channel.
+    allowed_capabilities:
+      - ask
+      - session
+  sdk:
+    type: sdk
+    enabled: true
+    description: Python SDK channel.
+    allowed_capabilities:
+      - ask
+      - session
+  web:
+    type: web
+    enabled: true
+    description: Web application channel.
+    allowed_capabilities:
+      - ask
+      - session
+      - personalize
+  mobile:
+    type: mobile
+    enabled: true
+    description: Mobile application channel.
+    allowed_capabilities:
+      - ask
+      - session

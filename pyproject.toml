@@ -1,0 +1,65 @@
+[project]
+name = "nexus-enterprise-ai"
+version = "0.1.0"
+description = "Single entry point for Nexus enterprise AI data, retrieval, governance, engagement, security, and observability layers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Veloxs-AI-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+  { name = "Veloxs AI Inc.", email = "hello@veloxs.ai" },
+]
+maintainers = [
+  { name = "Veloxs AI Inc.", email = "hello@veloxs.ai" },
+]
+keywords = ["enterprise-ai", "rag", "guardrails", "rbac", "data-pipeline", "vector-search", "llm"]
+classifiers = [
+  "License :: Other/Proprietary License",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.7.0",
+  "pyyaml>=6.0.1",
+  "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.5.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/Veloxs-ai/nexus"
+Documentation = "https://github.com/Veloxs-ai/nexus/blob/main/docs/USING_NEXUS.md"
+Repository    = "https://github.com/Veloxs-ai/nexus"
+Issues        = "https://github.com/Veloxs-ai/nexus/issues"
+Changelog     = "https://github.com/Veloxs-ai/nexus/blob/main/CHANGELOG.md"
+Security      = "https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md"
+
+[project.scripts]
+nexus = "nexus.cli:app"
+
+[build-system]
+requires = ["setuptools>=69.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: mailto:security@veloxs.ai
+    about: Report a vulnerability privately. Do NOT open a public issue for security problems.
+  - name: Code of Conduct concern
+    url: mailto:conduct@veloxs.ai
+    about: Report a Code of Conduct concern privately to Veloxs AI Inc.
+  - name: Licensing or pilot inquiry
+    url: mailto:legal@veloxs.ai
+    about: Questions about licensing, evaluation, or pilot access.
