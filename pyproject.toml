@@ -14,7 +14,6 @@ maintainers = [
 ]
 keywords = ["enterprise-ai", "rag", "guardrails", "rbac", "data-pipeline", "vector-search", "llm"]
 classifiers = [
-  "License :: Other/Proprietary License",
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Intended Audience :: System Administrators",

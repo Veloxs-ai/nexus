@@ -115,7 +115,21 @@ def parse_guardrails_output(output: str) -> tuple[str, str, list[Citation], dict
             citations.append(Citation(source_id=source_id, collection=collection, score=float(score)))
     return decision, answer, citations, metadata
 
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
 
 def resolve_path(path: str, base_dir: Path) -> Path:
     candidate = Path(path)
-    return candidate if candidate.is_absolute() else (base_dir / candidate).resolve()
+    resolved = candidate if candidate.is_absolute() else (base_dir / candidate).resolve()
+    resolved = resolved.resolve()
+    base_resolved = base_dir.resolve()
+    if not _is_within(resolved, base_resolved):
+        raise GatewaySecurityError(
+            f"path {path!r} resolves outside base directory {base_resolved}"
+        )
+    return resolved
