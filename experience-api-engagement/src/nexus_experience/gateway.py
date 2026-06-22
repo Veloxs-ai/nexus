@@ -128,8 +128,9 @@ def resolve_path(path: str, base_dir: Path) -> Path:
     resolved = candidate if candidate.is_absolute() else (base_dir / candidate).resolve()
     resolved = resolved.resolve()
     base_resolved = base_dir.resolve()
-    if not _is_within(resolved, base_resolved):
+    repo_root = base_resolved.parent
+    if not _is_within(resolved, repo_root):
         raise GatewaySecurityError(
-            f"path {path!r} resolves outside base directory {base_resolved}"
+            f"path {path!r} resolves outside repository root {repo_root}"
         )
     return resolved
