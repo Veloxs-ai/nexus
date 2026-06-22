@@ -13,3 +13,4 @@ data/**/logs.jsonl
 data/**/spans.jsonl
 data/**/alerts.jsonl
 *.egg-info/
+.venv-demo/

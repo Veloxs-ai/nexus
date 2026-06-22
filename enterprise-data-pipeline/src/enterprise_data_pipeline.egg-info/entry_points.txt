@@ -1,0 +1,2 @@
+[console_scripts]
+pipeline = nexus_pipeline.cli:app

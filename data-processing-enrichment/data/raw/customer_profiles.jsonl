@@ -1,3 +1,5 @@
-{"customer_id":"c001","customer_name":" Acme Corp ","status":" ACTIVE ","notes":"Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions."}
-{"customer_id":"c002","customer_name":"Northwind","status":"prospect","notes":"Payment discussion scheduled with finance team. Expected revenue review next month.","lifecycle_stage":"sales"}
-
+{"customer_id": "c001", "customer_name": " Acme Corp ", "status": " ACTIVE ", "notes": "Contact jane.doe@acme.com or call 415-555-0132 about renewal on 2026-06-15. Account has open support questions."}
+{"customer_id": "c002", "customer_name": "Northwind", "status": "prospect", "lifecycle_stage": "sales", "notes": "Payment discussion scheduled with finance team. Expected revenue review next month."}
+{"customer_id": "c003", "customer_name": " Globex ", "status": "active", "notes": "Renewal due 2026-09-01. Primary contact sam@globex.com. Strong support satisfaction."}
+{"customer_id": "c004", "customer_name": "Initech", "status": "at_risk", "lifecycle_stage": "retention", "notes": "Escalated support tickets last quarter. Renewal at risk; finance reviewing invoice disputes."}
+{"customer_id": "c005", "customer_name": "Umbrella Health", "status": "prospect", "notes": "Evaluating security and encryption controls. Contact dana@umbrella.example by 2026-07-10."}

@@ -31,6 +31,61 @@
       "target": "tag:finance"
     },
     {
+      "relationship": "MENTIONS",
+      "source": "document:c003",
+      "target": "entity:Primary"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c003",
+      "target": "entity:Renewal"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c003",
+      "target": "entity:Strong"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c003",
+      "target": "tag:customer"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c004",
+      "target": "entity:Escalated"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c004",
+      "target": "entity:Renewal"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c004",
+      "target": "tag:customer"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c004",
+      "target": "tag:finance"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c005",
+      "target": "entity:Contact"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:c005",
+      "target": "entity:Evaluating"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:c005",
+      "target": "tag:security"
+    },
+    {
       "relationship": "PART_OF",
       "source": "document:doc-001:0",
       "target": "parent:doc-001"
@@ -68,22 +123,132 @@
     {
       "relationship": "MENTIONS",
       "source": "document:doc-002:0",
-      "target": "entity:Invoice Handling Procedure Invoices"
+      "target": "entity:Data Encryption Standard Confidential"
     },
     {
       "relationship": "MENTIONS",
       "source": "document:doc-002:0",
-      "target": "entity:Revenue"
-    },
-    {
-      "relationship": "MENTIONS",
-      "source": "document:doc-002:0",
-      "target": "entity:Send"
+      "target": "entity:Keys"
     },
     {
       "relationship": "TAGGED_AS",
       "source": "document:doc-002:0",
+      "target": "tag:security"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-003:0",
+      "target": "parent:doc-003"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-003:0",
+      "target": "entity:Account Access Review Procedure Access"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-003:0",
+      "target": "entity:Privileged"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-003:0",
+      "target": "entity:Quarterly"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-003:0",
+      "target": "tag:customer"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-003:0",
+      "target": "tag:security"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-004:0",
+      "target": "parent:doc-004"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-004:0",
+      "target": "entity:Invoice Handling Procedure Invoices"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-004:0",
+      "target": "entity:Revenue"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-004:0",
+      "target": "entity:Send"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-004:0",
       "target": "tag:finance"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-005:0",
+      "target": "parent:doc-005"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-005:0",
+      "target": "entity:Disputed"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-005:0",
+      "target": "entity:Payment"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-005:0",
+      "target": "entity:Refund Policy Customer"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-005:0",
+      "target": "entity:Refunds"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-005:0",
+      "target": "tag:finance"
+    },
+    {
+      "relationship": "PART_OF",
+      "source": "document:doc-006:0",
+      "target": "parent:doc-006"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-006:0",
+      "target": "entity:Critical"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-006:0",
+      "target": "entity:Customer Support"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-006:0",
+      "target": "entity:Renewal"
+    },
+    {
+      "relationship": "MENTIONS",
+      "source": "document:doc-006:0",
+      "target": "entity:Support"
+    },
+    {
+      "relationship": "TAGGED_AS",
+      "source": "document:doc-006:0",
+      "target": "tag:customer"
     }
   ],
   "nodes": {
@@ -95,12 +260,40 @@
       "id": "c002",
       "type": "document"
     },
+    "document:c003": {
+      "id": "c003",
+      "type": "document"
+    },
+    "document:c004": {
+      "id": "c004",
+      "type": "document"
+    },
+    "document:c005": {
+      "id": "c005",
+      "type": "document"
+    },
     "document:doc-001:0": {
       "id": "doc-001:0",
       "type": "document"
     },
     "document:doc-002:0": {
       "id": "doc-002:0",
+      "type": "document"
+    },
+    "document:doc-003:0": {
+      "id": "doc-003:0",
+      "type": "document"
+    },
+    "document:doc-004:0": {
+      "id": "doc-004:0",
+      "type": "document"
+    },
+    "document:doc-005:0": {
+      "id": "doc-005:0",
+      "type": "document"
+    },
+    "document:doc-006:0": {
+      "id": "doc-006:0",
       "type": "document"
     },
     "entity:Access": {
@@ -111,13 +304,41 @@
       "type": "entity",
       "value": "Account"
     },
+    "entity:Account Access Review Procedure Access": {
+      "type": "entity",
+      "value": "Account Access Review Procedure Access"
+    },
     "entity:Contact": {
       "type": "entity",
       "value": "Contact"
     },
+    "entity:Critical": {
+      "type": "entity",
+      "value": "Critical"
+    },
+    "entity:Customer Support": {
+      "type": "entity",
+      "value": "Customer Support"
+    },
+    "entity:Data Encryption Standard Confidential": {
+      "type": "entity",
+      "value": "Data Encryption Standard Confidential"
+    },
+    "entity:Disputed": {
+      "type": "entity",
+      "value": "Disputed"
+    },
     "entity:Encryption": {
       "type": "entity",
       "value": "Encryption"
+    },
+    "entity:Escalated": {
+      "type": "entity",
+      "value": "Escalated"
+    },
+    "entity:Evaluating": {
+      "type": "entity",
+      "value": "Evaluating"
     },
     "entity:Expected": {
       "type": "entity",
@@ -127,9 +348,37 @@
       "type": "entity",
       "value": "Invoice Handling Procedure Invoices"
     },
+    "entity:Keys": {
+      "type": "entity",
+      "value": "Keys"
+    },
     "entity:Payment": {
       "type": "entity",
       "value": "Payment"
+    },
+    "entity:Primary": {
+      "type": "entity",
+      "value": "Primary"
+    },
+    "entity:Privileged": {
+      "type": "entity",
+      "value": "Privileged"
+    },
+    "entity:Quarterly": {
+      "type": "entity",
+      "value": "Quarterly"
+    },
+    "entity:Refund Policy Customer": {
+      "type": "entity",
+      "value": "Refund Policy Customer"
+    },
+    "entity:Refunds": {
+      "type": "entity",
+      "value": "Refunds"
+    },
+    "entity:Renewal": {
+      "type": "entity",
+      "value": "Renewal"
     },
     "entity:Revenue": {
       "type": "entity",
@@ -143,12 +392,36 @@
       "type": "entity",
       "value": "Send"
     },
+    "entity:Strong": {
+      "type": "entity",
+      "value": "Strong"
+    },
+    "entity:Support": {
+      "type": "entity",
+      "value": "Support"
+    },
     "parent:doc-001": {
       "id": "doc-001",
       "type": "parent"
     },
     "parent:doc-002": {
       "id": "doc-002",
+      "type": "parent"
+    },
+    "parent:doc-003": {
+      "id": "doc-003",
+      "type": "parent"
+    },
+    "parent:doc-004": {
+      "id": "doc-004",
+      "type": "parent"
+    },
+    "parent:doc-005": {
+      "id": "doc-005",
+      "type": "parent"
+    },
+    "parent:doc-006": {
+      "id": "doc-006",
       "type": "parent"
     },
     "tag:customer": {

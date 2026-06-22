@@ -1,0 +1,2 @@
+[console_scripts]
+retrieval = nexus_retrieval.cli:app
