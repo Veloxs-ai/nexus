@@ -1,0 +1,87 @@
+Metadata-Version: 2.4
+Name: nexus-enterprise-ai
+Version: 0.1.0
+Summary: Single entry point for Nexus enterprise AI data, retrieval, governance, engagement, security, and observability layers.
+Author-email: "Veloxs AI Inc." <hello@veloxs.ai>
+Maintainer-email: "Veloxs AI Inc." <hello@veloxs.ai>
+License-Expression: LicenseRef-Veloxs-AI-Proprietary
+Project-URL: Homepage, https://github.com/Veloxs-ai/nexus
+Project-URL: Documentation, https://github.com/Veloxs-ai/nexus/blob/main/docs/USING_NEXUS.md
+Project-URL: Repository, https://github.com/Veloxs-ai/nexus
+Project-URL: Issues, https://github.com/Veloxs-ai/nexus/issues
+Project-URL: Changelog, https://github.com/Veloxs-ai/nexus/blob/main/CHANGELOG.md
+Project-URL: Security, https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md
+Keywords: enterprise-ai,rag,guardrails,rbac,data-pipeline,vector-search,llm
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: System Administrators
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Typing :: Typed
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: typer>=0.12.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Dynamic: license-file
+
+# Nexus Enterprise AI Platform
+
+Nexus is a layered enterprise AI platform that turns fragmented data into
+secure, grounded, context-aware intelligence — usable from any Python
+project as a library, a CLI, or a REST service.
+
+It is built as seven loosely-coupled layers, each independently installable
+and replaceable. The root `nexus` package is the single external entry point
+and does not import any child-layer code.
+
+## Layers
+
+| # | Layer | Responsibility |
+|---|---|---|
+| 1 | [enterprise-data-pipeline](enterprise-data-pipeline/) | API, batch, streaming, and CDC ingestion |
+| 2 | [data-processing-enrichment](data-processing-enrichment/) | ETL/ELT, document chunking, metadata extraction |
+| 3 | [embedding-retrieval-intelligence](embedding-retrieval-intelligence/) | Vector, lexical, hybrid, and graph retrieval |
+| 4 | [orchestration-guardrails](orchestration-guardrails/) | Prompt safety, PII masking, policy, grounded RAG |
+| 5 | [experience-api-engagement](experience-api-engagement/) | REST API, SDK, assistant, web/mobile channels |
+| 6 | [security-governance](security-governance/) | RBAC, tenant isolation, encryption, audit logging |
+| 7 | [observability-monitoring](observability-monitoring/) | Metrics, logs, traces, AI events, alerts |
+
+## Quick install
+
+```bash
+git clone https://github.com/Veloxs-ai/nexus.git
+cd nexus
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+nexus validate-platform configs/nexus.yaml
+```
+
+## Full guide
+
+**See [docs/USING_NEXUS.md](docs/USING_NEXUS.md) for the complete public
+user and integrator guide** — installation, per-layer reference, security
+model, integration patterns, configuration, deployment, and extension
+points.
+
+Also useful:
+
+- [docs/architecture.md](docs/architecture.md) — high-level architecture diagram
+- Each layer's own `README.md` for layer-local detail
+
+## License
+
+Nexus is proprietary and confidential software, © 2026 Veloxs AI Inc., all
+rights reserved. Use is governed by the Nexus Proprietary Software License —
+see [LICENSE](LICENSE). For licensing or pilot inquiries, contact
+legal@veloxs.ai.

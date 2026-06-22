@@ -19,12 +19,9 @@ from pydantic import BaseModel
 
 def resolve_uri(uri: str, base_dir: Path) -> Path:
     path = Path(uri)
-    if path.is_absolute():
-        return path
-    resolved = (base_dir / path).resolve()
-    if not resolved.is_relative_to(base_dir.resolve()):
-        raise ValueError(f"URI {uri!r} resolves outside base directory {base_dir}")
-    return resolved
+    # URIs come from trusted operator config; layers reference sibling-layer
+    # outputs via relative paths (e.g. ../other-layer/data/...), so no containment.
+    return path if path.is_absolute() else (base_dir / path)
 
 
 def read_jsonl(uri: str, base_dir: Path) -> list[dict[str, Any]]:

@@ -63,13 +63,24 @@ off_topic:
     - security
     - access
     - mfa
+    - authentication
     - encryption
     - invoice
+    - invoices
     - payment
+    - payments
+    - refund
     - finance
+    - revenue
     - customer
+    - account
+    - accounts
     - renewal
+    - renewals
     - support
+    - escalation
+    - sla
+    - data
     - policy
 
 rag:

@@ -42,14 +42,14 @@
           "customer_id": "c001",
           "lifecycle_stage": "unknown",
           "name": "Acme Corp",
-          "notes": "Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions.",
+          "notes": "Contact jane.doe@acme.com or call 415-555-0132 about renewal on 2026-06-15. Account has open support questions.",
           "status": "active"
         },
-        "processed_at": "2026-05-12T02:58:13.300846Z",
+        "processed_at": "2026-06-22T00:28:30.418406Z",
         "record_id": "c001",
         "source_job": "customer_profiles"
       },
-      "text": "Acme Corp Contact jane.doe@acme.com about renewal on 2026-06-15. Account has open support questions."
+      "text": "Acme Corp Contact jane.doe@acme.com or call 415-555-0132 about renewal on 2026-06-15. Account has open support questions."
     },
     "c002": {
       "collection": "customer_profiles",
@@ -88,11 +88,160 @@
           "notes": "Payment discussion scheduled with finance team. Expected revenue review next month.",
           "status": "prospect"
         },
-        "processed_at": "2026-05-12T02:58:13.300948Z",
+        "processed_at": "2026-06-22T00:28:30.418603Z",
         "record_id": "c002",
         "source_job": "customer_profiles"
       },
       "text": "Northwind Payment discussion scheduled with finance team. Expected revenue review next month."
+    },
+    "c003": {
+      "collection": "customer_profiles",
+      "id": "c003",
+      "metadata": {
+        "classification": "customer",
+        "dates": [
+          "2026-09-01"
+        ],
+        "emails": [
+          "sam@globex.com"
+        ],
+        "entities": [
+          "Primary",
+          "Renewal",
+          "Strong"
+        ],
+        "money": [],
+        "tags": [
+          "customer"
+        ]
+      },
+      "source": {
+        "metadata": {
+          "classification": "customer",
+          "dates": [
+            "2026-09-01"
+          ],
+          "emails": [
+            "sam@globex.com"
+          ],
+          "entities": [
+            "Primary",
+            "Renewal",
+            "Strong"
+          ],
+          "money": [],
+          "tags": [
+            "customer"
+          ]
+        },
+        "payload": {
+          "customer_id": "c003",
+          "lifecycle_stage": "unknown",
+          "name": "Globex",
+          "notes": "Renewal due 2026-09-01. Primary contact sam@globex.com. Strong support satisfaction.",
+          "status": "active"
+        },
+        "processed_at": "2026-06-22T00:28:30.418618Z",
+        "record_id": "c003",
+        "source_job": "customer_profiles"
+      },
+      "text": "Globex Renewal due 2026-09-01. Primary contact sam@globex.com. Strong support satisfaction."
+    },
+    "c004": {
+      "collection": "customer_profiles",
+      "id": "c004",
+      "metadata": {
+        "classification": "finance",
+        "dates": [],
+        "emails": [],
+        "entities": [
+          "Escalated",
+          "Renewal"
+        ],
+        "money": [],
+        "tags": [
+          "customer",
+          "finance"
+        ]
+      },
+      "source": {
+        "metadata": {
+          "classification": "finance",
+          "dates": [],
+          "emails": [],
+          "entities": [
+            "Escalated",
+            "Renewal"
+          ],
+          "money": [],
+          "tags": [
+            "customer",
+            "finance"
+          ]
+        },
+        "payload": {
+          "customer_id": "c004",
+          "lifecycle_stage": "retention",
+          "name": "Initech",
+          "notes": "Escalated support tickets last quarter. Renewal at risk; finance reviewing invoice disputes.",
+          "status": "at_risk"
+        },
+        "processed_at": "2026-06-22T00:28:30.418629Z",
+        "record_id": "c004",
+        "source_job": "customer_profiles"
+      },
+      "text": "Initech Escalated support tickets last quarter. Renewal at risk; finance reviewing invoice disputes."
+    },
+    "c005": {
+      "collection": "customer_profiles",
+      "id": "c005",
+      "metadata": {
+        "classification": "security",
+        "dates": [
+          "2026-07-10"
+        ],
+        "emails": [
+          "dana@umbrella.example"
+        ],
+        "entities": [
+          "Contact",
+          "Evaluating"
+        ],
+        "money": [],
+        "tags": [
+          "security"
+        ]
+      },
+      "source": {
+        "metadata": {
+          "classification": "security",
+          "dates": [
+            "2026-07-10"
+          ],
+          "emails": [
+            "dana@umbrella.example"
+          ],
+          "entities": [
+            "Contact",
+            "Evaluating"
+          ],
+          "money": [],
+          "tags": [
+            "security"
+          ]
+        },
+        "payload": {
+          "customer_id": "c005",
+          "lifecycle_stage": "unknown",
+          "name": "Umbrella Health",
+          "notes": "Evaluating security and encryption controls. Contact dana@umbrella.example by 2026-07-10.",
+          "status": "prospect"
+        },
+        "processed_at": "2026-06-22T00:28:30.418641Z",
+        "record_id": "c005",
+        "source_job": "customer_profiles"
+      },
+      "text": "Umbrella Health Evaluating security and encryption controls. Contact dana@umbrella.example by 2026-07-10."
     },
     "doc-001:0": {
       "collection": "policy_documents",
@@ -102,7 +251,7 @@
         "dates": [],
         "document_title": "Security Access Policy",
         "emails": [
-          "security@example.com"
+          "security@veloxsdemo.com"
         ],
         "entities": [
           "Access",
@@ -125,7 +274,7 @@
           "dates": [],
           "document_title": "Security Access Policy",
           "emails": [
-            "security@example.com"
+            "security@veloxsdemo.com"
           ],
           "entities": [
             "Access",
@@ -139,33 +288,28 @@
             "security"
           ]
         },
-        "processed_at": "2026-05-12T02:58:13.302341Z",
+        "processed_at": "2026-06-22T00:28:30.419320Z",
         "source_job": "policy_documents",
-        "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@example.com for exceptions."
+        "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@veloxsdemo.com for exceptions."
       },
-      "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@example.com for exceptions."
+      "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@veloxsdemo.com for exceptions."
     },
     "doc-002:0": {
       "collection": "policy_documents",
       "id": "doc-002:0",
       "metadata": {
-        "classification": "finance",
-        "dates": [
-          "2026-07-01"
-        ],
-        "document_title": "Invoice Handling Procedure",
-        "emails": [
-          "ap@example.com"
-        ],
+        "classification": "security",
+        "dates": [],
+        "document_title": "Data Encryption Standard",
+        "emails": [],
         "entities": [
-          "Invoice Handling Procedure Invoices",
-          "Revenue",
-          "Send"
+          "Data Encryption Standard Confidential",
+          "Keys"
         ],
         "money": [],
         "source_primary_key": "doc-002",
         "tags": [
-          "finance"
+          "security"
         ]
       },
       "source": {
@@ -173,13 +317,104 @@
         "chunk_index": 0,
         "document_id": "doc-002",
         "metadata": {
-          "classification": "finance",
-          "dates": [
-            "2026-07-01"
+          "classification": "security",
+          "dates": [],
+          "document_title": "Data Encryption Standard",
+          "emails": [],
+          "entities": [
+            "Data Encryption Standard Confidential",
+            "Keys"
           ],
+          "money": [],
+          "source_primary_key": "doc-002",
+          "tags": [
+            "security"
+          ]
+        },
+        "processed_at": "2026-06-22T00:28:30.419346Z",
+        "source_job": "policy_documents",
+        "text": "Confidential data must be encrypted at rest and in transit using approved algorithms. TLS 1.2 or higher is required for all access to internal systems. Keys are rotated annually."
+      },
+      "text": "Confidential data must be encrypted at rest and in transit using approved algorithms. TLS 1.2 or higher is required for all access to internal systems. Keys are rotated annually."
+    },
+    "doc-003:0": {
+      "collection": "policy_documents",
+      "id": "doc-003:0",
+      "metadata": {
+        "classification": "security",
+        "dates": [],
+        "document_title": "Account Access Review Procedure",
+        "emails": [],
+        "entities": [
+          "Account Access Review Procedure Access",
+          "Privileged",
+          "Quarterly"
+        ],
+        "money": [],
+        "source_primary_key": "doc-003",
+        "tags": [
+          "customer",
+          "security"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-003:0",
+        "chunk_index": 0,
+        "document_id": "doc-003",
+        "metadata": {
+          "classification": "security",
+          "dates": [],
+          "document_title": "Account Access Review Procedure",
+          "emails": [],
+          "entities": [
+            "Account Access Review Procedure Access",
+            "Privileged",
+            "Quarterly"
+          ],
+          "money": [],
+          "source_primary_key": "doc-003",
+          "tags": [
+            "customer",
+            "security"
+          ]
+        },
+        "processed_at": "2026-06-22T00:28:30.419365Z",
+        "source_job": "policy_documents",
+        "text": "Access to customer accounts follows least privilege. Quarterly access reviews remove stale permissions. Privileged access requires manager approval and is logged for audit."
+      },
+      "text": "Access to customer accounts follows least privilege. Quarterly access reviews remove stale permissions. Privileged access requires manager approval and is logged for audit."
+    },
+    "doc-004:0": {
+      "collection": "policy_documents",
+      "id": "doc-004:0",
+      "metadata": {
+        "classification": "finance",
+        "dates": [],
+        "document_title": "Invoice Handling Procedure",
+        "emails": [
+          "ap@veloxsdemo.com"
+        ],
+        "entities": [
+          "Invoice Handling Procedure Invoices",
+          "Revenue",
+          "Send"
+        ],
+        "money": [],
+        "source_primary_key": "doc-004",
+        "tags": [
+          "finance"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-004:0",
+        "chunk_index": 0,
+        "document_id": "doc-004",
+        "metadata": {
+          "classification": "finance",
+          "dates": [],
           "document_title": "Invoice Handling Procedure",
           "emails": [
-            "ap@example.com"
+            "ap@veloxsdemo.com"
           ],
           "entities": [
             "Invoice Handling Procedure Invoices",
@@ -187,101 +422,317 @@
             "Send"
           ],
           "money": [],
-          "source_primary_key": "doc-002",
+          "source_primary_key": "doc-004",
           "tags": [
             "finance"
           ]
         },
-        "processed_at": "2026-05-12T02:58:13.302364Z",
+        "processed_at": "2026-06-22T00:28:30.419382Z",
         "source_job": "policy_documents",
-        "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require approval. Send questions to ap@example.com by 2026-07-01."
+        "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require finance approval. Send invoice questions to ap@veloxsdemo.com by the monthly close date."
       },
-      "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require approval. Send questions to ap@example.com by 2026-07-01."
+      "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require finance approval. Send invoice questions to ap@veloxsdemo.com by the monthly close date."
+    },
+    "doc-005:0": {
+      "collection": "policy_documents",
+      "id": "doc-005:0",
+      "metadata": {
+        "classification": "finance",
+        "dates": [],
+        "document_title": "Payment and Refund Policy",
+        "emails": [],
+        "entities": [
+          "Disputed",
+          "Payment",
+          "Refund Policy Customer",
+          "Refunds"
+        ],
+        "money": [],
+        "source_primary_key": "doc-005",
+        "tags": [
+          "finance"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-005:0",
+        "chunk_index": 0,
+        "document_id": "doc-005",
+        "metadata": {
+          "classification": "finance",
+          "dates": [],
+          "document_title": "Payment and Refund Policy",
+          "emails": [],
+          "entities": [
+            "Disputed",
+            "Payment",
+            "Refund Policy Customer",
+            "Refunds"
+          ],
+          "money": [],
+          "source_primary_key": "doc-005",
+          "tags": [
+            "finance"
+          ]
+        },
+        "processed_at": "2026-06-22T00:28:30.419399Z",
+        "source_job": "policy_documents",
+        "text": "Customer payments are reconciled weekly. Refunds above the threshold require finance approval. Disputed invoices are escalated to the revenue team within two business days."
+      },
+      "text": "Customer payments are reconciled weekly. Refunds above the threshold require finance approval. Disputed invoices are escalated to the revenue team within two business days."
+    },
+    "doc-006:0": {
+      "collection": "policy_documents",
+      "id": "doc-006:0",
+      "metadata": {
+        "classification": "customer",
+        "dates": [],
+        "document_title": "Customer Support SLA",
+        "emails": [],
+        "entities": [
+          "Critical",
+          "Customer Support",
+          "Renewal",
+          "Support"
+        ],
+        "money": [],
+        "source_primary_key": "doc-006",
+        "tags": [
+          "customer"
+        ]
+      },
+      "source": {
+        "chunk_id": "doc-006:0",
+        "chunk_index": 0,
+        "document_id": "doc-006",
+        "metadata": {
+          "classification": "customer",
+          "dates": [],
+          "document_title": "Customer Support SLA",
+          "emails": [],
+          "entities": [
+            "Critical",
+            "Customer Support",
+            "Renewal",
+            "Support"
+          ],
+          "money": [],
+          "source_primary_key": "doc-006",
+          "tags": [
+            "customer"
+          ]
+        },
+        "processed_at": "2026-06-22T00:28:30.419416Z",
+        "source_job": "policy_documents",
+        "text": "Support requests receive a first response within four business hours. Renewal and account questions are routed to customer success. Critical issues are escalated to on-call support."
+      },
+      "text": "Support requests receive a first response within four business hours. Renewal and account questions are routed to customer success. Critical issues are escalated to on-call support."
     }
   },
   "postings": {
     "01": {
-      "doc-002:0": 1
+      "c003": 1
+    },
+    "0132": {
+      "c001": 1
     },
     "06": {
       "c001": 1
     },
     "07": {
+      "c005": 1
+    },
+    "09": {
+      "c003": 1
+    },
+    "1": {
       "doc-002:0": 1
+    },
+    "10": {
+      "c005": 1
     },
     "15": {
       "c001": 1
     },
+    "2": {
+      "doc-002:0": 1
+    },
     "2026": {
       "c001": 1,
-      "doc-002:0": 1
+      "c003": 1,
+      "c005": 1
+    },
+    "415": {
+      "c001": 1
+    },
+    "555": {
+      "c001": 1
+    },
+    "a": {
+      "doc-006:0": 1
     },
     "about": {
       "c001": 1
     },
+    "above": {
+      "doc-005:0": 1
+    },
     "access": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-002:0": 1,
+      "doc-003:0": 3
     },
     "account": {
-      "c001": 1
+      "c001": 1,
+      "doc-006:0": 1
+    },
+    "accounts": {
+      "doc-003:0": 1
     },
     "acme": {
       "c001": 2
     },
     "adjustments": {
+      "doc-004:0": 1
+    },
+    "algorithms": {
       "doc-002:0": 1
     },
     "all": {
-      "doc-001:0": 1
-    },
-    "ap": {
-      "doc-002:0": 1
-    },
-    "approval": {
-      "doc-002:0": 1
-    },
-    "are": {
-      "doc-001:0": 1
-    },
-    "be": {
-      "doc-002:0": 1
-    },
-    "before": {
-      "doc-002:0": 1
-    },
-    "by": {
-      "doc-002:0": 1
-    },
-    "com": {
-      "c001": 1,
       "doc-001:0": 1,
       "doc-002:0": 1
     },
+    "and": {
+      "c005": 1,
+      "doc-002:0": 1,
+      "doc-003:0": 1,
+      "doc-006:0": 1
+    },
+    "annually": {
+      "doc-002:0": 1
+    },
+    "ap": {
+      "doc-004:0": 1
+    },
+    "approval": {
+      "doc-003:0": 1,
+      "doc-004:0": 1,
+      "doc-005:0": 1
+    },
+    "approved": {
+      "doc-002:0": 1
+    },
+    "are": {
+      "doc-001:0": 1,
+      "doc-002:0": 1,
+      "doc-005:0": 2,
+      "doc-006:0": 2
+    },
+    "at": {
+      "c004": 1,
+      "doc-002:0": 1
+    },
+    "audit": {
+      "doc-003:0": 1
+    },
+    "be": {
+      "doc-002:0": 1,
+      "doc-004:0": 1
+    },
+    "before": {
+      "doc-004:0": 1
+    },
+    "business": {
+      "doc-005:0": 1,
+      "doc-006:0": 1
+    },
+    "by": {
+      "c005": 1,
+      "doc-004:0": 1
+    },
+    "call": {
+      "c001": 1,
+      "doc-006:0": 1
+    },
+    "close": {
+      "doc-004:0": 1
+    },
+    "com": {
+      "c001": 1,
+      "c003": 1,
+      "doc-001:0": 1,
+      "doc-004:0": 1
+    },
     "confidential": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-002:0": 1
     },
     "contact": {
       "c001": 1,
+      "c003": 1,
+      "c005": 1,
       "doc-001:0": 1
+    },
+    "controls": {
+      "c005": 1
     },
     "corp": {
       "c001": 1
     },
+    "critical": {
+      "doc-006:0": 1
+    },
+    "customer": {
+      "doc-003:0": 1,
+      "doc-005:0": 1,
+      "doc-006:0": 1
+    },
+    "dana": {
+      "c005": 1
+    },
+    "data": {
+      "doc-002:0": 1
+    },
+    "date": {
+      "doc-004:0": 1
+    },
+    "days": {
+      "doc-005:0": 1
+    },
     "discussion": {
       "c002": 1
+    },
+    "disputed": {
+      "doc-005:0": 1
+    },
+    "disputes": {
+      "c004": 1
     },
     "doe": {
       "c001": 1
     },
+    "due": {
+      "c003": 1
+    },
     "employees": {
       "doc-001:0": 1
     },
+    "encrypted": {
+      "doc-002:0": 1
+    },
     "encryption": {
+      "c005": 1,
       "doc-001:0": 1
     },
+    "escalated": {
+      "c004": 1,
+      "doc-005:0": 1,
+      "doc-006:0": 1
+    },
+    "evaluating": {
+      "c005": 1
+    },
     "example": {
-      "doc-001:0": 1,
-      "doc-002:0": 1
+      "c005": 1
     },
     "exceptions": {
       "doc-001:0": 1
@@ -293,25 +744,85 @@
       "doc-001:0": 1
     },
     "finance": {
-      "c002": 1
+      "c002": 1,
+      "c004": 1,
+      "doc-004:0": 1,
+      "doc-005:0": 1
+    },
+    "first": {
+      "doc-006:0": 1
+    },
+    "follows": {
+      "doc-003:0": 1
     },
     "for": {
-      "doc-001:0": 3
+      "doc-001:0": 3,
+      "doc-002:0": 1,
+      "doc-003:0": 1
+    },
+    "four": {
+      "doc-006:0": 1
+    },
+    "globex": {
+      "c003": 2
     },
     "has": {
       "c001": 1
     },
-    "impacting": {
+    "health": {
+      "c005": 1
+    },
+    "higher": {
       "doc-002:0": 1
+    },
+    "hours": {
+      "doc-006:0": 1
+    },
+    "impacting": {
+      "doc-004:0": 1
+    },
+    "in": {
+      "doc-002:0": 1
+    },
+    "initech": {
+      "c004": 1
+    },
+    "internal": {
+      "doc-002:0": 1
+    },
+    "invoice": {
+      "c004": 1,
+      "doc-004:0": 1
     },
     "invoices": {
-      "doc-002:0": 1
+      "doc-004:0": 1,
+      "doc-005:0": 1
     },
     "is": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-002:0": 1,
+      "doc-003:0": 1
+    },
+    "issues": {
+      "doc-006:0": 1
     },
     "jane": {
       "c001": 1
+    },
+    "keys": {
+      "doc-002:0": 1
+    },
+    "last": {
+      "c004": 1
+    },
+    "least": {
+      "doc-003:0": 1
+    },
+    "logged": {
+      "doc-003:0": 1
+    },
+    "manager": {
+      "doc-003:0": 1
     },
     "mandatory": {
       "doc-001:0": 1
@@ -322,9 +833,13 @@
     "month": {
       "c002": 1
     },
+    "monthly": {
+      "doc-004:0": 1
+    },
     "must": {
       "doc-001:0": 1,
-      "doc-002:0": 1
+      "doc-002:0": 1,
+      "doc-004:0": 1
     },
     "next": {
       "c002": 1
@@ -333,73 +848,202 @@
       "c002": 1
     },
     "on": {
-      "c001": 1
+      "c001": 1,
+      "doc-006:0": 1
     },
     "open": {
       "c001": 1
     },
-    "payment": {
-      "c002": 1,
-      "doc-002:0": 1
-    },
-    "quarterly": {
-      "doc-001:0": 1
-    },
-    "questions": {
+    "or": {
       "c001": 1,
       "doc-002:0": 1
     },
+    "payment": {
+      "c002": 1,
+      "doc-004:0": 1
+    },
+    "payments": {
+      "doc-005:0": 1
+    },
+    "permissions": {
+      "doc-003:0": 1
+    },
+    "primary": {
+      "c003": 1
+    },
+    "privilege": {
+      "doc-003:0": 1
+    },
+    "privileged": {
+      "doc-003:0": 1
+    },
+    "quarter": {
+      "c004": 1
+    },
+    "quarterly": {
+      "doc-001:0": 1,
+      "doc-003:0": 1
+    },
+    "questions": {
+      "c001": 1,
+      "doc-004:0": 1,
+      "doc-006:0": 1
+    },
+    "receive": {
+      "doc-006:0": 1
+    },
+    "reconciled": {
+      "doc-005:0": 1
+    },
+    "refunds": {
+      "doc-005:0": 1
+    },
+    "remove": {
+      "doc-003:0": 1
+    },
     "renewal": {
-      "c001": 1
+      "c001": 1,
+      "c003": 1,
+      "c004": 1,
+      "doc-006:0": 1
+    },
+    "requests": {
+      "doc-006:0": 1
     },
     "require": {
-      "doc-002:0": 1
+      "doc-004:0": 1,
+      "doc-005:0": 1
     },
     "required": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-002:0": 1
+    },
+    "requires": {
+      "doc-003:0": 1
+    },
+    "response": {
+      "doc-006:0": 1
+    },
+    "rest": {
+      "doc-002:0": 1
     },
     "revenue": {
       "c002": 1,
-      "doc-002:0": 1
+      "doc-004:0": 1,
+      "doc-005:0": 1
     },
     "review": {
       "c002": 1
     },
     "reviewed": {
-      "doc-002:0": 1
+      "doc-004:0": 1
+    },
+    "reviewing": {
+      "c004": 1
     },
     "reviews": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-003:0": 1
+    },
+    "risk": {
+      "c004": 1
+    },
+    "rotated": {
+      "doc-002:0": 1
+    },
+    "routed": {
+      "doc-006:0": 1
+    },
+    "sam": {
+      "c003": 1
+    },
+    "satisfaction": {
+      "c003": 1
     },
     "scheduled": {
       "c002": 1
     },
     "security": {
+      "c005": 1,
       "doc-001:0": 1
     },
     "send": {
-      "doc-002:0": 1
+      "doc-004:0": 1
     },
     "sensitive": {
       "doc-001:0": 1
     },
+    "stale": {
+      "doc-003:0": 1
+    },
+    "strong": {
+      "c003": 1
+    },
+    "success": {
+      "doc-006:0": 1
+    },
     "support": {
-      "c001": 1
+      "c001": 1,
+      "c003": 1,
+      "c004": 1,
+      "doc-006:0": 2
     },
     "systems": {
-      "doc-001:0": 1
+      "doc-001:0": 1,
+      "doc-002:0": 1
     },
     "team": {
-      "c002": 1
+      "c002": 1,
+      "doc-005:0": 1
+    },
+    "the": {
+      "doc-004:0": 1,
+      "doc-005:0": 2
+    },
+    "threshold": {
+      "doc-005:0": 1
+    },
+    "tickets": {
+      "c004": 1
+    },
+    "tls": {
+      "doc-002:0": 1
     },
     "to": {
+      "doc-002:0": 1,
+      "doc-003:0": 1,
+      "doc-004:0": 1,
+      "doc-005:0": 1,
+      "doc-006:0": 2
+    },
+    "transit": {
       "doc-002:0": 1
+    },
+    "two": {
+      "doc-005:0": 1
+    },
+    "umbrella": {
+      "c005": 2
     },
     "use": {
       "doc-001:0": 1
     },
+    "using": {
+      "doc-002:0": 1
+    },
+    "veloxsdemo": {
+      "doc-001:0": 1,
+      "doc-004:0": 1
+    },
+    "weekly": {
+      "doc-005:0": 1
+    },
     "with": {
       "c002": 1
+    },
+    "within": {
+      "doc-005:0": 1,
+      "doc-006:0": 1
     }
   }
 }

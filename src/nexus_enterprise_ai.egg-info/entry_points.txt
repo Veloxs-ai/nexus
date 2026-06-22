@@ -1,0 +1,2 @@
+[console_scripts]
+nexus = nexus.cli:app

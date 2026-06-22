@@ -1,0 +1,353 @@
+Metadata-Version: 2.4
+Name: enterprise-data-pipeline
+Version: 0.1.0
+Summary: Enterprise data ingestion framework for APIs, streaming, batch, and CDC pipelines.
+Author-email: "Veloxs AI Inc." <hello@veloxs.ai>
+License-Expression: LicenseRef-Veloxs-AI-Proprietary
+Project-URL: Homepage, https://github.com/Veloxs-ai/nexus
+Project-URL: Documentation, https://github.com/Veloxs-ai/nexus/blob/main/docs/USING_NEXUS.md
+Project-URL: Repository, https://github.com/Veloxs-ai/nexus
+Project-URL: Issues, https://github.com/Veloxs-ai/nexus/issues
+Project-URL: Security, https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: typer>=0.12.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+
+# Enterprise Data Pipeline
+
+This project is a starter framework for ingesting and integrating data from enterprise source systems into a platform with reliable, scalable, near real-time data movement.
+
+It includes pipeline paths for:
+
+- **APIs & Connectors**: Standardized and custom integrations for enterprise systems and external services.
+- **Streaming Ingestion**: Event-driven ingestion for low-latency processing.
+- **Batch Processing**: Scheduled large-scale transfers with checkpointing.
+- **Change Data Capture (CDC)**: Incremental synchronization from source-system changes.
+
+## Current Status
+
+The project has the control-plane structure, configuration model, validation logic, checkpointing, CLI commands, and tests.
+
+Some production adapters are intentionally left as extension points:
+
+- `RestApiConnector` has a real HTTP pagination implementation.
+- `FileDropConnector` reads local JSONL, JSON, and CSV files for development; S3/MinIO adapters can be added behind the same contract.
+- `KafkaStreamConnector` reads local JSONL event streams for development; Kafka/Redpanda consumption can be added behind the same contract.
+- CDC normalization supports Debezium-style messages when passed into `run_cdc`; live Kafka CDC consumption can be added behind the same contract.
+
+## Project Layout
+
+```text
+enterprise-data-pipeline/
+  configs/
+    sources.yaml
+  docs/
+    architecture.md
+  src/nexus_pipeline/
+    batch.py
+    cdc.py
+    cli.py
+    config.py
+    integrity.py
+    models.py
+    streaming.py
+    connectors/
+      api.py
+      base.py
+  tests/
+    conftest.py
+    test_api_connector.py
+    test_batch.py
+    test_cdc.py
+    test_cli.py
+    test_config.py
+    test_integrity.py
+    test_streaming.py
+  docker-compose.yml
+  pyproject.toml
+```
+
+## Prerequisites
+
+Install these before running the project:
+
+- Python 3.11 or newer
+- `pip`
+- Docker Desktop, if you want to run local Redpanda, Postgres, and MinIO
+
+Check your Python version:
+
+```bash
+python3 --version
+```
+
+## Setup
+
+From the repository root:
+
+```bash
+cd path/to/nexus/enterprise-data-pipeline
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+After installation, the `pipeline` CLI command should be available:
+
+```bash
+pipeline --help
+```
+
+If you do not install the package, you can still run commands with:
+
+```bash
+PYTHONPATH=src python -m nexus_pipeline.cli --help
+```
+
+## Configuration
+
+Pipeline sources are configured in [configs/sources.yaml](configs/sources.yaml).
+
+Each source defines:
+
+- `mode`: `api`, `batch`, `streaming`, or `cdc`
+- `connector`: connector implementation name
+- `destination`: target platform dataset
+- `primary_key`: idempotency and deduplication key
+- `event_time_field`: timestamp used for ordering and checkpoints
+- `connection`: source-specific settings
+- `schema.required_fields`: required fields for validation
+
+Example source:
+
+```yaml
+customer_events:
+  mode: streaming
+  connector: kafka
+  destination: event.customer_activity
+  primary_key: event_id
+  event_time_field: occurred_at
+  connection:
+    bootstrap_servers: localhost:9092
+    topic: customer.events
+    consumer_group: nexus-customer-events
+  schema:
+    required_fields:
+      - event_id
+      - customer_id
+      - event_type
+      - occurred_at
+```
+
+Secrets should be supplied through environment variables. Do not commit secrets to the config file.
+
+For the sample API source:
+
+```bash
+export CRM_API_TOKEN="replace-with-token"
+```
+
+## Local Infrastructure
+
+Start local development services:
+
+```bash
+docker compose up -d
+```
+
+This starts:
+
+- Redpanda on `localhost:9092` for Kafka-compatible streaming
+- Postgres on `localhost:5432`
+- MinIO on `localhost:9000` with console on `localhost:9001`
+
+Stop services:
+
+```bash
+docker compose down
+```
+
+Stop services and remove local volumes:
+
+```bash
+docker compose down -v
+```
+
+## Validate The Config
+
+Run:
+
+```bash
+pipeline validate-config configs/sources.yaml
+```
+
+Expected output:
+
+```text
+Loaded 4 sources.
+```
+
+Without package installation:
+
+```bash
+PYTHONPATH=src python -m nexus_pipeline.cli validate-config configs/sources.yaml
+```
+
+## Run API Ingestion
+
+The sample API source is `crm_accounts`.
+
+```bash
+export CRM_API_TOKEN="replace-with-token"
+pipeline run-api configs/sources.yaml crm_accounts
+```
+
+This command:
+
+- reads the last checkpoint from `.checkpoints/crm_accounts.checkpoint`
+- calls the configured REST endpoint
+- validates required fields
+- deduplicates by `account_id`
+- writes the latest checkpoint after valid records are processed
+
+## Run Batch Processing
+
+The sample batch source is `finance_transactions`.
+
+```bash
+pipeline run-batch configs/sources.yaml finance_transactions
+```
+
+This command currently exercises the batch control flow:
+
+- reads the previous checkpoint
+- invokes `FileDropConnector`
+- validates records
+- writes the latest checkpoint
+
+The default development config reads `data/raw/finance_transactions.jsonl`. Enterprise deployments can point `source_uri` at an object-store location and add the matching adapter.
+
+## Run Streaming Ingestion
+
+The sample streaming source is `customer_events`.
+
+```bash
+pipeline run-stream configs/sources.yaml customer_events
+```
+
+This command currently exercises the streaming control flow:
+
+- creates a stream connector
+- reads stream records
+- validates records
+- returns normalized `DataEvent` objects
+
+The default development config reads `data/raw/customer_events.jsonl`. Enterprise deployments can remove `source_uri` and use the configured Kafka settings with a production adapter.
+
+## Run CDC Processing
+
+The sample CDC source is `erp_orders`.
+
+```bash
+pipeline run-cdc configs/sources.yaml erp_orders
+```
+
+This command currently exercises the CDC control flow. The `cdc.py` module can normalize Debezium-style messages passed to `run_cdc`, including:
+
+- `c` and `r` as inserts
+- `u` as updates
+- `d` as deletes using the `before` image
+
+Important: the live Kafka CDC consumer is not implemented yet.
+
+## Run Tests
+
+Run all tests:
+
+```bash
+python -m pytest
+```
+
+Run a single test file:
+
+```bash
+python -m pytest tests/test_batch.py
+```
+
+Run tests with verbose output:
+
+```bash
+python -m pytest -v
+```
+
+Current expected result:
+
+```text
+15 passed
+```
+
+## Checkpoints
+
+Checkpoints are stored under the path configured in `configs/sources.yaml`:
+
+```yaml
+platform:
+  checkpoint_store: .checkpoints
+```
+
+Each source writes a checkpoint file like:
+
+```text
+.checkpoints/crm_accounts.checkpoint
+.checkpoints/finance_transactions.checkpoint
+```
+
+The checkpoint value is the latest valid event timestamp processed for that source.
+
+## Data Integrity Behavior
+
+The starter code includes:
+
+- required field validation
+- primary-key deduplication within a run
+- event timestamp parsing
+- latest-checkpoint calculation
+- consistent `DataEvent` envelopes
+- CDC operation mapping for insert, update, and delete
+
+Invalid records are collected in validation results. A production implementation should also write invalid records to the configured dead-letter location.
+
+## Development Notes
+
+Useful files:
+
+- [src/nexus_pipeline/config.py](src/nexus_pipeline/config.py): loads and validates pipeline config
+- [src/nexus_pipeline/integrity.py](src/nexus_pipeline/integrity.py): validation, dedupe, and checkpoints
+- [src/nexus_pipeline/connectors/api.py](src/nexus_pipeline/connectors/api.py): REST API connector
+- [src/nexus_pipeline/batch.py](src/nexus_pipeline/batch.py): batch processing path
+- [src/nexus_pipeline/streaming.py](src/nexus_pipeline/streaming.py): streaming processing path
+- [src/nexus_pipeline/cdc.py](src/nexus_pipeline/cdc.py): CDC normalization
+- [src/nexus_pipeline/cli.py](src/nexus_pipeline/cli.py): CLI commands
+
+## Recommended Next Implementation Steps
+
+1. Add mode validation to `run-batch`, `run-stream`, and `run-cdc`.
+2. Implement `FileDropConnector` for local files and S3-compatible object storage.
+3. Implement `KafkaStreamConnector` with Redpanda/Kafka consumption and offset commits.
+4. Add a destination writer for the target platform.
+5. Persist invalid records to the dead-letter URI.
+6. Add structured logging, metrics, retries, and OpenTelemetry traces.

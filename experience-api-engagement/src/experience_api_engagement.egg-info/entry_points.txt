@@ -1,0 +1,2 @@
+[console_scripts]
+experience = nexus_experience.cli:app
