@@ -14,3 +14,7 @@ data/**/spans.jsonl
 data/**/alerts.jsonl
 *.egg-info/
 .venv-demo/
+
+# Generated demo artifacts (rebuilt by `nexus prepare-demo`) — keep raw inputs only
+**/data/processed/*.jsonl
+**/data/indexes/*.json
