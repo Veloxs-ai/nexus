@@ -12,5 +12,13 @@ data/**/metrics.jsonl
 data/**/logs.jsonl
 data/**/spans.jsonl
 data/**/alerts.jsonl
-
+*.egg-info/
 .venv-demo/
+
+<<<<<<< HEAD
+.venv-demo/
+=======
+# Generated demo artifacts (rebuilt by `nexus prepare-demo`) — keep raw inputs only
+**/data/processed/*.jsonl
+**/data/indexes/*.json
+>>>>>>> 03cf9007e8c5dba66f9527ba9d60705cac02becd
