@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import json
 from pydantic import BaseModel, Field
 
 from nexus_experience.models import ChannelType
@@ -73,7 +73,20 @@ class EngagementConfig(BaseModel):
     channels: dict[str, ChannelConfig]
 
 
+def _load_raw(path: Path):
+    """Parse JSON (stdlib) natively; YAML only when PyYAML is installed (optional extra)."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        try:
+            import yaml
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                f"{path} is YAML, but PyYAML is not installed. Use a JSON config "
+                "or install the optional extra: pip install experience-api-engagement[yaml]"
+            ) from exc
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
 def load_config(path: Path) -> EngagementConfig:
-    with path.open("r", encoding="utf-8") as config_file:
-        raw = yaml.safe_load(config_file)
-    return EngagementConfig.model_validate(raw)
+    return EngagementConfig.model_validate(_load_raw(path))

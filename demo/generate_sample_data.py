@@ -60,7 +60,7 @@ def _write(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     _write(RAW / "policy_documents.jsonl", POLICY_DOCUMENTS)
     _write(RAW / "customer_profiles.jsonl", CUSTOMER_PROFILES)
-    print("Sample enterprise data generated. Next: nexus prepare-demo configs/nexus.yaml")
+    print("Sample enterprise data generated. Next: nexus prepare-demo configs/nexus.json")
 
 
 if __name__ == "__main__":

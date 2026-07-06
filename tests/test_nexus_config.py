@@ -14,7 +14,7 @@ from nexus.config import load_config
 
 
 def test_load_config_parses_all_layers():
-    config = load_config(Path("configs/nexus.yaml"))
+    config = load_config(Path("configs/nexus.json"))
 
     assert config.platform.name == "Nexus Enterprise AI Platform"
     assert len(config.layers) == 7

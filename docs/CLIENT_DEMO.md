@@ -64,22 +64,22 @@ vector + lexical + graph indexes. ~instant, all local.
 Ask ad-hoc questions:
 ```bash
 source .venv-demo/bin/activate
-PYTHONPATH=src python -m nexus.cli ask configs/nexus.yaml "How are access reviews done?"
+PYTHONPATH=src python -m nexus.cli ask configs/nexus.json "How are access reviews done?"
 ```
 Swap in the client's data by editing the two raw files (same JSON shape), then rebuild:
 ```bash
 # data-processing-enrichment/data/raw/policy_documents.jsonl   {document_id,title,department,body}
 # data-processing-enrichment/data/raw/customer_profiles.jsonl  {customer_id,customer_name,status,notes}
-PYTHONPATH=src python -m nexus.cli prepare-demo configs/nexus.yaml
+PYTHONPATH=src python -m nexus.cli prepare-demo configs/nexus.json
 ```
 Keep questions within the configured topics (security, access, MFA, encryption, invoice,
 payment, finance, customer, renewal, support, data) — tunable in
-`orchestration-guardrails/configs/guardrails.yaml`.
+`orchestration-guardrails/configs/guardrails.json`.
 
 ---
 
 ## Proof it's offline
-- Retrieval uses `provider: local_hashing` (see `embedding-retrieval-intelligence/configs/retrieval.yaml`) — deterministic local embeddings, **no model download**.
+- Retrieval uses `provider: local_hashing` (see `embedding-retrieval-intelligence/configs/retrieval.json`) — deterministic local embeddings, **no model download**.
 - The only network code in the platform is the optional REST *ingestion* connector,
   which this demo does not use.
 - You can disconnect Wi-Fi before running `./demo/run_demo.sh` to prove it live.
@@ -106,18 +106,18 @@ Run the server yourself (leave it up for live calls):
 ```bash
 source .venv-demo/bin/activate
 PYTHONPATH=experience-api-engagement/src \
-NEXUS_EXPERIENCE_CONFIG=experience-api-engagement/configs/engagement.yaml \
+NEXUS_EXPERIENCE_CONFIG=experience-api-engagement/configs/engagement.json \
   uvicorn "nexus_experience.api:create_app" --factory --port 8099
 # then:  curl -s -X POST http://127.0.0.1:8099/v1/ask -H 'Content-Type: application/json' \
 #          -d '{"query":"How are access reviews done?","channel":"assistant"}'
 ```
 > Auth is disabled in the demo config. To require a key, add an `auth` block with
-> `enabled: true` + `api_keys` in `experience-api-engagement/configs/engagement.yaml`;
+> `enabled: true` + `api_keys` in `experience-api-engagement/configs/engagement.json`;
 > callers then send `X-API-Key: <key>`.
 
-## Optional — Veloxs Platform UI
+## Optional — Nexora Platform UI
 The no-code control plane (SSO, RBAC, drag-style pipeline building, KMS secrets). See
-the `veloxs-platform` project.
+the `nexora-platform` project.
 
 ---
 

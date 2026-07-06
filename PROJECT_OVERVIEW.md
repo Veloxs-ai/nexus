@@ -27,7 +27,7 @@ Nexus is engineered around several strict design principles to guarantee securit
 > * **Zero Inter-Layer Imports**: Layers never import code from one another. Integration occurs exclusively through shared JSONL data boundaries, file configurations, and CLI subprocess execution.
 > * **Zero Side Effects at Import Time**: Importing any module has no side effects, ensuring reproducible, lightweight startup times.
 > * **Fail-Closed Security**: Any configuration error, authorization mismatch, or policy violation defaults to a hard block.
-> * **Introspection-First Configuration**: Every layer's configuration is defined as a strongly typed Pydantic model. This allows external control planes (such as the `veloxs-platform` UI) to dynamically introspect schemas and render configuration forms automatically.
+> * **Introspection-First Configuration**: Every layer's configuration is defined as a strongly typed Pydantic model. This allows external control planes (such as the `nexora-platform` UI) to dynamically introspect schemas and render configuration forms automatically.
 
 ---
 

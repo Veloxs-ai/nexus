@@ -124,7 +124,8 @@ the corresponding layer's `tests/` directory.
 
 - API-key auth via FastAPI `Depends`; constant-time comparison
   (`hmac.compare_digest`).
-- Secrets accept `env:VAR_NAME` indirection so they never live in YAML.
+- Secrets accept `env:VAR_NAME` indirection so they never live in config
+  files.
 - Authenticated `Principal` is authoritative for identity — the request
   body's `user_id` is **not** trusted.
 - Pluggable `Authorizer` Protocol so integrators can wire
@@ -140,6 +141,9 @@ the corresponding layer's `tests/` directory.
 - `RestApiConnector` parses each `next` link from upstream responses and
   **refuses cross-origin or non-`http(s)` URLs** before any request is
   made.
+- **HTTP redirects are refused** (fail closed) — a redirect can silently
+  change origin, so the stdlib `urllib` opener raises
+  `ConnectorSecurityError` instead of following it.
 - Prevents bearer-token leakage, SSRF to cloud metadata services
   (e.g. `169.254.169.254`), and `file://` reads.
 
@@ -164,6 +168,35 @@ the corresponding layer's `tests/` directory.
 - No side effects at import time.
 - No `logging.basicConfig` or root-logger mutation in library code.
 - No `sys.path` or `os.environ` mutations at module load.
+
+### Supply chain (dependency policy)
+
+Nexus is **stdlib-first**: the entire platform runs with exactly two
+third-party runtime dependencies, chosen deliberately and reviewed on
+every upgrade.
+
+- **`pydantic`** — the typed config/schema contract every layer exposes.
+  Control planes (e.g. Nexora) introspect these models to render and
+  validate configuration; replacing it with hand-rolled parsing would
+  weaken validation, not strengthen it.
+- **`cryptography`** — AES/Fernet, HKDF, and the FF1 block-cipher
+  primitive. A pure-Python AES would itself be a vulnerability (timing
+  side channels, no audit trail); this is the industry-standard,
+  audited binding.
+
+Everything else is standard library: CLIs use `argparse`, HTTP ingestion
+uses `urllib` (redirects refused), configs are JSON via `json`.
+Optional extras, installed only when explicitly requested, never pulled
+in by default:
+
+- `[yaml]` → PyYAML, for YAML config files (always `yaml.safe_load`).
+- `[api]` (experience layer) → FastAPI + uvicorn for the REST service;
+  the core `create_service` path works without it.
+- `[dev]` → pytest and ruff, for development only.
+
+The FF1 format-preserving-encryption implementation is verified against
+the official NIST SP 800-38G test vectors in
+`data-processing-enrichment/tests/`.
 - No use of `eval`, `exec`, `pickle`, `os.system`, or `shell=True`.
 - `httpx` with TLS verification on by default; no `verify=False`
   anywhere.

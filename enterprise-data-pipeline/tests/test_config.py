@@ -15,7 +15,7 @@ from nexus_pipeline.models import IngestionMode
 
 
 def test_load_config_parses_platform_and_sources():
-    config = load_config(Path("configs/sources.yaml"))
+    config = load_config(Path("configs/sources.json"))
 
     assert config.platform.raw_landing_uri == "s3://enterprise-raw"
     assert set(config.sources) == {

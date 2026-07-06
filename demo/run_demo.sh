@@ -16,7 +16,7 @@ ask() {
   echo "────────────────────────────────────────────────────────"
   echo "▶ Question: $1"
   echo "────────────────────────────────────────────────────────"
-  run ask configs/nexus.yaml "$1"
+  run ask configs/nexus.json "$1"
 }
 
 echo "==> 1/2  Generating sample enterprise data (policies + customers, with PII)"
@@ -24,7 +24,7 @@ python demo/generate_sample_data.py
 
 echo
 echo "==> 2/2  Building the pipeline: ingest → process → index  (offline)"
-run prepare-demo configs/nexus.yaml
+run prepare-demo configs/nexus.json
 
 echo
 echo "========================================================================"

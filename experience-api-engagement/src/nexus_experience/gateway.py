@@ -110,9 +110,16 @@ def parse_guardrails_output(output: str) -> tuple[str, str, list[Citation], dict
             metadata["confidence"] = line.removeprefix("confidence: ").strip()
         elif line.startswith("citation: "):
             raw = line.removeprefix("citation: ").strip()
-            collection, rest = raw.split(":", 1)
-            source_id, score = rest.rsplit(":", 1)
-            citations.append(Citation(source_id=source_id, collection=collection, score=float(score)))
+            try:
+                collection, rest = raw.split(":", 1)
+                source_id, score = rest.rsplit(":", 1)
+                citations.append(
+                    Citation(source_id=source_id, collection=collection, score=float(score))
+                )
+            except ValueError:
+                # Fail closed on malformed lines: drop the citation rather than
+                # crash the gateway on unexpected subprocess output.
+                continue
     return decision, answer, citations, metadata
 
 def _is_within(path: Path, root: Path) -> bool:

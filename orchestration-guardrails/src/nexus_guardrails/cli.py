@@ -10,45 +10,61 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
-
-import typer
 
 from nexus_guardrails.config import load_config
 from nexus_guardrails.orchestrator import evaluate
 
-app = typer.Typer(help="AI orchestration and guardrails control plane.")
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="guardrails", description="AI orchestration and guardrails control plane."
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    validate_config = commands.add_parser("validate-config", help="Load and validate a guardrails config.")
+    validate_config.add_argument("config_path", type=Path)
+
+    check = commands.add_parser("check", help="Screen a query against the guardrail policies.")
+    check.add_argument("config_path", type=Path)
+    check.add_argument("query")
+
+    ask = commands.add_parser("ask", help="Run the full grounded ask flow.")
+    ask.add_argument("config_path", type=Path)
+    ask.add_argument("query")
+
+    return parser
 
 
-@app.command()
-def validate_config(config_path: Path) -> None:
-    config = load_config(config_path)
-    typer.echo(f"Loaded guardrails for tenant {config.tenant.id} with {len(config.policies)} policies.")
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = load_config(args.config_path)
+
+    if args.command == "validate-config":
+        print(f"Loaded guardrails for tenant {config.tenant.id} with {len(config.policies)} policies.")
+    elif args.command == "check":
+        response = evaluate(config, args.query, args.config_path.parent.parent)
+        print(f"decision: {response.decision}")
+        print(f"masked_query: {response.masked_query}")
+        for finding in response.findings:
+            print(f"{finding.severity}\t{finding.category}\t{finding.message}")
+    elif args.command == "ask":
+        response = evaluate(config, args.query, args.config_path.parent.parent)
+        print(f"decision: {response.decision}")
+        print(f"confidence: {response.confidence:.3f}")
+        print(f"answer: {response.answer}")
+        for citation in response.citations:
+            print(f"citation: {citation.collection}:{citation.source_id}:{citation.score:.3f}")
+        for finding in response.findings:
+            print(f"finding: {finding.severity}:{finding.category}:{finding.message}")
+    return 0
 
 
-@app.command()
-def check(config_path: Path, query: str) -> None:
-    config = load_config(config_path)
-    response = evaluate(config, query, config_path.parent.parent)
-    typer.echo(f"decision: {response.decision}")
-    typer.echo(f"masked_query: {response.masked_query}")
-    for finding in response.findings:
-        typer.echo(f"{finding.severity}\t{finding.category}\t{finding.message}")
-
-
-@app.command()
-def ask(config_path: Path, query: str) -> None:
-    config = load_config(config_path)
-    response = evaluate(config, query, config_path.parent.parent)
-    typer.echo(f"decision: {response.decision}")
-    typer.echo(f"confidence: {response.confidence:.3f}")
-    typer.echo(f"answer: {response.answer}")
-    for citation in response.citations:
-        typer.echo(f"citation: {citation.collection}:{citation.source_id}:{citation.score:.3f}")
-    for finding in response.findings:
-        typer.echo(f"finding: {finding.severity}:{finding.category}:{finding.message}")
+def app() -> None:
+    """Console-script entry point (kept for the `nexus_guardrails.cli:app` script target)."""
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":
-    app()
-
+    raise SystemExit(main())
