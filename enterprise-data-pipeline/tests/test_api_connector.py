@@ -12,50 +12,33 @@ from __future__ import annotations
 
 import pytest
 
-from nexus_pipeline.connectors.api import ConnectorSecurityError, RestApiConnector
+from nexus_pipeline.connectors.api import (
+    ConnectorSecurityError,
+    RestApiConnector,
+    _RefuseRedirects,
+)
 
 
-class FakeResponse:
-    def __init__(self, body):
-        self.body = body
-
-    def json(self):
-        return self.body
-
-    def raise_for_status(self):
-        return None
-
-
-class FakeClient:
+def install_fake_fetch(monkeypatch, responses):
     calls = []
-    responses = [
-        FakeResponse({"data": [{"id": "1"}], "next": "/v1/accounts?page=2"}),
-        FakeResponse({"data": [{"id": "2"}]}),
-    ]
 
-    def __init__(self, *, base_url, timeout):
-        self.base_url = base_url
-        self.timeout = timeout
+    def fake_fetch(url, headers):
+        calls.append({"url": url, "headers": headers})
+        return responses.pop(0)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return None
-
-    def get(self, path, *, headers, params):
-        self.calls.append({"path": path, "headers": headers, "params": params})
-        return self.responses.pop(0)
+    monkeypatch.setattr("nexus_pipeline.connectors.api._fetch_json", fake_fetch)
+    return calls
 
 
 def test_rest_api_connector_pages_and_uses_checkpoint(monkeypatch, make_source):
-    FakeClient.calls = []
-    FakeClient.responses = [
-        FakeResponse({"data": [{"id": "1"}], "next": "/v1/accounts?page=2"}),
-        FakeResponse({"data": [{"id": "2"}]}),
-    ]
+    calls = install_fake_fetch(
+        monkeypatch,
+        [
+            {"data": [{"id": "1"}], "next": "/v1/accounts?page=2"},
+            {"data": [{"id": "2"}]},
+        ],
+    )
     monkeypatch.setenv("CRM_API_TOKEN", "secret")
-    monkeypatch.setattr("nexus_pipeline.connectors.api.httpx.Client", FakeClient)
     source = make_source(
         connection={
             "base_url": "https://crm.example.com",
@@ -68,25 +51,21 @@ def test_rest_api_connector_pages_and_uses_checkpoint(monkeypatch, make_source):
     records = list(RestApiConnector(source).read("2026-05-06T00:00:00+00:00"))
 
     assert records == [{"id": "1"}, {"id": "2"}]
-    assert FakeClient.calls[0] == {
-        "path": "/v1/accounts",
-        "headers": {"Authorization": "Bearer secret"},
-        "params": {"limit": 100, "updated_after": "2026-05-06T00:00:00+00:00"},
-    }
-    assert FakeClient.calls[1] == {
-        "path": "/v1/accounts?page=2",
-        "headers": {"Authorization": "Bearer secret"},
-        "params": {},
-    }
+    assert calls[0]["url"] == (
+        "https://crm.example.com/v1/accounts"
+        "?limit=100&updated_after=2026-05-06T00%3A00%3A00%2B00%3A00"
+    )
+    assert calls[0]["headers"] == {"Authorization": "Bearer secret"}
+    assert calls[1]["url"] == "https://crm.example.com/v1/accounts?page=2"
+    assert calls[1]["headers"] == {"Authorization": "Bearer secret"}
 
 
 def test_rest_api_connector_refuses_cross_origin_next(monkeypatch, make_source):
-    FakeClient.calls = []
-    FakeClient.responses = [
-        FakeResponse({"data": [{"id": "1"}], "next": "http://attacker.example/leak"}),
-    ]
+    calls = install_fake_fetch(
+        monkeypatch,
+        [{"data": [{"id": "1"}], "next": "http://attacker.example/leak"}],
+    )
     monkeypatch.setenv("CRM_API_TOKEN", "secret")
-    monkeypatch.setattr("nexus_pipeline.connectors.api.httpx.Client", FakeClient)
     source = make_source(
         connection={
             "base_url": "https://crm.example.com",
@@ -98,16 +77,15 @@ def test_rest_api_connector_refuses_cross_origin_next(monkeypatch, make_source):
     with pytest.raises(ConnectorSecurityError):
         list(RestApiConnector(source).read())
 
-    assert all("attacker.example" not in call["path"] for call in FakeClient.calls)
+    assert all("attacker.example" not in call["url"] for call in calls)
 
 
 def test_rest_api_connector_refuses_ssrf_to_metadata_service(monkeypatch, make_source):
-    FakeClient.calls = []
-    FakeClient.responses = [
-        FakeResponse({"data": [], "next": "http://169.254.169.254/latest/meta-data/"}),
-    ]
+    install_fake_fetch(
+        monkeypatch,
+        [{"data": [], "next": "http://169.254.169.254/latest/meta-data/"}],
+    )
     monkeypatch.setenv("CRM_API_TOKEN", "secret")
-    monkeypatch.setattr("nexus_pipeline.connectors.api.httpx.Client", FakeClient)
     source = make_source(
         connection={
             "base_url": "https://crm.example.com",
@@ -121,12 +99,8 @@ def test_rest_api_connector_refuses_ssrf_to_metadata_service(monkeypatch, make_s
 
 
 def test_rest_api_connector_refuses_non_http_scheme(monkeypatch, make_source):
-    FakeClient.calls = []
-    FakeClient.responses = [
-        FakeResponse({"data": [], "next": "file:///etc/passwd"}),
-    ]
+    install_fake_fetch(monkeypatch, [{"data": [], "next": "file:///etc/passwd"}])
     monkeypatch.setenv("CRM_API_TOKEN", "secret")
-    monkeypatch.setattr("nexus_pipeline.connectors.api.httpx.Client", FakeClient)
     source = make_source(
         connection={
             "base_url": "https://crm.example.com",
@@ -139,16 +113,29 @@ def test_rest_api_connector_refuses_non_http_scheme(monkeypatch, make_source):
         list(RestApiConnector(source).read())
 
 
+def test_rest_api_connector_refuses_non_http_base_url(monkeypatch, make_source):
+    install_fake_fetch(monkeypatch, [])
+    source = make_source(
+        connection={
+            "base_url": "file:///srv/data",
+            "auth_env": "CRM_API_TOKEN",
+            "endpoint": "/v1/accounts",
+        }
+    )
+
+    with pytest.raises(ConnectorSecurityError):
+        list(RestApiConnector(source).read())
+
+
 def test_rest_api_connector_allows_same_origin_absolute_next(monkeypatch, make_source):
-    FakeClient.calls = []
-    FakeClient.responses = [
-        FakeResponse(
-            {"data": [{"id": "1"}], "next": "https://crm.example.com/v1/accounts?page=2"}
-        ),
-        FakeResponse({"data": [{"id": "2"}]}),
-    ]
+    install_fake_fetch(
+        monkeypatch,
+        [
+            {"data": [{"id": "1"}], "next": "https://crm.example.com/v1/accounts?page=2"},
+            {"data": [{"id": "2"}]},
+        ],
+    )
     monkeypatch.setenv("CRM_API_TOKEN", "secret")
-    monkeypatch.setattr("nexus_pipeline.connectors.api.httpx.Client", FakeClient)
     source = make_source(
         connection={
             "base_url": "https://crm.example.com",
@@ -161,3 +148,9 @@ def test_rest_api_connector_allows_same_origin_absolute_next(monkeypatch, make_s
 
     assert [record["id"] for record in records] == ["1", "2"]
 
+
+def test_redirect_handler_fails_closed():
+    handler = _RefuseRedirects()
+
+    with pytest.raises(ConnectorSecurityError):
+        handler.redirect_request(None, None, 302, "Found", {}, "https://attacker.example/")

@@ -1,2 +1,0 @@
-[console_scripts]
-guardrails = nexus_guardrails.cli:app

@@ -16,7 +16,7 @@ from nexus_processing.pipeline import hydrate_job_defaults
 
 
 def test_load_config_parses_jobs_and_integration():
-    config = load_config(Path("configs/processing.yaml"))
+    config = load_config(Path("configs/processing.json"))
 
     assert config.integration.upstream_project == "../enterprise-data-pipeline"
     assert config.integration.raw_landing_contract == "jsonl"
@@ -25,7 +25,7 @@ def test_load_config_parses_jobs_and_integration():
 
 
 def test_hydrate_job_defaults_applies_chunking_and_metadata():
-    config = hydrate_job_defaults(load_config(Path("configs/processing.yaml")))
+    config = hydrate_job_defaults(load_config(Path("configs/processing.json")))
 
     assert config.jobs["policy_documents"].chunking is not None
     assert config.jobs["policy_documents"].chunking.max_tokens == 80

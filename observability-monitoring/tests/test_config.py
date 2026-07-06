@@ -14,7 +14,7 @@ from nexus_observability.config import load_config
 
 
 def test_load_config_parses_services_exporters_and_integrations():
-    config = load_config(Path("configs/observability.yaml"))
+    config = load_config(Path("configs/observability.json"))
 
     assert len(config.services) == 7
     assert len(config.exporters) == 6

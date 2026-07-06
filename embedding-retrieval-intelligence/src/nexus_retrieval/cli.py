@@ -10,40 +10,54 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
-
-import typer
 
 from nexus_retrieval.config import load_config
 from nexus_retrieval.hybrid import search as run_search
 from nexus_retrieval.indexing import build_indexes
 
-app = typer.Typer(help="Embedding and retrieval intelligence control plane.")
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="retrieval", description="Embedding and retrieval intelligence control plane."
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    validate_config = commands.add_parser("validate-config", help="Load and validate a retrieval config.")
+    validate_config.add_argument("config_path", type=Path)
+
+    build_index = commands.add_parser("build-index", help="Build vector, lexical, and graph indexes.")
+    build_index.add_argument("config_path", type=Path)
+
+    search = commands.add_parser("search", help="Run a hybrid search query.")
+    search.add_argument("config_path", type=Path)
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=5)
+
+    return parser
 
 
-@app.command()
-def validate_config(config_path: Path) -> None:
-    config = load_config(config_path)
-    typer.echo(f"Loaded {len(config.collections)} retrieval collections.")
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = load_config(args.config_path)
+
+    if args.command == "validate-config":
+        print(f"Loaded {len(config.collections)} retrieval collections.")
+    elif args.command == "build-index":
+        count = build_indexes(config, args.config_path.parent.parent)
+        print(f"Indexed {count} documents.")
+    elif args.command == "search":
+        results = run_search(config, args.query, args.config_path.parent.parent, limit=args.limit)
+        for result in results:
+            print(f"{result.score:.3f}\t{result.collection}\t{result.id}\t{result.text[:120]}")
+    return 0
 
 
-@app.command()
-def build_index(config_path: Path) -> None:
-    config = load_config(config_path)
-    count = build_indexes(config, config_path.parent.parent)
-    typer.echo(f"Indexed {count} documents.")
-
-
-@app.command()
-def search(config_path: Path, query: str, limit: int = 5) -> None:
-    config = load_config(config_path)
-    results = run_search(config, query, config_path.parent.parent, limit=limit)
-    for result in results:
-        typer.echo(
-            f"{result.score:.3f}\t{result.collection}\t{result.id}\t{result.text[:120]}"
-        )
+def app() -> None:
+    """Console-script entry point (kept for the `nexus_retrieval.cli:app` script target)."""
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":
-    app()
-
+    raise SystemExit(main())

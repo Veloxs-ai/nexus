@@ -43,7 +43,7 @@ These are load-bearing — read before opening an internal change.
 ### 1. Clone (internal repository)
 
 ```bash
-git clone <internal-veloxs-repo-url> nexus
+git clone <internal-repo-url> nexus
 cd nexus
 ```
 

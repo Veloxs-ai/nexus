@@ -8,26 +8,55 @@
 #
 # SPDX-License-Identifier: LicenseRef-Veloxs-AI-Proprietary
 
-from typer.testing import CliRunner
+import json
 
-from nexus_observability.cli import app
-
-
-runner = CliRunner()
+from nexus_observability.cli import main
 
 
-def test_validate_config_command():
-    result = runner.invoke(app, ["validate-config", "configs/observability.yaml"])
+def write_config(tmp_path):
+    config_path = tmp_path / "observability.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "storage": {
+                    "metrics_uri": "metrics.jsonl",
+                    "logs_uri": "logs.jsonl",
+                    "traces_uri": "traces.jsonl",
+                    "ai_interactions_uri": "ai.jsonl",
+                    "alerts_uri": "alerts.jsonl",
+                },
+                "services": {
+                    "svc": {
+                        "layer": "test",
+                        "owner": "test",
+                        "slo_latency_ms": 100,
+                        "slo_error_rate": 0.01,
+                    }
+                },
+                "alerts": {
+                    "latency_ms_threshold": 100,
+                    "error_rate_threshold": 0.05,
+                    "min_ai_confidence": 0.5,
+                },
+                "exporters": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
-    assert result.exit_code == 0
-    assert "Loaded 7 monitored services and 6 exporters." in result.output
+
+def test_validate_config_command(capsys):
+    exit_code = main(["validate-config", "configs/observability.json"])
+
+    assert exit_code == 0
+    assert "Loaded 7 monitored services and 6 exporters." in capsys.readouterr().out
 
 
-def test_record_metric_command(tmp_path):
+def test_record_metric_command(tmp_path, capsys):
     config_path = write_config(tmp_path)
 
-    result = runner.invoke(
-        app,
+    exit_code = main(
         [
             "record-metric",
             str(config_path),
@@ -38,76 +67,45 @@ def test_record_metric_command(tmp_path):
             "histogram",
             "--tenant",
             "default",
-        ],
+        ]
     )
 
-    assert result.exit_code == 0
-    assert "metric_event_id:" in result.output
+    assert exit_code == 0
+    assert "metric_event_id:" in capsys.readouterr().out
 
 
-def test_log_command(tmp_path):
+def test_log_command(tmp_path, capsys):
     config_path = write_config(tmp_path)
 
-    result = runner.invoke(app, ["log", str(config_path), "svc", "info", "hello"])
+    exit_code = main(["log", str(config_path), "svc", "info", "hello"])
 
-    assert result.exit_code == 0
-    assert "log_event_id:" in result.output
+    assert exit_code == 0
+    assert "log_event_id:" in capsys.readouterr().out
 
 
-def test_trace_command(tmp_path):
+def test_trace_command(tmp_path, capsys):
     config_path = write_config(tmp_path)
 
-    result = runner.invoke(app, ["trace", str(config_path), "svc", "ask", "42", "trace-1"])
+    exit_code = main(["trace", str(config_path), "svc", "ask", "42", "trace-1"])
 
-    assert result.exit_code == 0
-    assert "span_id:" in result.output
+    assert exit_code == 0
+    assert "span_id:" in capsys.readouterr().out
 
 
-def test_record_ai_command(tmp_path):
+def test_record_ai_command(tmp_path, capsys):
     config_path = write_config(tmp_path)
 
-    result = runner.invoke(app, ["record-ai", str(config_path), "default", "allowed", "0.1", "1", "99"])
+    exit_code = main(["record-ai", str(config_path), "default", "allowed", "0.1", "1", "99"])
 
-    assert result.exit_code == 0
-    assert "ai_event_id:" in result.output
+    assert exit_code == 0
+    assert "ai_event_id:" in capsys.readouterr().out
 
 
-def test_evaluate_alerts_command(tmp_path):
+def test_evaluate_alerts_command(tmp_path, capsys):
     config_path = write_config(tmp_path)
-    runner.invoke(
-        app,
-        ["record-metric", str(config_path), "svc", "request_latency_ms", "500"],
-    )
+    main(["record-metric", str(config_path), "svc", "request_latency_ms", "500"])
 
-    result = runner.invoke(app, ["evaluate-alerts", str(config_path)])
+    exit_code = main(["evaluate-alerts", str(config_path)])
 
-    assert result.exit_code == 0
-    assert "alerts_written:" in result.output
-
-
-def write_config(tmp_path):
-    config_path = tmp_path / "observability.yaml"
-    config_path.write_text(
-        """
-storage:
-  metrics_uri: metrics.jsonl
-  logs_uri: logs.jsonl
-  traces_uri: traces.jsonl
-  ai_interactions_uri: ai.jsonl
-  alerts_uri: alerts.jsonl
-services:
-  svc:
-    layer: test
-    owner: test
-    slo_latency_ms: 100
-    slo_error_rate: 0.01
-alerts:
-  latency_ms_threshold: 100
-  error_rate_threshold: 0.05
-  min_ai_confidence: 0.5
-exporters: {}
-""",
-        encoding="utf-8",
-    )
-    return config_path
-
+    assert exit_code == 0
+    assert "alerts_written:" in capsys.readouterr().out

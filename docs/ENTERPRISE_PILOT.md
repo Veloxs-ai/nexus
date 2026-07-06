@@ -92,32 +92,32 @@ done
 
 ### Step 3 — Validate the platform
 ```bash
-nexus validate-platform configs/nexus.yaml
+nexus validate-platform configs/nexus.json
 # lists each layer as ready/missing and prints platform_ready: true
 ```
 
 ### Step 4 — Run the end-to-end demo
 ```bash
-nexus prepare-demo configs/nexus.yaml          # builds processed data + retrieval indexes
-nexus ask configs/nexus.yaml "What is MFA?"    # grounded, guardrailed answer + citations
+nexus prepare-demo configs/nexus.json          # builds processed data + retrieval indexes
+nexus ask configs/nexus.json "What is MFA?"    # grounded, guardrailed answer + citations
 ```
 You should get a decision, a grounded answer, and the sources it used.
 
 ### Step 5 — Point it at your data
-Each layer reads a YAML config (paths are listed in `configs/nexus.yaml`). To pilot on
+Each layer reads a YAML config (paths are listed in `configs/nexus.json`). To pilot on
 your own data, edit:
-- `enterprise-data-pipeline/configs/sources.yaml` — your source(s)
-- `data-processing-enrichment/configs/processing.yaml` — chunking/enrichment (and
+- `enterprise-data-pipeline/configs/sources.json` — your source(s)
+- `data-processing-enrichment/configs/processing.json` — chunking/enrichment (and
   field tokenization for sensitive columns)
-- `embedding-retrieval-intelligence/configs/retrieval.yaml` — index settings
-- `orchestration-guardrails/configs/guardrails.yaml` — PII detectors, policies, grounding
+- `embedding-retrieval-intelligence/configs/retrieval.json` — index settings
+- `orchestration-guardrails/configs/guardrails.json` — PII detectors, policies, grounding
 
 Then re-run `nexus prepare-demo …` and `nexus ask …`.
 
 ### Step 6 — Use it from your applications (REST)
 ```bash
 cd experience-api-engagement
-NEXUS_EXPERIENCE_CONFIG=configs/engagement.yaml \
+NEXUS_EXPERIENCE_CONFIG=configs/engagement.json \
   uvicorn "nexus_experience.api:create_app" --factory --port 8000
 # POST /v1/ask   with header  X-API-Key: <key>   { "query": "...", "channel": "assistant" }
 ```
@@ -147,9 +147,9 @@ See [SECURITY.md](../SECURITY.md) for the full threat model and reporting proces
 
 ---
 
-## 7. Optional — the Veloxs Platform UI
+## 7. Optional — the Nexora Platform UI
 
-If you prefer a no-code experience, the **Veloxs Platform** is a multi-tenant control
+If you prefer a no-code experience, **Nexora** is a multi-tenant control
 plane that wraps these layers in a UI: SSO + RBAC, drag-style pipeline building,
 config forms generated from each layer's schema, and a KMS-backed secrets vault. Ask
 your Veloxs contact to enable it for your pilot.

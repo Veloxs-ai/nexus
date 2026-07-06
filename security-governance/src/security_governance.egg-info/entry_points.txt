@@ -1,2 +1,0 @@
-[console_scripts]
-security = nexus_security.cli:app

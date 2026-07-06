@@ -6,7 +6,7 @@ This document tracks all the specific security enhancements, build system update
 
 ## 🛡️ 1. Security Vulnerabilities Resolved
 
-We have successfully patched the identified security vulnerabilities in both the `nexus` engine and the `veloxs-platform` control plane:
+We have successfully patched the identified security vulnerabilities in both the `nexus` engine and the `nexora-platform` control plane:
 
 ### 🟢 Path Traversal in Experience Gateway (Layer 5)
 * **Status**: **RESOLVED**
@@ -16,9 +16,9 @@ We have successfully patched the identified security vulnerabilities in both the
 
 ### 🟢 Predictable KMS Salt in Platform Key Derivation
 * **Status**: **RESOLVED**
-* **Vulnerability**: In `veloxs-platform/backend/app/kms.py`, the local KMS provider used static, guessable tenant ID slugs directly as salts for HKDF-SHA256 key derivation, exposing credentials to rainbow table attacks.
+* **Vulnerability**: In `nexora-platform/backend/app/kms.py`, the local KMS provider used static, guessable tenant ID slugs directly as salts for HKDF-SHA256 key derivation, exposing credentials to rainbow table attacks.
 * **Fix**: Re-engineered `LocalKmsProvider` to derive an unpredictable salt using a SHA-256 hash of the `tenant_id` combined with the secret master key. This prevents pre-computation attacks even if database access is compromised.
-* **Verification**: Confirmed all 9 FastAPI integration tests for `veloxs-platform` pass with the upgraded key derivation.
+* **Verification**: Confirmed all 9 FastAPI integration tests for `nexora-platform` pass with the upgraded key derivation.
 
 ---
 

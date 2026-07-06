@@ -10,68 +10,82 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
-
-import typer
 
 from nexus_security.config import load_config
 from nexus_security.models import AccessRequest, Decision
 from nexus_security.service import SecurityGovernanceService
 
-app = typer.Typer(help="Security and governance control plane.")
 
-
-@app.command()
-def validate_config(config_path: Path) -> None:
-    config = load_config(config_path)
-    typer.echo(f"Loaded {len(config.roles)} roles and {len(config.tenants)} tenants.")
-
-
-@app.command()
-def check_access(
-    config_path: Path,
-    role: str,
-    permission: str,
-    user_tenant: str,
-    resource_tenant: str,
-    data_scope: str,
-) -> None:
-    config = load_config(config_path)
-    service = SecurityGovernanceService(config, config_path.parent.parent)
-    decision = service.check_access(
-        AccessRequest(
-            role=role,
-            permission=permission,
-            user_tenant=user_tenant,
-            resource_tenant=resource_tenant,
-            data_scope=data_scope,
-        )
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="security", description="Security and governance control plane."
     )
-    typer.echo(f"allowed: {str(decision.decision == Decision.ALLOWED).lower()}")
-    typer.echo(f"reason: {decision.reason}")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    validate_config = commands.add_parser("validate-config", help="Load and validate a security config.")
+    validate_config.add_argument("config_path", type=Path)
+
+    check_access = commands.add_parser("check-access", help="Evaluate an RBAC access request.")
+    check_access.add_argument("config_path", type=Path)
+    check_access.add_argument("role")
+    check_access.add_argument("permission")
+    check_access.add_argument("user_tenant")
+    check_access.add_argument("resource_tenant")
+    check_access.add_argument("data_scope")
+
+    encrypt = commands.add_parser("encrypt", help="Encrypt a value with the configured key.")
+    encrypt.add_argument("config_path", type=Path)
+    encrypt.add_argument("plaintext")
+
+    decrypt = commands.add_parser("decrypt", help="Decrypt a value with the configured key.")
+    decrypt.add_argument("config_path", type=Path)
+    decrypt.add_argument("ciphertext")
+
+    audit = commands.add_parser("audit", help="Record an audit event.")
+    audit.add_argument("config_path", type=Path)
+    audit.add_argument("event_type")
+    audit.add_argument("actor_id")
+    audit.add_argument("tenant_id")
+    audit.add_argument("decision", type=Decision, choices=list(Decision))
+
+    return parser
 
 
-@app.command()
-def encrypt(config_path: Path, plaintext: str) -> None:
-    config = load_config(config_path)
-    service = SecurityGovernanceService(config, config_path.parent.parent)
-    typer.echo(service.encrypt(plaintext))
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = load_config(args.config_path)
+    service = SecurityGovernanceService(config, args.config_path.parent.parent)
+
+    if args.command == "validate-config":
+        print(f"Loaded {len(config.roles)} roles and {len(config.tenants)} tenants.")
+    elif args.command == "check-access":
+        decision = service.check_access(
+            AccessRequest(
+                role=args.role,
+                permission=args.permission,
+                user_tenant=args.user_tenant,
+                resource_tenant=args.resource_tenant,
+                data_scope=args.data_scope,
+            )
+        )
+        print(f"allowed: {str(decision.decision == Decision.ALLOWED).lower()}")
+        print(f"reason: {decision.reason}")
+    elif args.command == "encrypt":
+        print(service.encrypt(args.plaintext))
+    elif args.command == "decrypt":
+        print(service.decrypt(args.ciphertext))
+    elif args.command == "audit":
+        service.record_event(args.event_type, args.actor_id, args.tenant_id, args.decision)
+        print("audit_event_written: true")
+    return 0
 
 
-@app.command()
-def decrypt(config_path: Path, ciphertext: str) -> None:
-    config = load_config(config_path)
-    service = SecurityGovernanceService(config, config_path.parent.parent)
-    typer.echo(service.decrypt(ciphertext))
-
-
-@app.command()
-def audit(config_path: Path, event_type: str, actor_id: str, tenant_id: str, decision: Decision) -> None:
-    config = load_config(config_path)
-    service = SecurityGovernanceService(config, config_path.parent.parent)
-    service.record_event(event_type, actor_id, tenant_id, decision)
-    typer.echo("audit_event_written: true")
+def app() -> None:
+    """Console-script entry point (kept for the `nexus_security.cli:app` script target)."""
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":
-    app()
+    raise SystemExit(main())

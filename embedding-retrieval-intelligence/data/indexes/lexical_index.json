@@ -45,7 +45,7 @@
           "notes": "Contact jane.doe@acme.com or call 415-555-0132 about renewal on 2026-06-15. Account has open support questions.",
           "status": "active"
         },
-        "processed_at": "2026-06-22T00:28:30.418406Z",
+        "processed_at": "2026-07-05T22:21:30.728071Z",
         "record_id": "c001",
         "source_job": "customer_profiles"
       },
@@ -88,7 +88,7 @@
           "notes": "Payment discussion scheduled with finance team. Expected revenue review next month.",
           "status": "prospect"
         },
-        "processed_at": "2026-06-22T00:28:30.418603Z",
+        "processed_at": "2026-07-05T22:21:30.728241Z",
         "record_id": "c002",
         "source_job": "customer_profiles"
       },
@@ -141,7 +141,7 @@
           "notes": "Renewal due 2026-09-01. Primary contact sam@globex.com. Strong support satisfaction.",
           "status": "active"
         },
-        "processed_at": "2026-06-22T00:28:30.418618Z",
+        "processed_at": "2026-07-05T22:21:30.728255Z",
         "record_id": "c003",
         "source_job": "customer_profiles"
       },
@@ -186,7 +186,7 @@
           "notes": "Escalated support tickets last quarter. Renewal at risk; finance reviewing invoice disputes.",
           "status": "at_risk"
         },
-        "processed_at": "2026-06-22T00:28:30.418629Z",
+        "processed_at": "2026-07-05T22:21:30.728266Z",
         "record_id": "c004",
         "source_job": "customer_profiles"
       },
@@ -237,7 +237,7 @@
           "notes": "Evaluating security and encryption controls. Contact dana@umbrella.example by 2026-07-10.",
           "status": "prospect"
         },
-        "processed_at": "2026-06-22T00:28:30.418641Z",
+        "processed_at": "2026-07-05T22:21:30.728277Z",
         "record_id": "c005",
         "source_job": "customer_profiles"
       },
@@ -288,7 +288,7 @@
             "security"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419320Z",
+        "processed_at": "2026-07-05T22:21:30.729383Z",
         "source_job": "policy_documents",
         "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Encryption is mandatory for confidential exports. Contact security@veloxsdemo.com for exceptions."
       },
@@ -331,7 +331,7 @@
             "security"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419346Z",
+        "processed_at": "2026-07-05T22:21:30.729407Z",
         "source_job": "policy_documents",
         "text": "Confidential data must be encrypted at rest and in transit using approved algorithms. TLS 1.2 or higher is required for all access to internal systems. Keys are rotated annually."
       },
@@ -378,7 +378,7 @@
             "security"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419365Z",
+        "processed_at": "2026-07-05T22:21:30.729427Z",
         "source_job": "policy_documents",
         "text": "Access to customer accounts follows least privilege. Quarterly access reviews remove stale permissions. Privileged access requires manager approval and is logged for audit."
       },
@@ -427,7 +427,7 @@
             "finance"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419382Z",
+        "processed_at": "2026-07-05T22:21:30.729444Z",
         "source_job": "policy_documents",
         "text": "Invoices must be reviewed before payment. Revenue-impacting adjustments require finance approval. Send invoice questions to ap@veloxsdemo.com by the monthly close date."
       },
@@ -474,7 +474,7 @@
             "finance"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419399Z",
+        "processed_at": "2026-07-05T22:21:30.729462Z",
         "source_job": "policy_documents",
         "text": "Customer payments are reconciled weekly. Refunds above the threshold require finance approval. Disputed invoices are escalated to the revenue team within two business days."
       },
@@ -521,7 +521,7 @@
             "customer"
           ]
         },
-        "processed_at": "2026-06-22T00:28:30.419416Z",
+        "processed_at": "2026-07-05T22:21:30.729479Z",
         "source_job": "policy_documents",
         "text": "Support requests receive a first response within four business hours. Renewal and account questions are routed to customer success. Critical issues are escalated to on-call support."
       },

@@ -8,36 +8,31 @@
 #
 # SPDX-License-Identifier: LicenseRef-Veloxs-AI-Proprietary
 
-from typer.testing import CliRunner
-
-from nexus.cli import app
+from nexus.cli import main
 
 
-runner = CliRunner()
+def test_validate_config_command(capsys):
+    exit_code = main(["validate-config", "configs/nexus.json"])
+
+    assert exit_code == 0
+    assert "Loaded 7 layers." in capsys.readouterr().out
 
 
-def test_validate_config_command():
-    result = runner.invoke(app, ["validate-config", "configs/nexus.yaml"])
+def test_validate_platform_command(capsys):
+    exit_code = main(["validate-platform", "configs/nexus.json"])
 
-    assert result.exit_code == 0
-    assert "Loaded 7 layers." in result.output
-
-
-def test_validate_platform_command():
-    result = runner.invoke(app, ["validate-platform", "configs/nexus.yaml"])
-
-    assert result.exit_code == 0
-    assert "platform_ready: true" in result.output
+    assert exit_code == 0
+    assert "platform_ready: true" in capsys.readouterr().out
 
 
-def test_prepare_demo_command(monkeypatch):
+def test_prepare_demo_command(monkeypatch, capsys):
     outputs = ["Processed 2 outputs for customer_profiles.\n", "Indexed 4 documents.\n"]
 
     def fake_prepare_demo(self):
         return outputs
 
     monkeypatch.setattr("nexus.platform.NexusPlatform.prepare_demo", fake_prepare_demo)
-    result = runner.invoke(app, ["prepare-demo", "configs/nexus.yaml"])
+    exit_code = main(["prepare-demo", "configs/nexus.json"])
 
-    assert result.exit_code == 0
-    assert "Indexed 4 documents." in result.output
+    assert exit_code == 0
+    assert "Indexed 4 documents." in capsys.readouterr().out

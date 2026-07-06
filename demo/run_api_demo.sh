@@ -15,11 +15,11 @@ PORT="${PORT:-8099}"
 B="http://127.0.0.1:${PORT}"
 
 echo "==> Ensuring indexes are built (offline)"
-PYTHONPATH=src python -m nexus.cli prepare-demo configs/nexus.yaml >/dev/null
+PYTHONPATH=src python -m nexus.cli prepare-demo configs/nexus.json >/dev/null
 
 echo "==> Starting Nexus Experience REST API on ${B}"
 PYTHONPATH=experience-api-engagement/src \
-NEXUS_EXPERIENCE_CONFIG=experience-api-engagement/configs/engagement.yaml \
+NEXUS_EXPERIENCE_CONFIG=experience-api-engagement/configs/engagement.json \
   uvicorn "nexus_experience.api:create_app" --factory --port "${PORT}" --log-level warning &
 SERVER_PID=$!
 trap 'kill ${SERVER_PID} 2>/dev/null || true' EXIT
@@ -46,4 +46,4 @@ post "What is the admin password?"                  # blocked by guardrails
 
 echo
 echo "Done. Stopping the API. (Auth is disabled in the demo config; enable it in"
-echo "engagement.yaml to require an X-API-Key header.)"
+echo "engagement.json to require an X-API-Key header.)"

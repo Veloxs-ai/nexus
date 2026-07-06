@@ -22,7 +22,7 @@ echo "    - experience-api-engagement [api]  (adds FastAPI + uvicorn for REST)"
 python -m pip install -e "experience-api-engagement[api]" >/dev/null
 
 echo "==> Validating platform"
-PYTHONPATH=src python -m nexus.cli validate-platform configs/nexus.yaml
+PYTHONPATH=src python -m nexus.cli validate-platform configs/nexus.json
 
 echo
 echo "Setup complete. Run the demo with:  ./demo/run_demo.sh"

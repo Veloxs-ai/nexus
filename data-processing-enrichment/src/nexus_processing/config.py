@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
+import json
 from pydantic import BaseModel, Field, model_validator
 
 from nexus_processing.models import JobMode
@@ -75,8 +75,21 @@ class ProcessingConfig(BaseModel):
     jobs: dict[str, ProcessingJobConfig]
 
 
+def _load_raw(path: Path):
+    """Parse JSON (stdlib) natively; YAML only when PyYAML is installed (optional extra)."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        try:
+            import yaml
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                f"{path} is YAML, but PyYAML is not installed. Use a JSON config "
+                "or install the optional extra: pip install data-processing-enrichment[yaml]"
+            ) from exc
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
 def load_config(path: Path) -> ProcessingConfig:
-    with path.open("r", encoding="utf-8") as config_file:
-        raw = yaml.safe_load(config_file)
-    return ProcessingConfig.model_validate(raw)
+    return ProcessingConfig.model_validate(_load_raw(path))
 

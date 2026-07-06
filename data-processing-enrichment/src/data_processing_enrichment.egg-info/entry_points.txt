@@ -1,2 +1,0 @@
-[console_scripts]
-processing = nexus_processing.cli:app

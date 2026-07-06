@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import json
 from pydantic import BaseModel, Field
 
 
@@ -78,8 +78,21 @@ class GuardrailsConfig(BaseModel):
     verification: VerificationConfig = Field(default_factory=VerificationConfig)
 
 
+def _load_raw(path: Path):
+    """Parse JSON (stdlib) natively; YAML only when PyYAML is installed (optional extra)."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        try:
+            import yaml
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                f"{path} is YAML, but PyYAML is not installed. Use a JSON config "
+                "or install the optional extra: pip install orchestration-guardrails[yaml]"
+            ) from exc
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
 def load_config(path: Path) -> GuardrailsConfig:
-    with path.open("r", encoding="utf-8") as config_file:
-        raw = yaml.safe_load(config_file)
-    return GuardrailsConfig.model_validate(raw)
+    return GuardrailsConfig.model_validate(_load_raw(path))
 

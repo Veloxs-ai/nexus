@@ -37,7 +37,7 @@ from pathlib import Path
 from nexus import NexusPlatform
 
 # 1. Initialize the platform using your configuration YAML
-config_file = Path("configs/nexus.yaml")
+config_file = Path("configs/nexus.json")
 platform = NexusPlatform.from_config(config_file)
 
 # 2. Query the experience layer directly
@@ -56,7 +56,7 @@ If you want to run the pipeline ingestion (Layer 1), data processing (Layer 2), 
 from pathlib import Path
 from nexus import NexusPlatform
 
-platform = NexusPlatform.from_config(Path("configs/nexus.yaml"))
+platform = NexusPlatform.from_config(Path("configs/nexus.json"))
 
 # Triggers Layer 2 (transform/chunk) and Layer 3 (indexing/vector store build)
 print("Building pipelines...")
@@ -76,7 +76,7 @@ If you are calling Nexus from a non-Python environment (e.g. Node.js, Go, or a s
 Check that all configured layers exist and contain the required layout files (`pyproject.toml`, `README.md`, etc.):
 
 ```bash
-nexus validate-platform configs/nexus.yaml
+nexus validate-platform configs/nexus.json
 ```
 
 *Expected output:*
@@ -95,7 +95,7 @@ platform_ready: true
 Run queries from the command line:
 
 ```bash
-nexus ask configs/nexus.yaml "What is the policy for password changes?"
+nexus ask configs/nexus.json "What is the policy for password changes?"
 ```
 
 ---
@@ -104,7 +104,7 @@ nexus ask configs/nexus.yaml "What is the policy for password changes?"
 
 Nexus relies on environment variables for cryptographic materials, security authentications, and file paths.
 
-### 1. Main Platform Configuration (`configs/nexus.yaml`)
+### 1. Main Platform Configuration (`configs/nexus.json`)
 
 Define the path directories and packages of the active layers.
 
@@ -118,14 +118,14 @@ layers:
     package: enterprise-data-pipeline
     project_path: enterprise-data-pipeline
     cli_module: nexus_pipeline.cli
-    config_path: enterprise-data-pipeline/configs/sources.yaml
+    config_path: enterprise-data-pipeline/configs/sources.json
     responsibility: ingest enterprise data from source systems
   
   data-processing-enrichment:
     package: data-processing-enrichment
     project_path: data-processing-enrichment
     cli_module: nexus_processing.cli
-    config_path: data-processing-enrichment/configs/processing.yaml
+    config_path: data-processing-enrichment/configs/processing.json
     responsibility: transform, chunk, and enrich processed data
 
   # [Include other layers here...]

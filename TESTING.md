@@ -1,6 +1,6 @@
 # 🧪 Nexus Enterprise AI Platform — Testing Guide
 
-This guide provides an overview of the test suites, configurations, and verification patterns across the **Nexus** repository (the main AI engine) and its integration with the **Veloxs Platform** control plane.
+This guide provides an overview of the test suites, configurations, and verification patterns across the **Nexus** repository (the main AI engine) and its integration with the **Nexora Platform** control plane.
 
 ---
 
@@ -13,7 +13,7 @@ The codebase is split across three major directories:
    - Designed with zero side effects at import time, fail-closed security defaults, and no inter-layer Python imports.
    - Contains a core orchestrator and seven independent sub-packages under `nexus/`.
 
-2. **`veloxs-platform`** *(Control Plane & UI)*:
+2. **`nexora-platform`** *(Control Plane & UI)*:
    - A multi-tenant control plane providing a web application (FastAPI + static front-end) to build and run Nexus pipelines.
    - Introspects Nexus config schemas from the layers to dynamically render configurations.
 
@@ -59,7 +59,7 @@ from pathlib import Path
 from nexus import NexusPlatform
 
 # Initialize the platform using configuration YAML
-config_file = Path("configs/nexus.yaml")
+config_file = Path("configs/nexus.json")
 platform = NexusPlatform.from_config(config_file)
 
 # Execute an interactive query
@@ -75,7 +75,7 @@ To run the full end-to-end ingestion and indexing pipeline programmatically:
 from pathlib import Path
 from nexus import NexusPlatform
 
-platform = NexusPlatform.from_config(Path("configs/nexus.yaml"))
+platform = NexusPlatform.from_config(Path("configs/nexus.json"))
 
 # Triggers data transformations (Layer 2) and indexes (Layer 3)
 logs = platform.prepare_demo()
@@ -88,10 +88,10 @@ Sandboxed environments can call the platform using the Python command-line utili
 
 ```bash
 # Validate configs
-nexus validate-platform configs/nexus.yaml
+nexus validate-platform configs/nexus.json
 
 # Ask query
-nexus ask configs/nexus.yaml "What is the policy for password changes?"
+nexus ask configs/nexus.json "What is the policy for password changes?"
 ```
 
 ---
@@ -161,19 +161,19 @@ nexus ask configs/nexus.yaml "What is the policy for password changes?"
 
 ---
 
-## ⚡ Integration Tests: Veloxs Platform Control Plane
+## ⚡ Integration Tests: Nexora Platform Control Plane
 
-The `veloxs-platform` repo tests the orchestration capabilities and schema-driven generation of Nexus.
+The `nexora-platform` repo tests the orchestration capabilities and schema-driven generation of Nexus.
 
 ### Running Platform Tests
-Run `pytest` from the `veloxs-platform` package:
+Run `pytest` from the `nexora-platform` package:
 ```bash
-cd veloxs-platform
+cd nexora-platform
 conda activate nexus  # or your preferred environment containing FastAPI/Uvicorn
 python -m pytest
 ```
 
-### Scope of Platform Integration Tests (`veloxs-platform/backend/tests/test_platform.py`)
+### Scope of Platform Integration Tests (`nexora-platform/backend/tests/test_platform.py`)
 1. **Multi-Tenant SSO & API Key RBAC**:
    - Asserts that API requests require valid headers (`X-API-Key`).
    - Verifies Owner role permissions vs. Viewer role permissions.
