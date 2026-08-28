@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Question or discussion
+    url: https://github.com/Veloxs-ai/nexus/discussions
+    about: Ask how to use Nexus, share what you built, or float an idea. Please don't use the issue tracker for questions.
+  - name: 🔐 Security vulnerability
+    url: https://github.com/Veloxs-ai/nexus/security/advisories/new
+    about: Report a vulnerability privately. Never open a public issue for a security problem.
+  - name: 🤝 Code of Conduct concern
+    url: mailto:conduct@veloxs.ai
+    about: Report a Code of Conduct concern privately.
+  - name: 🏢 Commercial support
+    url: mailto:hello@veloxs.ai
+    about: Managed hosting, SLAs, and commercial inquiries for Nexus.

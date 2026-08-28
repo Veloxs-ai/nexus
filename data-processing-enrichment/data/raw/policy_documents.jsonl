@@ -1,0 +1,2 @@
+{"document_id": "doc-001", "title": "Enterprise Security Access Policy", "department": "SECURITY", "body": "All employees must use MFA for sensitive systems. Access reviews are required quarterly. Password rotation must occur every 90 days with complex passphrase requirements."}
+{"document_id": "doc-002", "title": "Finance and Invoicing Guidelines", "department": "FINANCE", "body": "Invoices above ,000 require dual managerial approval before disbursement. All vendor payments are processed on a Net-30 basis."}

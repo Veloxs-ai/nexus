@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a new feature, capability, or extension point for Nexus.
+title: "[feat] <short summary>"
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. The best requests describe the
+        **use case** first and the API second — that gives us room to
+        find the right shape together.
+
+        For questions about *using* Nexus, please start a
+        [Discussion](https://github.com/Veloxs-ai/nexus/discussions)
+        instead.
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues for similar proposals.
+          required: true
+        - label: This is a feature request, not a security issue. (See [SECURITY.md](https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md).)
+          required: true
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Layer(s) this would touch
+      multiple: true
+      options:
+        - root (src/nexus)
+        - enterprise-data-pipeline
+        - data-processing-enrichment
+        - embedding-retrieval-intelligence
+        - orchestration-guardrails
+        - experience-api-engagement
+        - security-governance
+        - observability-monitoring
+        - docs
+        - CI / packaging
+        - new cross-cutting concern
+    validations:
+      required: true
+  - type: textarea
+    id: usecase
+    attributes:
+      label: What's the use case?
+      description: |
+        Describe the problem you're trying to solve. Who is the user?
+        What are they trying to do? What's painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        Outline the API, config, CLI flag, or extension-point shape you
+        have in mind. Sketches and pseudocode are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Anything you've already tried, or other shapes you considered and
+        rejected (and why).
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Out of scope
+      description: |
+        What does **not** belong in this feature? Helps keep the PR
+        focused.
+    validations:
+      required: false

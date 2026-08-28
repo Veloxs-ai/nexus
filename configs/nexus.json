@@ -1,0 +1,71 @@
+{
+  "platform": {
+    "name": "Nexus — Enterprise Intelligence Framework",
+    "version": "2.4.0"
+  },
+  "layers": {
+    "enterprise-data-pipeline": {
+      "package": "enterprise-data-pipeline",
+      "project_path": "enterprise-data-pipeline",
+      "cli_module": "nexus_pipeline.cli",
+      "config_path": "enterprise-data-pipeline/configs/sources.json",
+      "responsibility": "ingest enterprise data from source systems"
+    },
+    "data-processing-enrichment": {
+      "package": "data-processing-enrichment",
+      "project_path": "data-processing-enrichment",
+      "cli_module": "nexus_processing.cli",
+      "config_path": "data-processing-enrichment/configs/processing.json",
+      "responsibility": "transform, chunk, and enrich processed data"
+    },
+    "embedding-retrieval-intelligence": {
+      "package": "embedding-retrieval-intelligence",
+      "project_path": "embedding-retrieval-intelligence",
+      "cli_module": "nexus_retrieval.cli",
+      "config_path": "embedding-retrieval-intelligence/configs/retrieval.json",
+      "responsibility": "build semantic, lexical, and graph retrieval indexes"
+    },
+    "orchestration-guardrails": {
+      "package": "orchestration-guardrails",
+      "project_path": "orchestration-guardrails",
+      "cli_module": "nexus_guardrails.cli",
+      "config_path": "orchestration-guardrails/configs/guardrails.json",
+      "responsibility": "orchestrate grounded and policy-compliant AI interactions"
+    },
+    "experience-api-engagement": {
+      "package": "experience-api-engagement",
+      "project_path": "experience-api-engagement",
+      "cli_module": "nexus_experience.cli",
+      "config_path": "experience-api-engagement/configs/engagement.json",
+      "responsibility": "expose APIs, SDKs, assistants, and application channels"
+    },
+    "security-governance": {
+      "package": "security-governance",
+      "project_path": "security-governance",
+      "cli_module": "nexus_security.cli",
+      "config_path": "security-governance/configs/security.json",
+      "responsibility": "enforce RBAC, tenant isolation, encryption, and auditability"
+    },
+    "observability-monitoring": {
+      "package": "observability-monitoring",
+      "project_path": "observability-monitoring",
+      "cli_module": "nexus_observability.cli",
+      "config_path": "observability-monitoring/configs/observability.json",
+      "responsibility": "monitor metrics, logs, traces, AI events, and alerts"
+    }
+  },
+  "flows": {
+    "default_insight_flow": {
+      "description": "Transform fragmented enterprise data into secure, context-aware insights.",
+      "sequence": [
+        "enterprise-data-pipeline",
+        "data-processing-enrichment",
+        "embedding-retrieval-intelligence",
+        "orchestration-guardrails",
+        "experience-api-engagement",
+        "security-governance",
+        "observability-monitoring"
+      ]
+    }
+  }
+}

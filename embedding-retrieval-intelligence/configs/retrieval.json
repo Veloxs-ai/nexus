@@ -1,0 +1,56 @@
+{
+  "integration": {
+    "processing_project": "../data-processing-enrichment",
+    "processing_config": "../data-processing-enrichment/configs/processing.json",
+    "ingestion_project": "../enterprise-data-pipeline"
+  },
+  "embedding": {
+    "provider": "local_hashing",
+    "dimensions": 3072,
+    "normalize": true
+  },
+  "stores": {
+    "vector_index_uri": "data/indexes/vector_index.json",
+    "lexical_index_uri": "data/indexes/lexical_index.json",
+    "graph_index_uri": "data/indexes/graph_index.json"
+  },
+  "ranking": {
+    "semantic_weight": 0.55,
+    "lexical_weight": 0.3,
+    "graph_weight": 0.15
+  },
+  "collections": {
+    "customer_profiles": {
+      "input_uri": "../data-processing-enrichment/data/processed/customer_profiles.enriched.jsonl",
+      "id_field": "record_id",
+      "text_fields": [
+        "payload.name",
+        "payload.notes"
+      ],
+      "metadata_field": "metadata",
+      "graph": {
+        "entity_fields": [
+          "metadata.entities"
+        ],
+        "tag_fields": [
+          "metadata.tags"
+        ]
+      }
+    },
+    "policy_documents": {
+      "input_uri": "../data-processing-enrichment/data/processed/policy_documents.chunks.jsonl",
+      "id_field": "chunk_id",
+      "text_field": "text",
+      "metadata_field": "metadata",
+      "graph": {
+        "entity_fields": [
+          "metadata.entities"
+        ],
+        "tag_fields": [
+          "metadata.tags"
+        ],
+        "parent_field": "document_id"
+      }
+    }
+  }
+}

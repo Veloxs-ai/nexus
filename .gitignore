@@ -1,0 +1,44 @@
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Virtual environments ---
+.venv/
+.venv-*/
+venv/
+env/
+
+# --- Build & distribution artifacts ---
+# Wheels and sdists belong on PyPI and GitHub Releases, never in git.
+build/
+dist/
+
+# --- Secrets & local configuration ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Generated runtime artifacts (rebuilt by pipeline runs) ---
+.checkpoints/
+data/**/audit.jsonl
+data/**/events.jsonl
+data/**/metrics.jsonl
+data/**/logs.jsonl
+data/**/spans.jsonl
+data/**/alerts.jsonl
+**/data/processed/*.jsonl
+**/data/indexes/*.json

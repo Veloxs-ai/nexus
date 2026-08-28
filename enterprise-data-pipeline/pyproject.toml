@@ -1,0 +1,88 @@
+[project]
+name = "enterprise-data-pipeline"
+version = "2.4.0"
+description = "Nexus Enterprise Intelligence Framework — Data Connectivity layer: API, streaming, batch, and CDC ingestion."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["../LICENSE", "../NOTICE"]
+authors = [
+  { name = "Veloxs AI Inc.", email = "hello@veloxs.ai" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+yaml = [
+  "pyyaml>=6.0.1",
+]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.5.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/Veloxs-ai/nexus"
+Documentation = "https://github.com/Veloxs-ai/nexus/blob/main/docs/USING_NEXUS.md"
+Repository    = "https://github.com/Veloxs-ai/nexus"
+Issues        = "https://github.com/Veloxs-ai/nexus/issues"
+Changelog     = "https://github.com/Veloxs-ai/nexus/blob/main/CHANGELOG.md"
+Security      = "https://github.com/Veloxs-ai/nexus/blob/main/SECURITY.md"
+
+[project.scripts]
+pipeline = "nexus_pipeline.cli:app"
+
+[build-system]
+requires = ["setuptools>=69.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["build", "dist", ".venv", ".venv-*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Pinned explicitly so the result is reproducible across ruff versions rather
+# than drifting with whatever the default rule set happens to be.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF001-3 flag ambiguous Unicode. This codebase deliberately handles
+# adversarial Unicode (homoglyph and zero-width prompt-injection defenses), so
+# full-width and zero-width characters in the normalization tables and their
+# tests are intentional, not typos.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends(...)` / `Header(...)` in argument defaults is the documented FastAPI
+# idiom, not the mutable-default bug B008 is meant to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]
+
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "nexus",
+  "nexus_pipeline",
+  "nexus_processing",
+  "nexus_retrieval",
+  "nexus_guardrails",
+  "nexus_experience",
+  "nexus_security",
+  "nexus_observability",
+]
+

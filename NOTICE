@@ -1,0 +1,101 @@
+Nexus — Enterprise Intelligence Framework
+Copyright 2026 Veloxs AI Inc.
+
+This product includes software developed by Veloxs AI Inc. and the Nexus
+project contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may
+not use this file except in compliance with the License. You may obtain a
+copy of the License in the LICENSE file in the project root, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+===============================================================================
+TRADEMARKS
+===============================================================================
+
+"Nexus", "Veloxs", and "Veloxs AI", together with the associated logos,
+wordmarks, and branding, are trademarks of Veloxs AI Inc.
+
+As set out in Section 6 of the Apache License, Version 2.0, this License
+does NOT grant permission to use these trade names, trademarks, service
+marks, or product names, except as required for reasonable and customary
+use in describing the origin of the Work and reproducing the content of
+this NOTICE file.
+
+In particular:
+
+  * You may state truthfully that your software is built on, uses, or is
+    compatible with Nexus.
+  * You may NOT use the Nexus or Veloxs AI names, logos, or branding in a
+    way that suggests your product, fork, or distribution is endorsed by,
+    affiliated with, or an official release of Veloxs AI Inc.
+  * Forks and derivative distributions must be distributed under a name
+    that is not confusingly similar to "Nexus" or "Veloxs".
+
+No rights in Veloxs AI Inc. trademarks, logos, branding, or other
+intellectual property are transferred to contributors or users beyond the
+rights expressly granted by the Apache License, Version 2.0.
+
+===============================================================================
+THIRD-PARTY DEPENDENCIES
+===============================================================================
+
+This product depends on the third-party libraries listed below. Each
+dependency retains its own license; see the dependency's own distribution
+for the full text of its terms. No third-party source code is vendored
+into this repository.
+
+Runtime dependencies
+--------------------
+
+  pydantic              MIT
+                        https://github.com/pydantic/pydantic
+
+  cryptography          Apache-2.0 OR BSD-3-Clause (dual-licensed)
+                        https://github.com/pyca/cryptography
+
+  fastapi               MIT
+                        https://github.com/fastapi/fastapi
+
+  uvicorn               BSD-3-Clause
+                        https://github.com/encode/uvicorn
+
+Optional dependencies
+---------------------
+
+  pyyaml                MIT                            extra: [yaml]
+                        https://github.com/yaml/pyyaml
+
+  pgvector-python       PostgreSQL License (BSD-like)  extra: [postgres]
+                        https://github.com/pgvector/pgvector-python
+
+  SQLAlchemy            MIT                            extra: [postgres]
+                        https://github.com/sqlalchemy/sqlalchemy
+
+  psycopg2-binary       LGPL-3.0-or-later, with the      extra: [postgres]
+                        psycopg OpenSSL exception
+                        https://github.com/psycopg/psycopg2
+
+                        NOTE: psycopg2 is LGPL-licensed. It is an OPTIONAL
+                        dependency, is not distributed with Nexus, and is
+                        dynamically linked at runtime, so it does not
+                        affect the license of Nexus itself. Redistributors
+                        who vendor or bundle dependencies should review the
+                        LGPL terms. Users who prefer to avoid LGPL entirely
+                        may substitute `psycopg[binary]` (Apache-2.0).
+
+Development dependencies (not distributed)
+------------------------------------------
+
+  pytest                MIT
+                        https://github.com/pytest-dev/pytest
+
+  ruff                  MIT
+                        https://github.com/astral-sh/ruff
