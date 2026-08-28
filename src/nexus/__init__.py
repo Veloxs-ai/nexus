@@ -131,4 +131,4 @@ __all__ = [
     "security",
 ]
 
-__version__ = "2.4.0"
+__version__ = "3.0.1"
