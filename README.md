@@ -231,7 +231,7 @@ nexus ask configs/nexus.json "What is the MFA policy?" --channel assistant
 
 Layers integrate only through configs, JSONL contracts, CLI, and HTTP. Replacing `nexus.retrieval` with your own vector database, or `nexus.guardrails` with your own policy engine, requires no changes to the layers around it.
 
-Full detail: [docs/architecture.md](docs/architecture.md) · [docs/USING_NEXUS.md](docs/USING_NEXUS.md)
+Full detail: [docs/ARCHITECTURE_OVERVIEW.md](docs/ARCHITECTURE_OVERVIEW.md) · [docs/USING_NEXUS.md](docs/USING_NEXUS.md)
 
 ### PostgreSQL + pgvector
 
@@ -305,7 +305,6 @@ ruff format --check .
 |---|---|
 | [Integrator Guide](docs/USING_NEXUS.md) | The comprehensive reference — every layer in detail, the security model, extension points, and what is production-grade today. **Start here after the quick start.** |
 | [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Design principles, the loose-coupling rule, and per-layer capabilities |
-| [Architecture Diagram](docs/architecture.md) | How the seven layers connect |
 | [Integration Guide](docs/INTEGRATION_GUIDE.md) | Installation, library vs. CLI integration patterns, environment variables |
 | [Processing Reference](docs/PROCESSING_REFERENCE.md) | Ingestion formats, the five processing phases, output structure, database setup |
 | [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and the 3072-dimension vector projection, specified precisely |
