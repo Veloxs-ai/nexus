@@ -57,6 +57,10 @@ try:
         process_spreadsheet_binary,
     )
     from nexus.processing.pdf import process_pdf_binary
+    from nexus.processing.sqlite import (
+        process_sqlite_binary,
+        process_sqlite_file,
+    )
     from nexus.processing.video import process_video_binary
     from nexus.retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus.retrieval.engine import RetrievalEngine
@@ -87,6 +91,10 @@ except (ImportError, ModuleNotFoundError):
         process_spreadsheet_binary,
     )
     from nexus_processing.pdf import process_pdf_binary
+    from nexus_processing.sqlite import (
+        process_sqlite_binary,
+        process_sqlite_file,
+    )
     from nexus_processing.video import process_video_binary
     from nexus_retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus_retrieval.engine import RetrievalEngine
@@ -371,6 +379,29 @@ class NexusClient:
                 enable_guardrails=enable_guardrails,
                 shallow_mode=shallow_mode,
             )
+
+        # Automatic routing for SQLite database payloads
+        if detected_format in ("sqlite", "sqlite3", "db") or (
+            isinstance(text, bytes | bytearray) and text.startswith(b"SQLite format 3\x00")
+        ):
+            raw_db_bytes = None
+            db_file_path = None
+            if isinstance(text, bytes | bytearray):
+                raw_db_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    db_file_path = p
+            if raw_db_bytes is not None or db_file_path is not None:
+                return self.process_sqlite(
+                    db_id=document_id,
+                    name=name or "database.db",
+                    db_bytes=raw_db_bytes,
+                    file_path=db_file_path,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
 
         clean_text = (
             text.replace("\r\n", "\n").replace("\r", "\n") if isinstance(text, str) else str(text)
@@ -2907,6 +2938,225 @@ class NexusClient:
             file_size_bytes=file_size_bytes,
             content_hash=content_hash,
             classification=doc_meta.get("classification", "chat"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_sqlite(
+        self,
+        db_id: str,
+        name: str,
+        db_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        max_rows_per_table: int = 500,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes an Embedded SQLite database (.sqlite, .db) through binary header validation,
+        schema DDL introspection, foreign-key relationship graph extraction, PII sanitization,
+        and relational-grounded 3072D vector projection.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        if db_bytes is not None:
+            raw_data = db_bytes
+            file_size_bytes = len(raw_data)
+            content_hash = hashlib.md5(raw_data).hexdigest()
+            t0 = time.perf_counter()
+            payload = process_sqlite_binary(
+                raw_data, db_name=name, max_rows_per_table=max_rows_per_table
+            )
+        elif file_path is not None:
+            p = Path(file_path)
+            file_size_bytes = p.stat().st_size
+            content_hash = hashlib.md5(p.read_bytes()[:1024]).hexdigest()
+            t0 = time.perf_counter()
+            payload = process_sqlite_file(p, db_name=name, max_rows_per_table=max_rows_per_table)
+        else:
+            raise ValueError("Either db_bytes or file_path must be provided to process_sqlite.")
+
+        meta = payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        table_preview = ", ".join(meta.table_names[:5])
+        if len(meta.table_names) > 5:
+            table_preview += "..."
+
+        # Step 1: SQLite Binary Validation & Schema Introspection
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="SQLite Binary Validation & Schema Introspection",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Validated SQLite format 3 binary (Page size: {meta.page_size}B). "
+                    f"Discovered {meta.total_tables} table(s) and {meta.total_views} view(s): "
+                    f"{table_preview}."
+                ),
+                details={
+                    "page_size": meta.page_size,
+                    "total_tables": meta.total_tables,
+                    "total_views": meta.total_views,
+                    "table_names": meta.table_names,
+                },
+            )
+        )
+
+        # Step 2: Table Graph & Foreign Key Relationship Discovery
+        t0 = time.perf_counter()
+        total_fks = sum(len(t.foreign_keys) for t in payload.tables)
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Table Graph & Foreign Key Relationship Discovery",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Mapped relational schema graph across {len(payload.tables)} entities "
+                    f"with {total_fks} foreign key constraint(s)."
+                ),
+                details={
+                    "entities_count": len(payload.tables),
+                    "foreign_keys_count": total_fks,
+                },
+            )
+        )
+
+        # Step 3: Tabular Row Extraction & Record Framing
+        t0 = time.perf_counter()
+        data_chunks_count = sum(1 for c in payload.all_chunks if not c.is_schema)
+        schema_chunks_count = sum(1 for c in payload.all_chunks if c.is_schema)
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Tabular Row Extraction & Record Framing",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Extracted {meta.total_rows} total rows, producing {data_chunks_count} "
+                    f"row chunk(s) and {schema_chunks_count} schema DDL chunk(s)."
+                ),
+                details={
+                    "total_rows": meta.total_rows,
+                    "data_chunks": data_chunks_count,
+                    "schema_chunks": schema_chunks_count,
+                },
+            )
+        )
+
+        # Step 4: Safety Guardrails & PII Sanitization
+        t0 = time.perf_counter()
+        sanitized_chunks: list[tuple[Any, str]] = []
+        total_masked_items = 0
+
+        for chk in payload.all_chunks:
+            n_text = chk.narrative_text
+            if apply_guardrails and n_text and not chk.is_schema:
+                scrubbed_text = self.guardrails.mask_pii(n_text)
+                if scrubbed_text != n_text:
+                    total_masked_items += 1
+            else:
+                scrubbed_text = n_text
+            sanitized_chunks.append((chk, scrubbed_text))
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Applied PII detection across {len(sanitized_chunks)} database chunk(s). "
+                    f"Masked {total_masked_items} sensitive item(s)."
+                ),
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "masked_items": total_masked_items,
+                },
+            )
+        )
+
+        # Step 5: Relational-Grounded 3072D Vector Projection
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
+            embedding_vector = self.retrieval.embed(scrubbed_text)
+            chunk_meta: dict[str, Any] = {
+                "table_name": chk.table_name,
+                "row_pk": chk.row_pk,
+                "is_schema": chk.is_schema,
+                "is_sqlite": True,
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{db_id}:{chk.table_name}:{chk.row_pk}:{idx}",
+                    document_id=db_id,
+                    chunk_index=idx,
+                    text=scrubbed_text,
+                    metadata=chunk_meta,
+                    embedding=embedding_vector,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="Relational-Grounded 3072D Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} relational-grounded "
+                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "page_size": meta.page_size,
+            "total_tables": meta.total_tables,
+            "total_views": meta.total_views,
+            "table_names": meta.table_names,
+            "total_rows": meta.total_rows,
+            "is_sqlite": True,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed {meta.format} database '{name}' ({meta.total_tables} tables, "
+            f"{meta.total_rows} rows) into {len(processed_chunks)} vector(3072) chunks "
+            f"in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=db_id,
+            name=name,
+            file_type="sqlite",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "sqlite"),
             chunks=processed_chunks,
             metadata=doc_meta,
             execution_trace=traces,
