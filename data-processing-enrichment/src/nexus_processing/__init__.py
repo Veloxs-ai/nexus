@@ -24,6 +24,18 @@ from .audio import (
     parse_id3_metadata,
     process_audio_binary,
 )
+from .email_chat import (
+    AttachmentInfo,
+    ChatConversationMetadata,
+    ChatConversationPayload,
+    ChatMessage,
+    ChatThread,
+    EmailChunk,
+    EmailMetadata,
+    EmailPayload,
+    process_chat_dialog,
+    process_email_binary,
+)
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
 from .mongodb import (
@@ -63,9 +75,17 @@ from .video import (
 __all__ = [
     "MONGO_ATLAS_VECTOR_SEARCH_INDEX",
     "MYSQL_DDL_SCHEMA",
+    "AttachmentInfo",
     "AudioMetadata",
     "AudioPayload",
     "AudioSegment",
+    "ChatConversationMetadata",
+    "ChatConversationPayload",
+    "ChatMessage",
+    "ChatThread",
+    "EmailChunk",
+    "EmailMetadata",
+    "EmailPayload",
     "ImageMetadata",
     "PDFMetadata",
     "PDFPage",
@@ -92,6 +112,8 @@ __all__ = [
     "normalize_mysql_cdc_event",
     "parse_id3_metadata",
     "process_audio_binary",
+    "process_chat_dialog",
+    "process_email_binary",
     "process_image_binary",
     "process_pdf_binary",
     "process_presentation_binary",
