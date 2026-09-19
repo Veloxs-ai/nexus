@@ -40,6 +40,17 @@ from .mysql import (
     normalize_mysql_cdc_event,
     serialize_mysql_row,
 )
+from .office import (
+    PresentationMetadata,
+    PresentationPayload,
+    SheetData,
+    SlideData,
+    SpreadsheetMetadata,
+    SpreadsheetPayload,
+    SpreadsheetRowChunk,
+    process_presentation_binary,
+    process_spreadsheet_binary,
+)
 from .pdf import PDFMetadata, PDFPage, PDFPayload, process_pdf_binary
 from .video import (
     VideoMetadata,
@@ -59,7 +70,14 @@ __all__ = [
     "PDFMetadata",
     "PDFPage",
     "PDFPayload",
+    "PresentationMetadata",
+    "PresentationPayload",
     "ProcessingEngine",
+    "SheetData",
+    "SlideData",
+    "SpreadsheetMetadata",
+    "SpreadsheetPayload",
+    "SpreadsheetRowChunk",
     "VideoMetadata",
     "VideoPayload",
     "VideoSceneChunk",
@@ -76,6 +94,8 @@ __all__ = [
     "process_audio_binary",
     "process_image_binary",
     "process_pdf_binary",
+    "process_presentation_binary",
+    "process_spreadsheet_binary",
     "process_video_binary",
     "serialize_bson_value",
     "serialize_mongo_document",

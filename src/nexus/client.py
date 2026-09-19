@@ -48,6 +48,10 @@ try:
     from nexus.processing.mysql import (
         chunk_mysql_table,
     )
+    from nexus.processing.office import (
+        process_presentation_binary,
+        process_spreadsheet_binary,
+    )
     from nexus.processing.pdf import process_pdf_binary
     from nexus.processing.video import process_video_binary
     from nexus.retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
@@ -69,6 +73,10 @@ except (ImportError, ModuleNotFoundError):
     )
     from nexus_processing.mysql import (
         chunk_mysql_table,
+    )
+    from nexus_processing.office import (
+        process_presentation_binary,
+        process_spreadsheet_binary,
     )
     from nexus_processing.pdf import process_pdf_binary
     from nexus_processing.video import process_video_binary
@@ -281,6 +289,44 @@ class NexusClient:
                     audio_id=document_id,
                     name=name,
                     audio_bytes=raw_audio_bytes,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for Spreadsheet (.xlsx) payloads
+        if detected_format in ("xlsx", "excel"):
+            raw_xlsx_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_xlsx_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_xlsx_bytes = p.read_bytes()
+            if raw_xlsx_bytes is not None:
+                return self.process_spreadsheet(
+                    spreadsheet_id=document_id,
+                    name=name or "workbook.xlsx",
+                    spreadsheet_bytes=raw_xlsx_bytes,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for Presentation (.pptx) payloads
+        if detected_format in ("pptx", "powerpoint"):
+            raw_pptx_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_pptx_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_pptx_bytes = p.read_bytes()
+            if raw_pptx_bytes is not None:
+                return self.process_presentation(
+                    presentation_id=document_id,
+                    name=name or "presentation.pptx",
+                    presentation_bytes=raw_pptx_bytes,
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
                     shallow_mode=shallow_mode,
@@ -1968,6 +2014,427 @@ class NexusClient:
             file_size_bytes=file_size_bytes,
             content_hash=content_hash,
             classification=doc_meta.get("classification", "audio"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_spreadsheet(
+        self,
+        spreadsheet_id: str,
+        name: str,
+        spreadsheet_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes an Excel spreadsheet (.xlsx) through native pure-Python container
+        decompression, shared string resolution, worksheet tabular framing, PII sanitization,
+        and sheet-grounded 3072D vector projection.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        if spreadsheet_bytes is not None:
+            raw_data = spreadsheet_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError(
+                "Either spreadsheet_bytes or file_path must be provided to process_spreadsheet."
+            )
+
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.md5(raw_data).hexdigest()
+
+        # Step 1: OPC Archive Decompression & Workbook Discovery
+        t0 = time.perf_counter()
+        spreadsheet_payload = process_spreadsheet_binary(raw_data, filename=name)
+        meta = spreadsheet_payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        sheet_preview = ", ".join(meta.sheet_names[:5])
+        if len(meta.sheet_names) > 5:
+            sheet_preview += "..."
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="OPC Archive Decompression & Workbook Discovery",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Decompressed OpenXML archive and discovered {meta.total_sheets} "
+                    f"worksheet(s): {sheet_preview}."
+                ),
+                details={
+                    "format": meta.format,
+                    "total_sheets": meta.total_sheets,
+                    "sheet_names": meta.sheet_names,
+                    "file_size_bytes": file_size_bytes,
+                },
+            )
+        )
+
+        # Step 2: Shared Strings & XML Schema Resolution
+        t0 = time.perf_counter()
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Shared Strings & XML Schema Resolution",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Resolved shared strings and tabular schemas across {meta.total_sheets} "
+                    f"sheet(s) with {meta.total_cells} total populated cells."
+                ),
+                details={
+                    "total_cells": meta.total_cells,
+                    "total_sheets": meta.total_sheets,
+                },
+            )
+        )
+
+        # Step 3: Worksheet Tabular Framing & Cell Parsing
+        t0 = time.perf_counter()
+        total_data_chunks = len(spreadsheet_payload.all_chunks)
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Worksheet Tabular Framing & Cell Parsing",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Framed {meta.total_rows} rows into {total_data_chunks} tabular chunk(s) "
+                    f"with column coordinate mappings."
+                ),
+                details={
+                    "total_rows": meta.total_rows,
+                    "total_chunks": total_data_chunks,
+                    "sheets": [
+                        {"name": s.sheet_name, "rows": s.total_rows, "cols": s.total_columns}
+                        for s in spreadsheet_payload.sheets
+                    ],
+                },
+            )
+        )
+
+        # Step 4: Safety Guardrails & PII Sanitization
+        t0 = time.perf_counter()
+        sanitized_chunks: list[tuple[Any, str]] = []
+        total_masked_items = 0
+
+        for chunk in spreadsheet_payload.all_chunks:
+            n_text = chunk.narrative_text
+            if apply_guardrails and n_text:
+                scrubbed_text = self.guardrails.mask_pii(n_text)
+                if scrubbed_text != n_text:
+                    total_masked_items += 1
+            else:
+                scrubbed_text = n_text
+            sanitized_chunks.append((chunk, scrubbed_text))
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Applied PII detection across {len(sanitized_chunks)} tabular row(s). "
+                    f"Masked {total_masked_items} sensitive items."
+                ),
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "masked_items": total_masked_items,
+                },
+            )
+        )
+
+        # Step 5: Sheet-Grounded 3072D Vector Projection
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for idx, (chunk, scrubbed_text) in enumerate(sanitized_chunks):
+            embedding_vector = self.retrieval.embed(scrubbed_text)
+            chunk_meta: dict[str, Any] = {
+                "sheet_name": chunk.sheet_name,
+                "row_index": chunk.row_index,
+                "data": chunk.data,
+                "is_spreadsheet": True,
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{spreadsheet_id}:{chunk.sheet_name}:{chunk.row_index}",
+                    document_id=spreadsheet_id,
+                    chunk_index=idx,
+                    text=scrubbed_text,
+                    metadata=chunk_meta,
+                    embedding=embedding_vector,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="Sheet-Grounded 3072D Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} sheet-grounded 3072-dimensional "
+                    f"vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "sheet_names": meta.sheet_names,
+            "total_sheets": meta.total_sheets,
+            "total_rows": meta.total_rows,
+            "total_cells": meta.total_cells,
+            "is_spreadsheet": True,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed {meta.format} workbook '{name}' ({meta.total_sheets} sheets, "
+            f"{meta.total_rows} rows) into {len(processed_chunks)} vector(3072) chunks "
+            f"in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=spreadsheet_id,
+            name=name,
+            file_type="spreadsheet",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "spreadsheet"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_presentation(
+        self,
+        presentation_id: str,
+        name: str,
+        presentation_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes a PowerPoint presentation (.pptx) through native pure-Python container
+        decompression, slide shape extraction, speaker notes resolution, PII sanitization,
+        and slide-grounded 3072D vector projection.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        if presentation_bytes is not None:
+            raw_data = presentation_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError(
+                "Either presentation_bytes or file_path must be provided to process_presentation."
+            )
+
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.md5(raw_data).hexdigest()
+
+        # Step 1: OPC Archive Decompression & Slide Graph Discovery
+        t0 = time.perf_counter()
+        pres_payload = process_presentation_binary(raw_data, filename=name)
+        meta = pres_payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="OPC Archive Decompression & Slide Graph Discovery",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Discovered presentation graph with {meta.total_slides} ordered slide(s) "
+                    f"and {meta.total_words} total words."
+                ),
+                details={
+                    "format": meta.format,
+                    "total_slides": meta.total_slides,
+                    "slide_titles": meta.slide_titles,
+                    "file_size_bytes": file_size_bytes,
+                },
+            )
+        )
+
+        # Step 2: Slide XML & DrawingML Text Extraction
+        t0 = time.perf_counter()
+        total_shapes = sum(s.shape_count for s in pres_payload.slides)
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Slide XML & DrawingML Text Extraction",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Extracted titles and body paragraphs across {total_shapes} shape elements."
+                ),
+                details={
+                    "total_shapes": total_shapes,
+                    "slides_count": len(pres_payload.slides),
+                },
+            )
+        )
+
+        # Step 3: Speaker Notes & Hierarchy Resolution
+        t0 = time.perf_counter()
+        slides_with_notes = sum(1 for s in pres_payload.slides if s.speaker_notes.strip())
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Speaker Notes & Hierarchy Resolution",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Resolved speaker notes for {slides_with_notes}/{meta.total_slides} slide(s) "
+                    f"and linked contextual narrations."
+                ),
+                details={
+                    "slides_with_notes": slides_with_notes,
+                    "total_slides": meta.total_slides,
+                },
+            )
+        )
+
+        # Step 4: Safety Guardrails & PII Sanitization
+        t0 = time.perf_counter()
+        sanitized_slides: list[tuple[Any, str]] = []
+        total_masked_items = 0
+
+        for s in pres_payload.slides:
+            n_text = s.narrative_text
+            if apply_guardrails and n_text:
+                scrubbed_text = self.guardrails.mask_pii(n_text)
+                if scrubbed_text != n_text:
+                    total_masked_items += 1
+            else:
+                scrubbed_text = n_text
+            sanitized_slides.append((s, scrubbed_text))
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Applied PII detection across {len(sanitized_slides)} slide(s). "
+                    f"Masked {total_masked_items} sensitive items."
+                ),
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "masked_items": total_masked_items,
+                },
+            )
+        )
+
+        # Step 5: Slide-Grounded 3072D Vector Projection
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for idx, (s, scrubbed_text) in enumerate(sanitized_slides):
+            embedding_vector = self.retrieval.embed(scrubbed_text)
+            chunk_meta: dict[str, Any] = {
+                "slide_number": s.slide_number,
+                "title": s.title,
+                "has_speaker_notes": bool(s.speaker_notes.strip()),
+                "shape_count": s.shape_count,
+                "word_count": s.word_count,
+                "is_presentation": True,
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{presentation_id}:{s.slide_number - 1}",
+                    document_id=presentation_id,
+                    chunk_index=idx,
+                    text=scrubbed_text,
+                    metadata=chunk_meta,
+                    embedding=embedding_vector,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="Slide-Grounded 3072D Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} slide-grounded 3072-dimensional "
+                    f"vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "total_slides": meta.total_slides,
+            "total_words": meta.total_words,
+            "slide_titles": meta.slide_titles,
+            "is_presentation": True,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed {meta.format} presentation '{name}' ({meta.total_slides} slides, "
+            f"{meta.total_words} words) into {len(processed_chunks)} vector(3072) chunks "
+            f"in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=presentation_id,
+            name=name,
+            file_type="presentation",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "presentation"),
             chunks=processed_chunks,
             metadata=doc_meta,
             execution_trace=traces,
