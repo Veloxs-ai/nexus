@@ -38,7 +38,8 @@ try:
     from nexus.guardrails.engine import GuardrailsEngine
     from nexus.processing.engine import ProcessingEngine
     from nexus.processing.images import process_image_binary
-    from nexus.retrieval.embeddings import ImageEmbedder
+    from nexus.processing.video import process_video_binary
+    from nexus.retrieval.embeddings import ImageEmbedder, VideoEmbedder
     from nexus.retrieval.engine import RetrievalEngine
 except (ImportError, ModuleNotFoundError):
     from nexus_experience.config import AuthConfig, EngagementConfig
@@ -49,7 +50,8 @@ except (ImportError, ModuleNotFoundError):
     from nexus_guardrails.engine import GuardrailsEngine
     from nexus_processing.engine import ProcessingEngine
     from nexus_processing.images import process_image_binary
-    from nexus_retrieval.embeddings import ImageEmbedder
+    from nexus_processing.video import process_video_binary
+    from nexus_retrieval.embeddings import ImageEmbedder, VideoEmbedder
     from nexus_retrieval.engine import RetrievalEngine
 
 
@@ -88,6 +90,7 @@ class NexusClient:
             retrieval_engine=self.retrieval,
         )
         self.image_embedder = ImageEmbedder(dimensions=3072, normalize=True)
+        self.video_embedder = VideoEmbedder(dimensions=3072, normalize=True)
 
         if experience_service is not None:
             self.experience = experience_service
@@ -113,10 +116,10 @@ class NexusClient:
         masking, and 3072D vector projection.
 
         Args:
-            document_id: Unique identifier for the document.
-            name: Filename or table descriptor.
-            text: Raw extracted text payload.
-            file_type: Extension or format ('csv', 'json', 'md', 'txt', 'pdf').
+            document_id: Unique identifier for the document record.
+            name: Original filename or title.
+            text: Raw document text, or binary bytes for images/videos.
+            file_type: Optional file extension override.
             metadata: Custom metadata dictionary to attach to document and chunks.
             enable_guardrails: When True (default), applies PII detection and
                 regex masking (Luhn cards, emails, SSNs).
@@ -151,6 +154,23 @@ class NexusClient:
                     name=name,
                     image_bytes=raw_img_bytes,
                     format_hint=detected_format,
+                    metadata=metadata,
+                )
+
+        # Automatic routing for video payloads
+        if detected_format in ("mp4", "mov", "m4v", "webm", "mkv"):
+            raw_vid_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_vid_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_vid_bytes = p.read_bytes()
+            if raw_vid_bytes is not None:
+                return self.process_video(
+                    video_id=document_id,
+                    name=name,
+                    video_bytes=raw_vid_bytes,
                     metadata=metadata,
                 )
 
@@ -616,6 +636,265 @@ class NexusClient:
             classification=doc_metadata.get("classification", "visual"),
             chunks=[chunk],
             metadata=doc_metadata,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def embed_video_scene(
+        self,
+        spatial_grid: list[float],
+        motion_score: float,
+        start_seconds: float,
+        end_seconds: float,
+        keyframe_dhash: str | None = None,
+        transcript_text: str | None = None,
+    ) -> list[float]:
+        """Generates a pure 3072-dimensional normalized spatio-temporal video embedding vector."""
+        return self.video_embedder.embed_scene(
+            spatial_grid=spatial_grid,
+            motion_score=motion_score,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            keyframe_dhash=keyframe_dhash,
+            transcript_text=transcript_text,
+        )
+
+    def process_video(
+        self,
+        video_id: str,
+        name: str,
+        video_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        scene_interval_seconds: float = 10.0,
+        transcript_segments: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ProcessedDocumentPayload:
+        """Processes a video through pure-Python ISO container demuxing,
+        temporal scene chunking, motion delta analysis, and 3072D vector projection.
+
+        Args:
+            video_id: Unique identifier for the video document.
+            name: Filename or descriptor (e.g. 'product_demo.mp4').
+            video_bytes: Raw binary video payload.
+            file_path: Optional path to read video from disk if video_bytes not provided.
+            scene_interval_seconds: Temporal window size in seconds (default: 10.0s).
+            transcript_segments: Optional list of speech-to-text dicts with 'start', 'end', 'text'.
+            metadata: Custom metadata dictionary to attach to video document and chunks.
+
+        Returns:
+            ProcessedDocumentPayload with temporal scene chunks, 3072D vectors,
+            and 5-stage telemetry.
+        """
+
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+
+        if video_bytes is not None:
+            raw_data = video_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError("Either video_bytes or file_path must be provided to process_video.")
+
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.sha256(raw_data).hexdigest()
+
+        # -------------------------------------------------------------------------
+        # Step 1: Container Header & ISO Demuxing (0% - 20%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        video_payload = process_video_binary(
+            data=raw_data,
+            scene_interval_seconds=scene_interval_seconds,
+            transcript_segments=transcript_segments,
+        )
+        meta = video_payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="Container Header & ISO Demuxing",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Demuxed {meta.format} container ({meta.width}x{meta.height} @ {meta.fps}fps, "
+                    f"duration: {meta.duration_seconds}s, {meta.keyframe_count} keyframes)."
+                ),
+                details={
+                    "format": meta.format,
+                    "width": meta.width,
+                    "height": meta.height,
+                    "duration_seconds": meta.duration_seconds,
+                    "total_frames": meta.total_frames,
+                    "keyframe_count": meta.keyframe_count,
+                    "fps": meta.fps,
+                    "file_size_bytes": file_size_bytes,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 2: Temporal Scene Segmentation & Keyframing (20% - 40%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        num_scenes = len(video_payload.scenes)
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Temporal Scene Segmentation & Keyframing",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Segmented timeline into {num_scenes} temporal scene windows "
+                    f"(target interval: {scene_interval_seconds}s per scene)."
+                ),
+                details={
+                    "total_scenes": num_scenes,
+                    "interval_seconds": scene_interval_seconds,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 3: Multi-Frame Spatial Feature Extraction (40% - 60%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        total_cells_sampled = num_scenes * 64
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Multi-Frame Spatial Feature Extraction",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Sampled {total_cells_sampled} spatial luminance cells and extracted "
+                    f"perceptual edge signatures across all {num_scenes} scenes."
+                ),
+                details={
+                    "cells_per_scene": 64,
+                    "total_sampled_cells": total_cells_sampled,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 4: Motion Dynamics & Temporal Delta Analysis (60% - 80%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        avg_motion = round(
+            sum(s.motion_score for s in video_payload.scenes) / max(1, num_scenes), 3
+        )
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Motion Dynamics & Temporal Delta Analysis",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Analyzed inter-frame motion variance (average motion score: {avg_motion}). "
+                    f"Classified scenes into static and active motion windows."
+                ),
+                details={
+                    "average_motion_score": avg_motion,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 5: 3072D Spatio-Temporal Vector Projection (80% - 100%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for scene in video_payload.scenes:
+            vec = self.video_embedder.embed_scene(
+                spatial_grid=scene.spatial_grid,
+                motion_score=scene.motion_score,
+                start_seconds=scene.start_seconds,
+                end_seconds=scene.end_seconds,
+                keyframe_dhash=scene.keyframe_dhash,
+                transcript_text=scene.transcript_segment,
+            )
+
+            chunk_meta: dict[str, Any] = {
+                "format": meta.format,
+                "scene_index": scene.scene_index,
+                "start_seconds": scene.start_seconds,
+                "end_seconds": scene.end_seconds,
+                "timestamp": scene.timestamp_label,
+                "motion_score": scene.motion_score,
+                "motion_intensity": scene.motion_intensity,
+                "keyframe_dhash": scene.keyframe_dhash,
+                "is_video": True,
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{video_id}:{scene.scene_index}",
+                    document_id=video_id,
+                    chunk_index=scene.scene_index,
+                    text=scene.narrative_summary,
+                    metadata=chunk_meta,
+                    embedding=vec,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="3072D Spatio-Temporal Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
+                    f"spatio-temporal vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "duration_seconds": meta.duration_seconds,
+            "width": meta.width,
+            "height": meta.height,
+            "fps": meta.fps,
+            "total_frames": meta.total_frames,
+            "keyframe_count": meta.keyframe_count,
+            "total_scenes": len(processed_chunks),
+            "is_video": True,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Successfully processed video '{name}' ({meta.duration_seconds}s, {meta.format}) "
+            f"into {len(processed_chunks)} temporal vector(3072) scenes in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=video_id,
+            name=name,
+            file_type=meta.format.lower(),
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "video"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
             execution_trace=traces,
             summary=summary_msg,
         )

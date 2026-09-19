@@ -160,6 +160,79 @@ class ImageEmbedder:
         return normalize_vector(vector) if self.normalize else vector
 
 
+class VideoEmbedder:
+    """High-dimensional spatio-temporal video projection embedder.
+
+    Projects keyframe spatial grids, motion delta vectors, timestamp intervals,
+    and speech transcript tokens into a unified 3072-dimensional vector space
+    with exact IEEE 754 L2 unit normalization.
+    """
+
+    def __init__(self, dimensions: int = 3072, normalize: bool = True) -> None:
+        self.dimensions = dimensions
+        self.normalize = normalize
+
+    def embed_scene(
+        self,
+        spatial_grid: list[float],
+        motion_score: float,
+        start_seconds: float,
+        end_seconds: float,
+        keyframe_dhash: str | None = None,
+        transcript_text: str | None = None,
+    ) -> list[float]:
+        vector = [0.0] * self.dimensions
+
+        # 1. Temporal Window & Interval Bucketing
+        win_idx = int(start_seconds // 15)
+        t_token = f"t_window_{win_idx}"
+        ht = int(hashlib.md5(t_token.encode()).hexdigest(), 16) % self.dimensions
+        vector[ht] += 1.6
+
+        dur_token = f"dur_{int(end_seconds - start_seconds)}"
+        hd = int(hashlib.sha1(dur_token.encode()).hexdigest(), 16) % self.dimensions
+        vector[hd] += 1.0
+
+        # 2. Keyframe Spatial Luminance Grid Projection (8x8 = 64 cells)
+        grid_dim = math.isqrt(len(spatial_grid)) or 8
+        for idx, val in enumerate(spatial_grid):
+            r = idx // grid_dim
+            c = idx % grid_dim
+            q_val = min(19, int(val * 20))
+            token = f"vid_pos_{r}_{c}_val_{q_val}"
+            h1 = int(hashlib.md5(token.encode()).hexdigest(), 16) % self.dimensions
+            h2 = int(hashlib.sha256(token.encode()).hexdigest(), 16) % self.dimensions
+            sign1 = 1.0 if (h1 % 2 == 0) else -1.0
+            sign2 = 1.0 if (h2 % 2 == 0) else -1.0
+            vector[h1] += (1.0 + val * 1.5) * sign1
+            vector[h2] += (0.8 + val * 1.2) * sign2
+
+        # 3. Motion Dynamics & Temporal Delta
+        m_bin = max(0, min(9, int(motion_score * 10)))
+        m_token = f"motion_delta_bin_{m_bin}"
+        hm = int(hashlib.sha256(m_token.encode()).hexdigest(), 16) % self.dimensions
+        sign_m = 1.0 if (hm % 2 == 0) else -1.0
+        vector[hm] += (2.0 + motion_score * 3.0) * sign_m
+
+        # 4. Keyframe Edge Signature (dHash)
+        if keyframe_dhash:
+            for i in range(0, len(keyframe_dhash) - 3, 2):
+                chunk = keyframe_dhash[i : i + 4]
+                h = int(hashlib.sha1(f"vdhash_{chunk}".encode()).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += 2.0 * sign
+
+        # 5. Speech Dialogue / Transcript Tokens (Multi-Modal Alignment)
+        if transcript_text:
+            words = [w for w in tokenize(transcript_text) if len(w) >= 2]
+            for w in words:
+                hw = int(hashlib.sha1(f"vspeech_{w}".encode()).hexdigest(), 16) % self.dimensions
+                sign_w = 1.0 if (hw % 2 == 0) else -1.0
+                vector[hw] += 1.8 * sign_w
+
+        return normalize_vector(vector) if self.normalize else vector
+
+
 def normalize_vector(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(value * value for value in vector))
     if magnitude == 0:

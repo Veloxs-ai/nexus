@@ -18,13 +18,25 @@
 
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
+from .video import (
+    VideoMetadata,
+    VideoPayload,
+    VideoSceneChunk,
+    format_timestamp,
+    process_video_binary,
+)
 
 __all__ = [
     "ImageMetadata",
     "ProcessingEngine",
+    "VideoMetadata",
+    "VideoPayload",
+    "VideoSceneChunk",
     "VisualFeaturePayload",
     "__version__",
+    "format_timestamp",
     "process_image_binary",
+    "process_video_binary",
 ]
 
 __version__ = "0.1.0"
