@@ -18,6 +18,7 @@
 
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
+from .pdf import PDFMetadata, PDFPage, PDFPayload, process_pdf_binary
 from .video import (
     VideoMetadata,
     VideoPayload,
@@ -28,6 +29,9 @@ from .video import (
 
 __all__ = [
     "ImageMetadata",
+    "PDFMetadata",
+    "PDFPage",
+    "PDFPayload",
     "ProcessingEngine",
     "VideoMetadata",
     "VideoPayload",
@@ -36,6 +40,7 @@ __all__ = [
     "__version__",
     "format_timestamp",
     "process_image_binary",
+    "process_pdf_binary",
     "process_video_binary",
 ]
 
