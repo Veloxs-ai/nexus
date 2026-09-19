@@ -16,10 +16,17 @@
 
 """Embedding and retrieval intelligence package."""
 
-from .embeddings import HashingEmbedder, ImageEmbedder, VideoEmbedder, cosine_similarity
+from .embeddings import (
+    AudioEmbedder,
+    HashingEmbedder,
+    ImageEmbedder,
+    VideoEmbedder,
+    cosine_similarity,
+)
 from .engine import RetrievalEngine
 
 __all__ = [
+    "AudioEmbedder",
     "HashingEmbedder",
     "ImageEmbedder",
     "RetrievalEngine",

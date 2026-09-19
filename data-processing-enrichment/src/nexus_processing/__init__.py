@@ -16,6 +16,14 @@
 
 """Data processing and enrichment package."""
 
+from .audio import (
+    AudioMetadata,
+    AudioPayload,
+    AudioSegment,
+    format_audio_timestamp,
+    parse_id3_metadata,
+    process_audio_binary,
+)
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
 from .mongodb import (
@@ -44,6 +52,9 @@ from .video import (
 __all__ = [
     "MONGO_ATLAS_VECTOR_SEARCH_INDEX",
     "MYSQL_DDL_SCHEMA",
+    "AudioMetadata",
+    "AudioPayload",
+    "AudioSegment",
     "ImageMetadata",
     "PDFMetadata",
     "PDFPage",
@@ -57,9 +68,12 @@ __all__ = [
     "chunk_mongo_collection",
     "chunk_mysql_table",
     "flatten_mongo_document",
+    "format_audio_timestamp",
     "format_timestamp",
     "normalize_mongo_change_event",
     "normalize_mysql_cdc_event",
+    "parse_id3_metadata",
+    "process_audio_binary",
     "process_image_binary",
     "process_pdf_binary",
     "process_video_binary",

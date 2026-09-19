@@ -233,6 +233,84 @@ class VideoEmbedder:
         return normalize_vector(vector) if self.normalize else vector
 
 
+class AudioEmbedder:
+    """Projects acoustic time-domain and frequency-domain audio metrics into 3072D vector space."""
+
+    def __init__(self, dimensions: int = 3072, normalize: bool = True) -> None:
+        self.dimensions = dimensions
+        self.normalize = normalize
+
+    def embed_features(
+        self,
+        rms_envelope: list[float],
+        zcr_profile: list[float],
+        spectral_distribution: list[float],
+        spectral_flux: list[float] | None = None,
+        duration_seconds: float = 0.0,
+        acoustic_signature: str | None = None,
+        narrative_tokens: str | None = None,
+    ) -> list[float]:
+        vector = [0.0] * self.dimensions
+
+        # 1. Temporal RMS Loudness Envelope (64 bins)
+        for idx, val in enumerate(rms_envelope):
+            q_val = min(19, int(val * 20))
+            token = f"rms_t_{idx}_q_{q_val}"
+            h1 = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            h2 = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            sign1 = 1.0 if (h1 % 2 == 0) else -1.0
+            sign2 = 1.0 if (h2 % 2 == 0) else -1.0
+            vector[h1] += (1.0 + val * 2.5) * sign1
+            vector[h2] += (0.8 + val * 1.8) * sign2
+
+        # 2. Zero-Crossing Rate (ZCR) Dynamics (Speech vs Noise)
+        for idx, zcr in enumerate(zcr_profile):
+            q_zcr = min(19, int(zcr * 20))
+            token = f"zcr_t_{idx}_q_{q_zcr}"
+            h = int(hashlib.sha1(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            sign = 1.0 if (h % 2 == 0) else -1.0
+            vector[h] += (1.5 + zcr * 2.0) * sign
+
+        # 3. Spectral Frequency Sub-Bands (Bass, Mid, Treble)
+        for idx, pwr in enumerate(spectral_distribution):
+            q_pwr = min(19, int(pwr * 10))
+            token = f"spec_b_{idx}_q_{q_pwr}"
+            h = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            sign = 1.0 if (h % 2 == 0) else -1.0
+            vector[h] += (1.2 + pwr * 1.5) * sign
+
+        # 4. Spectral Flux & Transients (Onset Variance)
+        if spectral_flux:
+            for idx, flux in enumerate(spectral_flux):
+                q_flux = min(9, int(flux * 10))
+                token = f"flux_{idx}_{q_flux}"
+                h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += (1.0 + flux * 2.0) * sign
+
+        # 5. Acoustic Signature Hash & Duration
+        if acoustic_signature:
+            for i in range(0, len(acoustic_signature) - 3, 2):
+                chunk = acoustic_signature[i : i + 4]
+                h = int(hashlib.sha1(f"asig_{chunk}".encode()).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += 2.0 * sign
+
+        dur_token = f"dur_{int(duration_seconds)}"
+        hd = int(hashlib.sha1(dur_token.encode()).hexdigest(), 16) % self.dimensions
+        vector[hd] += 1.0
+
+        # 6. Text Tokens (ID3 tags / Narrative context)
+        if narrative_tokens:
+            words = [w for w in tokenize(narrative_tokens) if len(w) >= 2]
+            for w in words:
+                hw = int(hashlib.sha1(f"atxt_{w}".encode()).hexdigest(), 16) % self.dimensions
+                sign_w = 1.0 if (hw % 2 == 0) else -1.0
+                vector[hw] += 1.8 * sign_w
+
+        return normalize_vector(vector) if self.normalize else vector
+
+
 def normalize_vector(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(value * value for value in vector))
     if magnitude == 0:

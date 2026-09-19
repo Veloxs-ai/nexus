@@ -37,6 +37,7 @@ try:
     from nexus.experience.models import AskRequest, AskResponse, Principal
     from nexus.experience.service import ExperienceService
     from nexus.guardrails.engine import GuardrailsEngine
+    from nexus.processing.audio import process_audio_binary
     from nexus.processing.engine import ProcessingEngine
     from nexus.processing.images import process_image_binary
     from nexus.processing.mongodb import (
@@ -49,7 +50,7 @@ try:
     )
     from nexus.processing.pdf import process_pdf_binary
     from nexus.processing.video import process_video_binary
-    from nexus.retrieval.embeddings import ImageEmbedder, VideoEmbedder
+    from nexus.retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus.retrieval.engine import RetrievalEngine
 except (ImportError, ModuleNotFoundError):
     from nexus_experience.config import AuthConfig, EngagementConfig
@@ -58,6 +59,7 @@ except (ImportError, ModuleNotFoundError):
     from nexus_experience.models import AskRequest, AskResponse, Principal
     from nexus_experience.service import ExperienceService
     from nexus_guardrails.engine import GuardrailsEngine
+    from nexus_processing.audio import process_audio_binary
     from nexus_processing.engine import ProcessingEngine
     from nexus_processing.images import process_image_binary
     from nexus_processing.mongodb import (
@@ -70,7 +72,7 @@ except (ImportError, ModuleNotFoundError):
     )
     from nexus_processing.pdf import process_pdf_binary
     from nexus_processing.video import process_video_binary
-    from nexus_retrieval.embeddings import ImageEmbedder, VideoEmbedder
+    from nexus_retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus_retrieval.engine import RetrievalEngine
 
 
@@ -110,6 +112,7 @@ class NexusClient:
         )
         self.image_embedder = ImageEmbedder(dimensions=3072, normalize=True)
         self.video_embedder = VideoEmbedder(dimensions=3072, normalize=True)
+        self.audio_embedder = AudioEmbedder(dimensions=3072, normalize=True)
 
         if experience_service is not None:
             self.experience = experience_service
@@ -259,6 +262,25 @@ class NexusClient:
                 return self.process_mongo_collection(
                     collection_name=name or document_id,
                     documents=raw_docs,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for Audio payloads
+        if detected_format in ("wav", "aiff", "aif", "mp3"):
+            raw_audio_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_audio_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_audio_bytes = p.read_bytes()
+            if raw_audio_bytes is not None:
+                return self.process_audio(
+                    audio_id=document_id,
+                    name=name,
+                    audio_bytes=raw_audio_bytes,
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
                     shallow_mode=shallow_mode,
@@ -1679,6 +1701,273 @@ class NexusClient:
             file_size_bytes=file_size_bytes,
             content_hash=content_hash,
             classification=doc_meta.get("classification", "database"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def embed_audio(
+        self,
+        audio_bytes: bytes,
+        window_seconds: float = 10.0,
+    ) -> list[float]:
+        """Generates a pure 3072-dimensional normalized spatio-acoustic embedding vector."""
+        payload = process_audio_binary(audio_bytes, window_seconds=window_seconds)
+        return self.audio_embedder.embed_features(
+            rms_envelope=payload.rms_envelope,
+            zcr_profile=payload.zcr_profile,
+            spectral_distribution=payload.spectral_distribution,
+            spectral_flux=payload.spectral_flux,
+            duration_seconds=payload.metadata.duration_seconds,
+            acoustic_signature=payload.acoustic_signature,
+            narrative_tokens=" ".join(s.narrative_text for s in payload.segments),
+        )
+
+    def process_audio(
+        self,
+        audio_id: str,
+        name: str,
+        audio_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        window_seconds: float = 10.0,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes an audio file through native pure-Python container decoding,
+        PCM extraction, VAD energy profiling, spectral decomposition, PII sanitization,
+        and temporal 3072D vector projection.
+
+        Args:
+            audio_id: Unique identifier for the audio resource.
+            name: Filename or descriptor (e.g. 'call_recording.wav', 'track.mp3').
+            audio_bytes: Raw binary audio payload.
+            file_path: Optional path to read audio file from disk if audio_bytes not provided.
+            window_seconds: Temporal framing interval in seconds (default: 10.0).
+            metadata: Custom metadata dictionary to attach to audio document and segment chunks.
+            enable_guardrails: When True (default), scrubs sensitive PII in ID3 tags.
+            shallow_mode: Alias for bypassing PII sanitization.
+
+        Returns:
+            ProcessedDocumentPayload with temporal chunks, 3072D vectors, and traces.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        if audio_bytes is not None:
+            raw_data = audio_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError("Either audio_bytes or file_path must be provided to process_audio.")
+
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.md5(raw_data).hexdigest()
+
+        # -------------------------------------------------------------------------
+        # Step 1: Audio Container & Codec Parsing (0% - 20%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        audio_payload = process_audio_binary(raw_data, window_seconds=window_seconds)
+        meta = audio_payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="Audio Container & Codec Parsing",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Parsed {meta.format} container ({meta.sample_rate}Hz, "
+                    f"{meta.channels}ch, {meta.bit_depth}-bit). Duration: {meta.duration_seconds}s."
+                ),
+                details={
+                    "format": meta.format,
+                    "sample_rate": meta.sample_rate,
+                    "channels": meta.channels,
+                    "bit_depth": meta.bit_depth,
+                    "duration_seconds": meta.duration_seconds,
+                    "id3_tags": meta.id3_tags,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 2: PCM Signal Extraction & Channel Normalization (20% - 40%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="PCM Signal Extraction & Channel Normalization",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Extracted {meta.total_frames} PCM frames and normalized multi-channel "
+                    f"audio into float signal [-1.0, 1.0]."
+                ),
+                details={
+                    "total_frames": meta.total_frames,
+                    "channels": meta.channels,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 3: Temporal Window Framing & VAD Energy Profiling (40% - 60%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        active_count = sum(1 for s in audio_payload.segments if s.activity_level != "Silent")
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Temporal Window Framing & VAD Energy Profiling",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Framed audio into {len(audio_payload.segments)} temporal window(s) "
+                    f"({window_seconds}s interval). Detected {active_count} active segment(s)."
+                ),
+                details={
+                    "total_segments": len(audio_payload.segments),
+                    "window_seconds": window_seconds,
+                    "active_segments": active_count,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 4: Multi-Band Spectral & Rhythm Decomposition (60% - 80%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        avg_rms = sum(s.rms_energy for s in audio_payload.segments) / max(
+            1, len(audio_payload.segments)
+        )
+        avg_centroid = sum(s.spectral_centroid_hz for s in audio_payload.segments) / max(
+            1, len(audio_payload.segments)
+        )
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Multi-Band Spectral & Rhythm Decomposition",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Decomposed 7-band spectral frequencies (Centroid: {avg_centroid:.0f}Hz, "
+                    f"Mean RMS: {avg_rms:.3f}). Signature: {audio_payload.acoustic_signature}."
+                ),
+                details={
+                    "mean_rms": round(avg_rms, 4),
+                    "mean_centroid_hz": round(avg_centroid, 1),
+                    "acoustic_signature": audio_payload.acoustic_signature,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 5: Spatio-Acoustic 3072D Vector Projection (80% - 100%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for seg in audio_payload.segments:
+            seg_text = seg.narrative_text
+            if apply_guardrails:
+                seg_text = self.guardrails.mask_pii(seg_text)
+
+            embedding = self.audio_embedder.embed_features(
+                rms_envelope=[seg.rms_energy] * 64,
+                zcr_profile=[seg.zero_crossing_rate] * 64,
+                spectral_distribution=(seg.sub_band_energies * 10)[:64],
+                spectral_flux=audio_payload.spectral_flux,
+                duration_seconds=seg.end_seconds - seg.start_seconds,
+                acoustic_signature=audio_payload.acoustic_signature,
+                narrative_tokens=seg_text,
+            )
+
+            chunk_meta: dict[str, Any] = {
+                "segment_index": seg.segment_index,
+                "start_seconds": seg.start_seconds,
+                "end_seconds": seg.end_seconds,
+                "timestamp_label": seg.timestamp_label,
+                "rms_energy": seg.rms_energy,
+                "zero_crossing_rate": seg.zero_crossing_rate,
+                "spectral_centroid_hz": seg.spectral_centroid_hz,
+                "activity_level": seg.activity_level,
+                "is_audio": True,
+                "audio_format": meta.format,
+            }
+            if meta.id3_tags:
+                chunk_meta["id3_tags"] = meta.id3_tags
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{audio_id}:{seg.segment_index}",
+                    document_id=audio_id,
+                    chunk_index=seg.segment_index,
+                    text=seg_text,
+                    metadata=chunk_meta,
+                    embedding=embedding,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="Spatio-Acoustic 3072D Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} spatio-acoustic 3072-dimensional "
+                    f"vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "sample_rate": meta.sample_rate,
+            "channels": meta.channels,
+            "bit_depth": meta.bit_depth,
+            "duration_seconds": meta.duration_seconds,
+            "total_frames": meta.total_frames,
+            "acoustic_signature": audio_payload.acoustic_signature,
+            "is_audio": True,
+        }
+        if meta.id3_tags:
+            doc_meta["id3_tags"] = meta.id3_tags
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed {meta.format} audio '{name}' ({meta.duration_seconds}s) "
+            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=audio_id,
+            name=name,
+            file_type="audio",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "audio"),
             chunks=processed_chunks,
             metadata=doc_meta,
             execution_trace=traces,
