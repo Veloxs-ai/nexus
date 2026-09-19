@@ -19,8 +19,10 @@ Data Connectivity → Processing & Enrichment → Knowledge & Retrieval → Inte
 ## Contents
 
 - [What Nexus gives you](#what-nexus-gives-you)
+- [Supported Formats & Modalities](#supported-formats--modalities)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Multimodal Ingestion (Office, Audio, Video, Code, DBs)](#multimodal-ingestion-office-audio-video-code-dbs)
 - [Build a RAG workflow](#build-a-rag-workflow)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -38,8 +40,8 @@ Nexus provides seven composable capabilities. Each is an independently installab
 | Capability | Package | What it does |
 |---|---|---|
 | **Data Connectivity** | `nexus.pipeline` | REST connectors with pagination and SSRF defense, batch file drops, streaming events, CDC (Debezium format) |
-| **Processing & Enrichment** | `nexus.processing` | Format-aware chunking for CSV, JSON, Markdown and text; metadata extraction; FF1 format-preserving tokenization for sensitive fields |
-| **Knowledge & Retrieval** | `nexus.retrieval` | Vector, lexical (BM25-style), hybrid RRF, and knowledge-graph retrieval with pluggable stores |
+| **Processing & Enrichment** | `nexus.processing` | Native zero-dependency parsers for Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, Audio (WAV/MP3/AIFF), Video (MP4/MOV), Images (PNG/JPEG/BMP), Code AST, OpenAPI, SQLite, MySQL, MongoDB, Email, Chat, CSV, Markdown, and Text; format-preserving tokenization (FF1) |
+| **Knowledge & Retrieval** | `nexus.retrieval` | Unified 3072D vector projection (IEEE 754 L2 unit norm = 1.0), lexical (BM25-style), hybrid RRF, and knowledge-graph retrieval with pluggable stores |
 | **Intelligent RAG** | `nexus.guardrails` | Grounded answers with citations, PII masking, prompt-injection defense, fail-closed policy checks |
 | **AI Orchestration** | `nexus.experience` | REST API, SDK, CLI, assistant sessions, channel adapters, API-key auth |
 | **Governance** | `nexus.security` | RBAC, multi-tenant isolation, authenticated encryption, immutable audit log |
@@ -53,6 +55,23 @@ Nexus provides seven composable capabilities. Each is an independently installab
 - **Multi-tenant by construction.** Encryption and tokenization derive a tenant-bound salt (`HKDF-SHA256`), so two tenants processing identical data produce cryptographically distinct ciphertext.
 
 > **On the embedding provider:** the built-in projection is a deterministic multi-gram hashing embedder, not a trained semantic model. It is excellent for reproducible local development, lexical-adjacent matching, and offline demos. For production semantic search, plug in your own embedding provider — the interface is designed for it. See [docs/USING_NEXUS.md](docs/USING_NEXUS.md).
+
+---
+
+## Supported Formats & Modalities
+
+Nexus includes **zero-dependency, pure-Python binary and text decoders**. All modalities project into a unified **3072-dimensional vector space** with IEEE 754 $L_2$ unit normalization ($\|V\|_2 = 1.0$) and format-aware grounded citations.
+
+| Category | Supported Formats | Native Features & Grounding |
+|---|---|---|
+| **Office Documents** | `.docx` (Word), `.xlsx` (Excel), `.pptx` (PowerPoint) | OpenXML archive decompression; heading hierarchy (`Heading1..6`) & markdown tables for Word; multi-sheet cell matrices & row narratives for Excel; slide text, speaker notes & layouts for PowerPoint. |
+| **Documents & Data** | `.pdf`, `.csv`, `.md`, `.txt`, `.json`, `.jsonl` | ISO 32000-1 PDF stream decompression & page citations; CSV row-level narratives (`[Row ID: 1] col: val`); smart boundary-aware paragraph chunking for Markdown & text. |
+| **Audio & Speech** | `.wav`, `.aiff`, `.mp3` | Python 3.13-safe RIFF/AIFF/ID3 decoders; RMS loudness; Zero-Crossing Rate; Voice Activity Detection (VAD); 7-band spectral decomposition (20Hz–20kHz); temporal windows (`[00:00 - 00:10]`). |
+| **Video** | `.mp4`, `.mov`, `.m4v`, `.webm` | ISO BMFF container parser (`moov`/`trak`/`mdia`/`minf`); temporal scene framing; motion variance and spatio-temporal 3072D vector projection. |
+| **Images** | `.png`, `.jpeg`, `.jpg`, `.bmp` | Chunked binary parser; 8×8 luminance grid; 64-bin RGB color distribution; 64-bit perceptual difference hash (dHash). |
+| **Code & APIs** | `.py`, `.ts`, `.js`, `.go`, `.rs`, `.java`, `.cpp`, `.cs`, OpenAPI 3.0/3.1, Swagger 2.0 | Standard library Python AST (signatures, parameters, decorators, cyclomatic complexity); polyglot regex scanners; OpenAPI operation and schema model extraction. |
+| **Databases** | SQLite (`.db`, `.sqlite`), MySQL, MongoDB | Binary SQLite header and B-tree page extraction; MySQL CDC binlog normalizer (Debezium/Maxwell); recursive BSON parser and dot-notation document flattener. |
+| **Messaging** | `.eml` (RFC 822/MIME), Chat (`slack`, `teams`) | Multipart MIME extraction, DKIM/SPF auth headers, thread conversation resolution, speaker turns, timestamp grounding. |
 
 ---
 
@@ -127,6 +146,101 @@ raw = client.process_document(
     enable_guardrails=False,
 )
 print(raw.chunks[0].text)  # preserved verbatim
+```
+
+---
+
+## Multimodal Ingestion (Office, Audio, Video, Code, DBs)
+
+Nexus provides two flexible ways to ingest multimodal content:
+
+### 1. Universal Ingestion (`client.process_document`)
+
+Pass raw `bytes` or a local file path along with the file `name`. Nexus automatically identifies the format, decompresses binary containers, frames structures, scrubs PII, and projects into 3072D vector space:
+
+```python
+import nexus
+
+client = nexus.NexusClient(in_memory_only=True)
+
+# 1. Spreadsheets (.xlsx) — sheets, rows, and cell matrices
+doc_excel = client.process_document(
+    name="financial_model.xlsx",
+    text=excel_bytes,  # or filepath "path/to/financial_model.xlsx"
+)
+
+# 2. Word Documents (.docx) — headings, sections, and markdown tables
+doc_word = client.process_document(
+    name="master_agreement.docx",
+    text=docx_bytes,
+)
+
+# 3. Audio Streams (.wav, .mp3, .aiff) — VAD and 7-band spectral analysis
+doc_audio = client.process_document(
+    name="earnings_call.wav",
+    text=wav_bytes,
+)
+
+# 4. Video Files (.mp4, .mov) — ISO BMFF scene windows and motion variance
+doc_video = client.process_document(
+    name="product_walkthrough.mp4",
+    text=mp4_bytes,
+)
+
+# 5. High-Resolution Images (.png, .jpg) — 8x8 luminance and 64-bit dHash
+doc_image = client.process_document(
+    name="system_topology.png",
+    text=png_bytes,
+)
+```
+
+### 2. Dedicated Modality Methods
+
+When you need granular control over windowing, sample rates, or format-specific parameters, call the dedicated methods directly:
+
+```python
+# Word (.docx) with heading hierarchy
+doc = client.process_word(name="contract.docx", docx_bytes=raw_bytes)
+
+# Spreadsheets (.xlsx) with sheet & row-level narrative framing
+doc = client.process_spreadsheet(name="budget.xlsx", spreadsheet_bytes=raw_bytes)
+
+# Presentations (.pptx) with slide text and speaker notes
+doc = client.process_presentation(name="strategy.pptx", presentation_bytes=raw_bytes)
+
+# Audio (.wav, .mp3, .aiff) with configurable temporal windowing
+doc = client.process_audio(name="speech.wav", audio_bytes=raw_bytes, window_seconds=10.0)
+
+# Video (.mp4, .mov) with temporal scene framing
+doc = client.process_video(name="demo.mp4", video_bytes=raw_bytes, window_seconds=10.0)
+
+# Images (.png, .jpeg, .bmp) with 8x8 luminance grid
+doc = client.process_image(name="chart.png", image_bytes=raw_bytes)
+
+# SQLite binary databases (.sqlite, .db)
+doc = client.process_sqlite(name="app.db", db_bytes=sqlite_bytes)
+
+# Source code AST (Python, TypeScript, Go, Rust, Java, C++)
+doc = client.process_code(name="pipeline.py", code_input=source_code)
+
+# OpenAPI 3.0 / 3.1 & Swagger 2.0 specs
+doc = client.process_openapi(name="openapi.json", spec_data=spec_content)
+```
+
+### 3. Unified Cross-Modal Search
+
+Because all modalities project into the exact same **3072D vector space** with IEEE 754 $L_2$ unit normalization ($\|V\|_2 = 1.0$), you can index and query across text, spreadsheets, audio segments, and diagrams simultaneously:
+
+```python
+# Index multi-format documents into a single collection
+client.index_document(doc_excel, collection="enterprise_assets")
+client.index_document(doc_word, collection="enterprise_assets")
+client.index_document(doc_audio, collection="enterprise_assets")
+
+# Query with natural language across all modalities
+results = client.search("quarterly revenue and SLA commitments", collection="enterprise_assets")
+for r in results:
+    print(f"[{r.score:.3f}] {r.text[:120]}")
 ```
 
 ---
