@@ -22,6 +22,7 @@ import pytest
 from nexus_processing.office import (
     process_presentation_binary,
     process_spreadsheet_binary,
+    process_word_binary,
 )
 
 
@@ -276,3 +277,116 @@ def test_process_presentation_success():
     assert s2.title == "Benchmark Performance"
     assert "Throughput exceeds 10,000" in s2.body_text
     assert s2.speaker_notes == ""
+
+
+def make_test_docx() -> bytes:
+    """Generates a valid minimal DOCX archive containing headings, paragraphs, lists, and tables."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "docProps/core.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>Nexus Service Agreement</dc:title>
+  <dc:creator>Enterprise Legal Team</dc:creator>
+</cp:coreProperties>""",
+        )
+        zf.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Heading1"/>
+      </w:pPr>
+      <w:r><w:t>1. Scope of Services</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>Nexus enterprise document processing and vector intelligence.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:numPr><w:ilvl w:val="0"/></w:numPr>
+      </w:pPr>
+      <w:r><w:t>Autonomous multimodal vector projection (3072D).</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Heading2"/>
+      </w:pPr>
+      <w:r><w:t>2. Service Level Agreement</w:t></w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Tier</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Uptime</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Enterprise</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>99.99%</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>""",
+        )
+    return buf.getvalue()
+
+
+def test_process_word_validation():
+    """Validates error handling for empty or malformed Word data."""
+    with pytest.raises(ValueError, match="Invalid DOCX container"):
+        process_word_binary(b"")
+
+    with pytest.raises(ValueError, match="Invalid DOCX container"):
+        process_word_binary(b"NOT_A_ZIP_ARCHIVE")
+
+    # Valid zip but missing word/document.xml
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("test.txt", "hello")
+    with pytest.raises(ValueError, match="missing word/document.xml"):
+        process_word_binary(buf.getvalue())
+
+
+def test_process_word_success():
+    """Validates heading hierarchy, paragraph, list item, and table extraction."""
+    raw = make_test_docx()
+    payload = process_word_binary(raw, filename="agreement.docx")
+
+    assert payload.metadata.format == "docx"
+    assert payload.metadata.title == "Nexus Service Agreement"
+    assert payload.metadata.author == "Enterprise Legal Team"
+    assert payload.metadata.total_headings == 2
+    assert payload.metadata.total_tables == 1
+    assert payload.metadata.headings == ["1. Scope of Services", "2. Service Level Agreement"]
+
+    # Verify chunks
+    assert len(payload.chunks) == 5  # Heading1, Para, List item, Heading2, Table
+
+    # Heading chunk
+    c_h1 = payload.chunks[0]
+    assert c_h1.item_type == "heading"
+    assert c_h1.heading_level == 1
+    assert c_h1.section_title == "1. Scope of Services"
+    assert "Heading (Level 1): 1. Scope of Services" in c_h1.narrative_text
+
+    # Paragraph chunk
+    c_p = payload.chunks[1]
+    assert c_p.item_type == "paragraph"
+    assert "Nexus enterprise document processing" in c_p.text
+    assert "Section: 1. Scope of Services" in c_p.narrative_text
+
+    # List item chunk
+    c_list = payload.chunks[2]
+    assert c_list.item_type == "list_item"
+    assert "• Autonomous multimodal" in c_list.text
+    assert "List Item" in c_list.narrative_text
+
+    # Table chunk
+    c_tbl = payload.chunks[4]
+    assert c_tbl.item_type == "table"
+    assert "| Tier | Uptime |" in c_tbl.text
+    assert "| Enterprise | 99.99% |" in c_tbl.text
+    assert "Table 1" in c_tbl.narrative_text

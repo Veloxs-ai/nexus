@@ -71,8 +71,12 @@ from .office import (
     SpreadsheetMetadata,
     SpreadsheetPayload,
     SpreadsheetRowChunk,
+    WordMetadata,
+    WordPayload,
+    WordSectionChunk,
     process_presentation_binary,
     process_spreadsheet_binary,
+    process_word_binary,
 )
 from .pdf import PDFMetadata, PDFPage, PDFPayload, process_pdf_binary
 from .sqlite import (
@@ -133,6 +137,9 @@ __all__ = [
     "VideoPayload",
     "VideoSceneChunk",
     "VisualFeaturePayload",
+    "WordMetadata",
+    "WordPayload",
+    "WordSectionChunk",
     "__version__",
     "chunk_mongo_collection",
     "chunk_mysql_table",
@@ -156,6 +163,7 @@ __all__ = [
     "process_sqlite_binary",
     "process_sqlite_file",
     "process_video_binary",
+    "process_word_binary",
     "project_code_vector",
     "serialize_bson_value",
     "serialize_mongo_document",

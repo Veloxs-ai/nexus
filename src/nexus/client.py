@@ -59,6 +59,7 @@ try:
     from nexus.processing.office import (
         process_presentation_binary,
         process_spreadsheet_binary,
+        process_word_binary,
     )
     from nexus.processing.pdf import process_pdf_binary
     from nexus.processing.sqlite import (
@@ -97,6 +98,7 @@ except (ImportError, ModuleNotFoundError):
     from nexus_processing.office import (
         process_presentation_binary,
         process_spreadsheet_binary,
+        process_word_binary,
     )
     from nexus_processing.pdf import process_pdf_binary
     from nexus_processing.sqlite import (
@@ -351,6 +353,29 @@ class NexusClient:
                     presentation_id=document_id,
                     name=name or "presentation.pptx",
                     presentation_bytes=raw_pptx_bytes,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for Word Document (.docx) payloads
+        if detected_format in ("docx", "word") or (
+            detected_format == "doc"
+            and isinstance(text, bytes | bytearray)
+            and text.startswith(b"PK\x03\x04")
+        ):
+            raw_docx_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_docx_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_docx_bytes = p.read_bytes()
+            if raw_docx_bytes is not None:
+                return self.process_word_document(
+                    document_id=document_id,
+                    name=name or "document.docx",
+                    docx_bytes=raw_docx_bytes,
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
                     shallow_mode=shallow_mode,
@@ -2567,6 +2592,232 @@ class NexusClient:
             execution_trace=traces,
             summary=summary_msg,
         )
+
+    def process_word_document(
+        self,
+        document_id: str | None = None,
+        name: str | None = None,
+        docx_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+        *,
+        word_id: str | None = None,
+        word_bytes: bytes | None = None,
+    ) -> ProcessedDocumentPayload:
+        """Processes a Word document (.docx) through native pure-Python container decompression,
+        heading hierarchy extraction, paragraph/table framing, PII sanitization,
+        and section-grounded 3072D vector projection.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        doc_id = document_id or word_id or "doc_word"
+        doc_name = name or "document.docx"
+
+        if docx_bytes is not None:
+            raw_data = docx_bytes
+        elif word_bytes is not None:
+            raw_data = word_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError("Either docx_bytes/word_bytes or file_path must be provided.")
+
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.md5(raw_data).hexdigest()
+
+        # Step 1: OPC Archive Decompression & Document Discovery
+        t0 = time.perf_counter()
+        word_payload = process_word_binary(raw_data, filename=doc_name)
+        meta = word_payload.metadata
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="OPC Archive Decompression & Document Discovery",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Decompressed OpenXML Word archive '{doc_name}' ({file_size_bytes}B). "
+                    f"Title: '{meta.title or 'Untitled'}', Author: '{meta.author or 'Unknown'}'."
+                ),
+                details={
+                    "format": meta.format,
+                    "title": meta.title,
+                    "author": meta.author,
+                    "file_size_bytes": file_size_bytes,
+                },
+            )
+        )
+
+        # Step 2: Document XML & Heading Hierarchy Parsing
+        t0 = time.perf_counter()
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Document XML & Heading Hierarchy Parsing",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Traversed Word OpenXML DOM and resolved hierarchical structure: "
+                    f"{meta.total_headings} headings, {meta.total_paragraphs} paragraphs, "
+                    f"{meta.total_tables} tables."
+                ),
+                details={
+                    "headings": meta.headings,
+                    "total_headings": meta.total_headings,
+                    "total_paragraphs": meta.total_paragraphs,
+                    "total_tables": meta.total_tables,
+                },
+            )
+        )
+
+        # Step 3: Section & Tabular Structure Framing
+        t0 = time.perf_counter()
+        framed_chunks = word_payload.chunks
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Section & Tabular Structure Framing",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Structured document into {len(framed_chunks)} contextual section chunks "
+                    f"grounded by heading hierarchy and markdown table representations."
+                ),
+                details={"chunk_count": len(framed_chunks)},
+            )
+        )
+
+        # Step 4: Safety Guardrails & PII Sanitization
+        t0 = time.perf_counter()
+        sanitized_chunks: list[tuple[Any, str]] = []
+        total_masked_items = 0
+
+        for chk in framed_chunks:
+            n_text = chk.narrative_text
+            if apply_guardrails and n_text:
+                scrubbed_text = self.guardrails.mask_pii(n_text)
+                if scrubbed_text != n_text:
+                    total_masked_items += 1
+            else:
+                scrubbed_text = n_text
+            sanitized_chunks.append((chk, scrubbed_text))
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Scanned {len(sanitized_chunks)} document chunk(s) for PII and "
+                    f"sensitive entities. Masked {total_masked_items} sensitive item(s)."
+                ),
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "masked_items": total_masked_items,
+                },
+            )
+        )
+
+        # Step 5: Document-Grounded 3072D Vector Projection
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+
+        for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
+            embedding_vector = self.retrieval.embed(scrubbed_text)
+            chunk_meta: dict[str, Any] = {
+                "section_title": chk.section_title,
+                "heading_level": chk.heading_level,
+                "item_type": chk.item_type,
+                "word_count": chk.word_count,
+                "is_word": True,
+            }
+            if chk.metadata:
+                chunk_meta.update(chk.metadata)
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{doc_id}:{chk.chunk_id}:{idx}",
+                    document_id=doc_id,
+                    chunk_index=idx,
+                    text=scrubbed_text,
+                    metadata=chunk_meta,
+                    embedding=embedding_vector,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="Document-Grounded 3072D Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} document-grounded "
+                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": meta.format,
+            "title": meta.title,
+            "author": meta.author,
+            "total_headings": meta.total_headings,
+            "total_paragraphs": meta.total_paragraphs,
+            "total_tables": meta.total_tables,
+            "total_words": meta.total_words,
+            "headings": meta.headings,
+            "is_word": True,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed Word document '{doc_name}' ({meta.total_paragraphs} paragraphs, "
+            f"{meta.total_tables} tables, {meta.total_words} words) into "
+            f"{len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=doc_id,
+            name=doc_name,
+            file_type="word",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "word_document"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_word(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ProcessedDocumentPayload:
+        """Alias for process_word_document."""
+        return self.process_word_document(*args, **kwargs)
 
     def process_email(
         self,

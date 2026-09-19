@@ -241,7 +241,7 @@ def test_nexus_client_process_presentation():
 
 
 def test_nexus_client_process_document_office_routing():
-    """Validates auto-routing in NexusClient.process_document for xlsx and pptx formats."""
+    """Validates auto-routing in NexusClient.process_document for xlsx, pptx, and docx formats."""
     client = NexusClient()
 
     xlsx_bytes = make_test_xlsx()
@@ -263,3 +263,125 @@ def test_nexus_client_process_document_office_routing():
     assert doc_pptx.file_type == "presentation"
     assert doc_pptx.metadata["total_slides"] == 1
     assert len(doc_pptx.chunks) == 1
+
+    docx_bytes = make_test_docx()
+    doc_docx = client.process_document(
+        document_id="auto_docx",
+        text=docx_bytes,
+        name="contract.docx",
+    )
+    assert doc_docx.file_type == "word"
+    assert doc_docx.metadata["total_headings"] == 2
+    assert doc_docx.metadata["total_tables"] == 1
+    assert len(doc_docx.chunks) == 5
+
+
+def make_test_docx() -> bytes:
+    """Generates a valid minimal DOCX archive with headings, paragraphs, lists, tables, and PII."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "docProps/core.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>Master Services Agreement</dc:title>
+  <dc:creator>Aditya Legal</dc:creator>
+</cp:coreProperties>""",
+        )
+        zf.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Heading1"/>
+      </w:pPr>
+      <w:r><w:t>1. Parties and Contact</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>Contact: legal.advisor@example.com for audit.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:numPr><w:ilvl w:val="0"/></w:numPr>
+      </w:pPr>
+      <w:r><w:t>Strict adherence to zero-dependency vector projection.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Heading2"/>
+      </w:pPr>
+      <w:r><w:t>2. Compensation Schedule</w:t></w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Deliverable</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Fee</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Multimodal Engine</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>$50,000</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>""",
+        )
+    return buf.getvalue()
+
+
+def test_nexus_client_process_word_document():
+    """Validates complete NexusClient.process_word_document lifecycle with 5-stage telemetry,
+
+    guardrails PII masking, and 3072D unit vector projection.
+    """
+    client = NexusClient()
+    raw = make_test_docx()
+
+    doc = client.process_word_document(
+        word_id="doc_word_1",
+        name="agreement.docx",
+        word_bytes=raw,
+        metadata={"confidential": True},
+        enable_guardrails=True,
+    )
+
+    assert doc.document_id == "doc_word_1"
+    assert doc.file_type == "word"
+    assert doc.metadata["title"] == "Master Services Agreement"
+    assert doc.metadata["author"] == "Aditya Legal"
+    assert doc.metadata["total_headings"] == 2
+    assert doc.metadata["total_tables"] == 1
+    assert doc.metadata["confidential"] is True
+    assert len(doc.chunks) == 5
+
+    # 5-stage trace validation
+    assert len(doc.execution_trace) == 5
+    stage_names = [t.stage_name for t in doc.execution_trace]
+    assert stage_names == [
+        "OPC Archive Decompression & Document Discovery",
+        "Document XML & Heading Hierarchy Parsing",
+        "Section & Tabular Structure Framing",
+        "Safety Guardrails & PII Sanitization",
+        "Document-Grounded 3072D Vector Projection",
+    ]
+    for t in doc.execution_trace:
+        assert t.status == "completed"
+
+    # PII masking verification
+    p_chunk = doc.chunks[1]
+    assert "Contact:" in p_chunk.text
+    assert "[EMAIL]" in p_chunk.text
+    assert "legal.advisor@example.com" not in p_chunk.text
+
+    # Table chunk verification
+    t_chunk = doc.chunks[4]
+    assert "| Deliverable | Fee |" in t_chunk.text
+    assert "| Multimodal Engine | $50,000 |" in t_chunk.text
+
+    # 3072D vector norm verification
+    for chunk in doc.chunks:
+        assert len(chunk.embedding) == 3072
+        l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
+        assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)

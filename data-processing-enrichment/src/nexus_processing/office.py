@@ -33,8 +33,12 @@ __all__ = [
     "SpreadsheetMetadata",
     "SpreadsheetPayload",
     "SpreadsheetRowChunk",
+    "WordMetadata",
+    "WordPayload",
+    "WordSectionChunk",
     "process_presentation_binary",
     "process_spreadsheet_binary",
+    "process_word_binary",
 ]
 
 _COORD_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
@@ -605,4 +609,277 @@ def process_presentation_binary(
     return PresentationPayload(
         metadata=metadata,
         slides=slides,
+    )
+
+
+@dataclass
+class WordSectionChunk:
+    """A grounded section or paragraph chunk from a Word (.docx) document."""
+
+    chunk_id: str
+    section_title: str
+    heading_level: int
+    item_type: str  # "paragraph", "table", "heading", "list_item"
+    index: int
+    text: str
+    narrative_text: str
+    word_count: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WordMetadata:
+    """Metadata summary of a processed Word (.docx) document."""
+
+    filename: str
+    format: str  # "docx"
+    total_paragraphs: int
+    total_tables: int
+    total_headings: int
+    total_words: int
+    headings: list[str] = field(default_factory=list)
+    file_size_bytes: int = 0
+    title: str = ""
+    author: str = ""
+
+
+@dataclass
+class WordPayload:
+    """Container for processed Word (.docx) document output."""
+
+    metadata: WordMetadata
+    chunks: list[WordSectionChunk]
+
+
+def process_word_binary(
+    raw_bytes: bytes,
+    filename: str = "document.docx",
+) -> WordPayload:
+    """Extracts structural headings, paragraphs, and tables from Word (.docx) documents."""
+    if not raw_bytes.startswith(b"PK\x03\x04"):
+        raise ValueError(f"Invalid DOCX container for '{filename}': missing ZIP magic header.")
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        raise ValueError(f"Failed to decompress DOCX archive '{filename}': {exc}") from exc
+
+    namelist = set(archive.namelist())
+    if "word/document.xml" not in namelist:
+        raise ValueError(f"Corrupted DOCX container '{filename}': missing word/document.xml.")
+
+    doc_title = ""
+    doc_author = ""
+    if "docProps/core.xml" in namelist:
+        try:
+            core_tree = ET.fromstring(archive.read("docProps/core.xml"))
+            for elem in core_tree.iter():
+                tag = _local_tag(elem)
+                if tag == "title" and elem.text:
+                    doc_title = elem.text.strip()
+                elif tag == "creator" and elem.text:
+                    doc_author = elem.text.strip()
+        except Exception:
+            pass
+
+    try:
+        doc_tree = ET.fromstring(archive.read("word/document.xml"))
+    except Exception as exc:
+        raise ValueError(f"Failed to parse word/document.xml in '{filename}': {exc}") from exc
+
+    body = None
+    for child in doc_tree.iter():
+        if _local_tag(child) == "body":
+            body = child
+            break
+
+    if body is None:
+        return WordPayload(
+            metadata=WordMetadata(
+                filename=filename,
+                format="docx",
+                total_paragraphs=0,
+                total_tables=0,
+                total_headings=0,
+                total_words=0,
+                file_size_bytes=len(raw_bytes),
+                title=doc_title,
+                author=doc_author,
+            ),
+            chunks=[],
+        )
+
+    chunks: list[WordSectionChunk] = []
+    headings: list[str] = []
+    current_section = doc_title or "Document Overview"
+    current_heading_level = 0
+    total_paragraphs = 0
+    total_tables = 0
+    total_words = 0
+    chunk_seq = 0
+
+    for elem in body:
+        tag = _local_tag(elem)
+
+        if tag == "p":
+            p_style = ""
+            is_list = False
+            for p_child in elem:
+                c_tag = _local_tag(p_child)
+                if c_tag == "pPr":
+                    for pr_node in p_child:
+                        pr_tag = _local_tag(pr_node)
+                        if pr_tag == "pStyle":
+                            for k, v in pr_node.attrib.items():
+                                attr_name = k.split("}")[-1] if "}" in k else k
+                                if attr_name == "val":
+                                    p_style = v
+                        elif pr_tag == "numPr":
+                            is_list = True
+
+            t_nodes = [t.text for t in elem.iter() if _local_tag(t) == "t" and t.text]
+            p_text = "".join(t_nodes).strip()
+            if not p_text:
+                continue
+
+            total_paragraphs += 1
+            words_in_p = len(p_text.split())
+            total_words += words_in_p
+            chunk_seq += 1
+
+            # Detect headings
+            is_heading = False
+            h_level = 0
+            if p_style:
+                style_lower = p_style.lower()
+                if "heading" in style_lower:
+                    is_heading = True
+                    digits = [c for c in p_style if c.isdigit()]
+                    h_level = int(digits[0]) if digits else 1
+                elif style_lower in ("title", "subtitle"):
+                    is_heading = True
+                    h_level = 1 if style_lower == "title" else 2
+
+            if is_heading:
+                current_section = p_text
+                current_heading_level = h_level
+                headings.append(p_text)
+                narrative = f"[Document: {filename} | Heading (Level {h_level}): {p_text}]"
+                chunks.append(
+                    WordSectionChunk(
+                        chunk_id=f"p_{chunk_seq}",
+                        section_title=p_text,
+                        heading_level=h_level,
+                        item_type="heading",
+                        index=total_paragraphs,
+                        text=p_text,
+                        narrative_text=narrative,
+                        word_count=words_in_p,
+                        metadata={"style": p_style, "heading_level": h_level},
+                    )
+                )
+            elif is_list:
+                list_text = f"• {p_text}"
+                narrative = (
+                    f"[Document: {filename} | Section: {current_section} | List Item]\n{list_text}"
+                )
+                chunks.append(
+                    WordSectionChunk(
+                        chunk_id=f"p_{chunk_seq}",
+                        section_title=current_section,
+                        heading_level=current_heading_level,
+                        item_type="list_item",
+                        index=total_paragraphs,
+                        text=list_text,
+                        narrative_text=narrative,
+                        word_count=words_in_p,
+                        metadata={"style": p_style, "is_list": True},
+                    )
+                )
+            else:
+                narrative = (
+                    f"[Document: {filename} | Section: {current_section} "
+                    f"| Para {total_paragraphs}]\n"
+                    f"{p_text}"
+                )
+                chunks.append(
+                    WordSectionChunk(
+                        chunk_id=f"p_{chunk_seq}",
+                        section_title=current_section,
+                        heading_level=current_heading_level,
+                        item_type="paragraph",
+                        index=total_paragraphs,
+                        text=p_text,
+                        narrative_text=narrative,
+                        word_count=words_in_p,
+                        metadata={"style": p_style},
+                    )
+                )
+
+        elif tag == "tbl":
+            total_tables += 1
+            chunk_seq += 1
+            table_rows_data: list[list[str]] = []
+
+            for tr in elem:
+                if _local_tag(tr) == "tr":
+                    row_cells: list[str] = []
+                    for tc in tr:
+                        if _local_tag(tc) == "tc":
+                            cell_text_runs: list[str] = []
+                            for p in tc.iter():
+                                if _local_tag(p) == "t" and p.text:
+                                    cell_text_runs.append(p.text)
+                            cell_text = " ".join("".join(cell_text_runs).split())
+                            row_cells.append(cell_text)
+                    if row_cells:
+                        table_rows_data.append(row_cells)
+
+            if table_rows_data:
+                col_count = max(len(r) for r in table_rows_data)
+                formatted_rows: list[str] = []
+                for r_idx, r in enumerate(table_rows_data):
+                    padded_r = r + [""] * (col_count - len(r))
+                    formatted_rows.append("| " + " | ".join(padded_r) + " |")
+                    if r_idx == 0:
+                        formatted_rows.append("| " + " | ".join(["---"] * col_count) + " |")
+
+                tbl_text = "\n".join(formatted_rows)
+                tbl_words = len(tbl_text.split())
+                total_words += tbl_words
+
+                narrative = (
+                    f"[Document: {filename} | Section: {current_section} | Table {total_tables}]\n"
+                    f"{tbl_text}"
+                )
+                chunks.append(
+                    WordSectionChunk(
+                        chunk_id=f"tbl_{chunk_seq}",
+                        section_title=current_section,
+                        heading_level=current_heading_level,
+                        item_type="table",
+                        index=total_tables,
+                        text=tbl_text,
+                        narrative_text=narrative,
+                        word_count=tbl_words,
+                        metadata={"row_count": len(table_rows_data), "col_count": col_count},
+                    )
+                )
+
+    metadata = WordMetadata(
+        filename=filename,
+        format="docx",
+        total_paragraphs=total_paragraphs,
+        total_tables=total_tables,
+        total_headings=len(headings),
+        total_words=total_words,
+        headings=headings,
+        file_size_bytes=len(raw_bytes),
+        title=doc_title,
+        author=doc_author,
+    )
+
+    return WordPayload(
+        metadata=metadata,
+        chunks=chunks,
     )
