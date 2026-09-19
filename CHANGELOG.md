@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI reachable only via `python -m nexus.cli`.
 - Root `dev` extra (`pytest`, `ruff`), so `pip install -e ".[dev]"` works
   from the repository root as the CI workflow and contributor docs assume.
+- **Multimodal & Binary Document Ingestion Engine (Zero External Dependencies)**:
+  - **Microsoft Word (.docx)**: Pure-Python OpenXML parser extracting heading hierarchy (`Heading1..6`), paragraphs, bullet lists, markdown tables, and document metadata.
+  - **Spreadsheets (.xlsx) & Presentations (.pptx)**: Multi-sheet cell matrix traversal, shared strings resolution, slide text extraction, and speaker notes resolution.
+  - **Audio Processing (.wav, .mp3, .aiff)**: Python 3.13-safe signal decoding, RMS loudness profiling, Zero-Crossing Rate (ZCR), Voice Activity Detection (VAD), and 7-band spectral decomposition (20Hz–20kHz) with temporal window citations (`[00:00 - 00:10]`).
+  - **Video & Computer Vision (.mp4, .mov, .png, .jpeg, .bmp)**: Pure-Python ISO BMFF container parser, temporal scene chunking, motion variance, 8x8 luminance grid, and 64-bit dHash perceptual hashing.
+  - **Code AST & API Specifications**: Python standard library AST parser (signatures, decorators, typed params, cyclomatic complexity), Polyglot regex scanners (`.ts`, `.js`, `.go`, `.rs`, `.java`, `.cpp`, `.cs`), and OpenAPI 3.0/3.1 / Swagger 2.0 route & schema extractors.
+  - **Databases & Messaging**: Native binary SQLite parser (`.db`, `.sqlite`), MySQL CDC binlog event normalizer, MongoDB BSON deserializer and dot-notation flattener, and RFC 822 MIME email / threaded chat decoders.
+- **Universal Auto-Routing in `NexusClient.process_document`**:
+  - Automatically identifies file extensions and binary container headers (`.docx`, `.xlsx`, `.pptx`, `.pdf`, `.wav`, `.mp3`, `.mp4`, `.png`, `.db`, `.py`, etc.) and routes to native parsers.
+  - Accepts both raw binary `bytes` and file path strings seamlessly.
+- **Unified 3072D Vector Space**: All multimodal chunks project into IEEE 754 $L_2$ unit-normalized 3072D vectors ($\|V\|_2 = 1.0$), enabling unified cross-modal search and RAG across documents, spreadsheets, audio, video, code, and databases.
+- **5-Stage Execution Telemetry**: Every document payload returns a granular 5-stage trace with timing and stage status.
 
 ### Fixed
 

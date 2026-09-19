@@ -112,10 +112,32 @@ including how to install individual layers for isolated CLI or test use.
 You can supply documents to Nexus through multiple channels:
 
 ### 3.1 Supported File Types & Input Formats
-* **CSV Files (`.csv`)**: Relational tables, spreadsheets, billing records, departmental budgets.
-* **JSON / JSONL (`.json`, `.jsonl`)**: Structured API responses, event logs, customer records.
-* **Markdown (`.md`, `.markdown`)**: Handbooks, policy manuals, system documentation.
-* **Plain Text (`.txt`)**: Notes, emails, memos, raw logs.
+
+Nexus provides zero-dependency, pure-Python native decoders for 8 enterprise format categories:
+
+* **Office Documents**:
+  - **Word (`.docx`)**: OpenXML archive decompression, heading hierarchy (`Heading1..6`), bullet lists, and markdown tables.
+  - **Spreadsheets (`.xlsx`)**: Shared string table resolution, multi-sheet cell matrices, formula handling, and row-level grounded narratives.
+  - **Presentations (`.pptx`)**: Slide shape graph extraction, text boxes, layouts, and speaker notes.
+* **Documents & Plain Text**:
+  - **PDF (`.pdf`)**: ISO 32000-1 object graph parser, FlateDecode decompression, and page-grounded citations (`[Page N]`).
+  - **CSV (`.csv`)**: Relational tables, spreadsheets, billing records, departmental budgets converted to row narratives.
+  - **Markdown (`.md`, `.markdown`)**: Handbooks, policy manuals, and system documentation.
+  - **Plain Text (`.txt`)**: Notes, memos, raw text files.
+  - **JSON / JSONL (`.json`, `.jsonl`)**: Structured API responses, event logs, customer records.
+* **Audio & Speech**:
+  - **Audio Files (`.wav`, `.aiff`, `.mp3`)**: Python 3.13-safe signal decoding, RMS loudness profiling, Zero-Crossing Rate (ZCR), Voice Activity Detection (VAD), 7-band spectral decomposition (20Hz–20kHz), and temporal window framing (`[00:00 - 00:10]`).
+* **Video & Images**:
+  - **Video Files (`.mp4`, `.mov`, `.m4v`, `.webm`)**: ISO BMFF container parser (`moov`/`trak`), temporal scene chunking, and motion variance.
+  - **Image Files (`.png`, `.jpeg`, `.jpg`, `.bmp`)**: 8×8 luminance grid, 64-bin RGB color distribution, and 64-bit dHash perceptual hashing.
+* **Source Code & APIs**:
+  - **Source Code (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.java`, `.cpp`, `.cs`)**: Python standard library AST (classes, functions, decorators, typed signatures, cyclomatic complexity) and polyglot regex scanners.
+  - **OpenAPI / Swagger (`.json`, `.yaml`)**: OpenAPI 3.0/3.1 and Swagger 2.0 route, parameter, and schema model extraction.
+* **Databases & Messaging**:
+  - **SQLite (`.db`, `.sqlite`)**: Binary SQLite header parsing, page decoding, and table extraction.
+  - **MySQL**: Relational row serialization and CDC binlog change event normalizer.
+  - **MongoDB**: BSON document deserialization and dot-notation document flattener.
+  - **Email & Chat (`.eml`, `slack`, `teams`)**: Multipart MIME decoder, DKIM/SPF headers, and threaded conversation turns.
 
 ### 3.2 File-Drop / Batch Directory Ingestion
 Drop your files into the raw landing directory:
@@ -124,47 +146,73 @@ data-processing-enrichment/data/raw/
 ├── policy_documents.jsonl
 ├── customer_profiles.jsonl
 ├── company_financials.csv
+├── master_agreement.docx
+├── quarterly_briefing.wav
 └── employee_handbook.md
 ```
 
-### 3.3 Programmatic Python Ingestion
-```python
-from nexus_pipeline.batch import read_file
-from pathlib import Path
+### 3.3 Programmatic Python Ingestion (`NexusClient`)
 
-# Read any supported file format automatically
-records = read_file(Path("data-processing-enrichment/data/raw/employee_handbook.md"))
+Nexus supports both **Universal Auto-Routing** and **Dedicated Modality Methods**:
+
+```python
+import nexus
+
+client = nexus.NexusClient(in_memory_only=True)
+
+# 1. Universal Ingestion (pass bytes or file path — Nexus auto-routes)
+doc_xlsx = client.process_document(name="budget.xlsx", text=xlsx_bytes)
+doc_docx = client.process_document(name="contract.docx", text=docx_bytes)
+doc_audio = client.process_document(name="call.wav", text=wav_bytes)
+doc_video = client.process_document(name="demo.mp4", text=mp4_bytes)
+doc_img = client.process_document(name="chart.png", text=png_bytes)
+
+# 2. Dedicated Modality Methods
+doc = client.process_word(name="contract.docx", docx_bytes=docx_bytes)
+doc = client.process_spreadsheet(name="budget.xlsx", spreadsheet_bytes=xlsx_bytes)
+doc = client.process_presentation(name="slides.pptx", presentation_bytes=pptx_bytes)
+doc = client.process_audio(name="call.wav", audio_bytes=wav_bytes, window_seconds=10.0)
+doc = client.process_video(name="demo.mp4", video_bytes=mp4_bytes, window_seconds=10.0)
+doc = client.process_image(name="chart.png", image_bytes=png_bytes)
+doc = client.process_sqlite(name="app.db", db_bytes=sqlite_bytes)
+doc = client.process_code(name="service.py", code_input=source_code)
 ```
 
 ---
 
 ## 4. How Nexus Processes Documents
 
-Nexus processes documents in 5 distinct phases:
+Nexus processes documents through a standardized 5-stage execution pipeline:
 
-### Phase 1: Encoding & Cleaning
-* Enforces strict UTF-8 decoding.
-* Strips invalid ASCII and normalizes whitespace characters.
+### Phase 1: Encoding & Container Parsing
+* Decompresses binary containers (ZIP/OpenXML for DOCX/XLSX/PPTX, ISO BMFF for MP4, RIFF/AIFF/ID3 for audio, ISO 32000-1 for PDF).
+* Enforces strict UTF-8 decoding and NFKC Unicode normalization for text streams.
 
-### Phase 2: Format-Aware Structural Chunking
-* **Tabular CSV (`chunk_csv`)**: Converts rows into rich contextual narratives so column headers are never severed from their values:
-  ```text
-  [Row ID: 1] department: Engineering | quarter: Q3 2025 | budget_usd: 1250000 | status: Completed
-  ```
-* **Structural JSON (`chunk_json`)**: Extracts discrete object and array items as valid indented JSON blocks.
-* **Text / Markdown (`chunk_smart_text`)**: Recursively splits on paragraph (`\n\n`) and sentence (`. `) boundaries to guarantee no sentence is cut in half.
+### Phase 2: Format-Aware Structural Chunking & Grounding
+* **Word (`.docx`)**: Heading hierarchy (`Heading1..6`), section nesting, bullet items, and markdown tables.
+* **Spreadsheets (`.xlsx`)**: Converts rows into rich contextual narratives:
+  `[Workbook: fin.xlsx | Sheet: Revenue | Row 4] Department: Sales | Budget: 150000`
+* **Audio (`.wav`, `.mp3`)**: Slices temporal windows with VAD energy classification and 7-band spectral decomposition:
+  `[00:00 - 00:10] Audio Segment | RMS: 0.380 (Active) | Centroid: 1650Hz`
+* **Video (`.mp4`, `.mov`)**: Temporal scene framing with motion variance.
+* **Tabular CSV (`chunk_csv`)**: Contextual row narratives:
+  `[Row ID: 1] department: Engineering | quarter: Q3 | budget_usd: 1250000`
+* **Text / Markdown (`chunk_smart_text`)**: Boundary-aware paragraph (`\n\n`) and sentence (`. `) splitting.
+* **Code AST (`.py`)**: Function and class definitions with typed signatures and line citations (`[Code AST: file.py | Function: foo | Lines: 10-25]`).
 
-### Phase 3: PII Redaction & Metadata Enrichment
-* **PII Redaction**: Automatically scrubs email addresses (`[REDACTED_EMAIL]`) and telephone numbers (`[REDACTED_PHONE]`).
-* **Metadata Extraction**: Extracts named entities, ISO dates, monetary values, and assigns classification categories (`security`, `finance`, `customer`).
-* **Content Hashing**: Generates an MD5 `content_hash` for deduplication and incremental sync.
+### Phase 3: PII Redaction & Safety Guardrails
+* Automatically scrubs email addresses (`[EMAIL]`), phone numbers, SSNs, and credit card numbers (Luhn check).
+* Enforces prompt injection defenses and secret scrubbing.
 
-### Phase 4: 3072-Dimensional Vector Projection
-* Projects the chunk into a 3072-dimensional vector space using:
-  * **Unigram Projection (1.5x)**: Base vocabulary tokens.
-  * **Bigram Projection (2.0x)**: Preserves multi-word phrases (e.g., `"cloud optimization"`).
-  * **Trigram Projection (2.5x)**: Preserves entity compounds (e.g., `"acme_tech_corp"`).
-  * **L2 Normalization**: Unit-length projection $\frac{V}{\|V\|_2}$ for exact Cosine Similarity.
+### Phase 4: Metadata Enrichment & Content Hashing
+* Extracts named entities, ISO dates, and assigns classification categories.
+* Generates an MD5 `content_hash` for deduplication and incremental sync.
+
+### Phase 5: 3072-Dimensional Vector Projection
+* Projects every chunk into a normalized 3072-dimensional vector space:
+  * **Multi-Gram Token Projection**: Unigrams (1.5x), Bigrams (2.0x), Trigrams (2.5x).
+  * **Acoustic & Perceptual Features**: RMS envelope, spectral distribution, dHash bit-grids.
+  * **Exact L2 Unit Normalization**: $\|V\|_2 = 1.0$ for deterministic cosine similarity across all modalities.
 
 ---
 
