@@ -18,6 +18,20 @@
 
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
+from .mongodb import (
+    MONGO_ATLAS_VECTOR_SEARCH_INDEX,
+    chunk_mongo_collection,
+    flatten_mongo_document,
+    normalize_mongo_change_event,
+    serialize_bson_value,
+    serialize_mongo_document,
+)
+from .mysql import (
+    MYSQL_DDL_SCHEMA,
+    chunk_mysql_table,
+    normalize_mysql_cdc_event,
+    serialize_mysql_row,
+)
 from .pdf import PDFMetadata, PDFPage, PDFPayload, process_pdf_binary
 from .video import (
     VideoMetadata,
@@ -28,6 +42,8 @@ from .video import (
 )
 
 __all__ = [
+    "MONGO_ATLAS_VECTOR_SEARCH_INDEX",
+    "MYSQL_DDL_SCHEMA",
     "ImageMetadata",
     "PDFMetadata",
     "PDFPage",
@@ -38,10 +54,18 @@ __all__ = [
     "VideoSceneChunk",
     "VisualFeaturePayload",
     "__version__",
+    "chunk_mongo_collection",
+    "chunk_mysql_table",
+    "flatten_mongo_document",
     "format_timestamp",
+    "normalize_mongo_change_event",
+    "normalize_mysql_cdc_event",
     "process_image_binary",
     "process_pdf_binary",
     "process_video_binary",
+    "serialize_bson_value",
+    "serialize_mongo_document",
+    "serialize_mysql_row",
 ]
 
 __version__ = "0.1.0"

@@ -71,3 +71,51 @@ WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc_id ON knowledge_chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_metadata ON knowledge_chunks USING gin(metadata);
 """
+
+MYSQL_DDL_SCHEMA = """
+-- MySQL 8.0+ Knowledge Documents & Vector Storage Schema
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    document_id         VARCHAR(128) NOT NULL PRIMARY KEY,
+    name                VARCHAR(255) NOT NULL,
+    file_type           VARCHAR(32) NOT NULL,
+    file_size_bytes     BIGINT NOT NULL,
+    content_hash        VARCHAR(64) NOT NULL,
+    classification      VARCHAR(64) DEFAULT 'database',
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_doc_hash (content_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    chunk_id            VARCHAR(128) NOT NULL PRIMARY KEY,
+    document_id         VARCHAR(128) NOT NULL,
+    source_table        VARCHAR(128) NOT NULL,
+    chunk_index         INT NOT NULL,
+    chunk_text          TEXT NOT NULL,
+    metadata            JSON NULL,
+    embedding           JSON NOT NULL COMMENT '3072D IEEE 754 float array',
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+    INDEX idx_chunks_doc (document_id),
+    INDEX idx_chunks_table (source_table)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+MONGO_ATLAS_VECTOR_SEARCH_INDEX = {
+    "fields": [
+        {
+            "type": "vector",
+            "path": "embedding",
+            "numDimensions": 3072,
+            "similarity": "cosine",
+        },
+        {
+            "type": "filter",
+            "path": "collection_name",
+        },
+        {
+            "type": "filter",
+            "path": "document_id",
+        },
+    ]
+}

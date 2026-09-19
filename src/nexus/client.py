@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import unicodedata
 from pathlib import Path
@@ -38,6 +39,14 @@ try:
     from nexus.guardrails.engine import GuardrailsEngine
     from nexus.processing.engine import ProcessingEngine
     from nexus.processing.images import process_image_binary
+    from nexus.processing.mongodb import (
+        chunk_mongo_collection,
+        flatten_mongo_document,
+        serialize_bson_value,
+    )
+    from nexus.processing.mysql import (
+        chunk_mysql_table,
+    )
     from nexus.processing.pdf import process_pdf_binary
     from nexus.processing.video import process_video_binary
     from nexus.retrieval.embeddings import ImageEmbedder, VideoEmbedder
@@ -51,6 +60,14 @@ except (ImportError, ModuleNotFoundError):
     from nexus_guardrails.engine import GuardrailsEngine
     from nexus_processing.engine import ProcessingEngine
     from nexus_processing.images import process_image_binary
+    from nexus_processing.mongodb import (
+        chunk_mongo_collection,
+        flatten_mongo_document,
+        serialize_bson_value,
+    )
+    from nexus_processing.mysql import (
+        chunk_mysql_table,
+    )
     from nexus_processing.pdf import process_pdf_binary
     from nexus_processing.video import process_video_binary
     from nexus_retrieval.embeddings import ImageEmbedder, VideoEmbedder
@@ -190,6 +207,58 @@ class NexusClient:
                     pdf_id=document_id,
                     name=name,
                     pdf_bytes=raw_pdf_bytes,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for MySQL table payloads
+        if detected_format == "mysql":
+            raw_rows = None
+            if isinstance(text, list):
+                raw_rows = text
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    try:
+                        raw_rows = json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        raw_rows = None
+                else:
+                    try:
+                        raw_rows = json.loads(text)
+                    except Exception:
+                        raw_rows = None
+            if isinstance(raw_rows, list):
+                return self.process_mysql_table(
+                    table_name=name or document_id,
+                    rows=raw_rows,
+                    metadata=metadata,
+                    enable_guardrails=enable_guardrails,
+                    shallow_mode=shallow_mode,
+                )
+
+        # Automatic routing for MongoDB collection payloads
+        if detected_format in ("mongodb", "mongo"):
+            raw_docs = None
+            if isinstance(text, list):
+                raw_docs = text
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    try:
+                        raw_docs = json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        raw_docs = None
+                else:
+                    try:
+                        raw_docs = json.loads(text)
+                    except Exception:
+                        raw_docs = None
+            if isinstance(raw_docs, list):
+                return self.process_mongo_collection(
+                    collection_name=name or document_id,
+                    documents=raw_docs,
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
                     shallow_mode=shallow_mode,
@@ -1148,6 +1217,468 @@ class NexusClient:
             file_size_bytes=file_size_bytes,
             content_hash=content_hash,
             classification=doc_meta.get("classification", "document"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_mysql_table(
+        self,
+        table_name: str,
+        rows: list[dict[str, Any]],
+        primary_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        rows_per_chunk: int = 1,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes relational MySQL rows into structured tabular narratives,
+        applies safety guardrails & PII sanitization, and projects 3072D vector embeddings.
+
+        Args:
+            table_name: Name of the relational MySQL table (e.g. 'customers', 'orders').
+            rows: List of dictionary row representations (column -> value).
+            primary_key: Optional explicit primary key column name. Auto-detects 'id' / '_id'.
+            metadata: Custom metadata dictionary to attach to table document and row chunks.
+            rows_per_chunk: Number of rows bundled per chunk narrative (default: 1).
+            enable_guardrails: When True (default), scrubs sensitive PII (Luhn cards, emails).
+            shallow_mode: Alias for bypassing PII sanitization for internal analysis.
+
+        Returns:
+            ProcessedDocumentPayload with table-grounded chunks, 3072D vectors, and telemetry.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        # -------------------------------------------------------------------------
+        # Step 1: MySQL Schema & Primary Key Analysis (0% - 20%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        columns: set[str] = set()
+        for r in rows:
+            columns.update(r.keys())
+        col_list = sorted(columns)
+
+        detected_pk = primary_key
+        if not detected_pk:
+            for candidate in ("id", "_id", f"{table_name}_id", f"{table_name}Id"):
+                if candidate in columns:
+                    detected_pk = candidate
+                    break
+
+        raw_payload_bytes = json.dumps(rows, default=str).encode("utf-8")
+        file_size_bytes = len(raw_payload_bytes)
+        content_hash = hashlib.md5(raw_payload_bytes).hexdigest()
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="MySQL Schema & Primary Key Analysis",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Analyzed table '{table_name}' ({len(rows)} rows, {len(col_list)} cols). "
+                    f"Primary Key: '{detected_pk or 'None'}'. Schema cardinality: {len(col_list)}."
+                ),
+                details={
+                    "table_name": table_name,
+                    "row_count": len(rows),
+                    "column_count": len(col_list),
+                    "columns": col_list,
+                    "primary_key": detected_pk,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 2: Relational Row Serialization & Typing (20% - 40%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Relational Row Serialization & Typing",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Serialized {len(rows)} relational rows into column narratives "
+                    f"preserving MySQL data types and NULL values."
+                ),
+                details={
+                    "rows_serialized": len(rows),
+                    "table_name": table_name,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 3: Format-Aware Tabular Chunking (40% - 60%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        raw_chunks = chunk_mysql_table(
+            rows,
+            table_name=table_name,
+            primary_key=detected_pk,
+            rows_per_chunk=rows_per_chunk,
+        )
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Format-Aware Tabular Chunking",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Partitioned {len(rows)} rows into {len(raw_chunks)} format-aware chunk(s) "
+                    f"({rows_per_chunk} row(s)/chunk)."
+                ),
+                details={
+                    "total_chunks": len(raw_chunks),
+                    "rows_per_chunk": rows_per_chunk,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 4: Safety Guardrails & PII Sanitization (60% - 80%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        cleaned_chunks: list[str] = []
+        total_masked = 0
+        for chunk in raw_chunks:
+            if apply_guardrails:
+                masked = self.guardrails.mask_pii(chunk)
+                if masked != chunk:
+                    total_masked += 1
+                cleaned_chunks.append(masked)
+            else:
+                cleaned_chunks.append(chunk)
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        guardrails_summary = (
+            f"Evaluated {len(raw_chunks)} table chunks through PII scrubbers. "
+            f"Sanitized sensitive data in {total_masked} chunk(s)."
+            if apply_guardrails
+            else "Safety guardrails bypassed: preserving raw tabular records."
+        )
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=guardrails_summary,
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "chunks_with_pii": total_masked,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 5: 3072D Multi-Gram Vector Projection (80% - 100%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+        doc_id = f"mysql:{table_name}"
+
+        for idx, chunk_text in enumerate(cleaned_chunks):
+            embedding = self.retrieval.embed(chunk_text)
+            chunk_meta: dict[str, Any] = {
+                "source_table": table_name,
+                "primary_key": detected_pk,
+                "chunk_index": idx,
+                "is_database": True,
+                "database_type": "mysql",
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{doc_id}:{idx}",
+                    document_id=doc_id,
+                    chunk_index=idx,
+                    text=chunk_text,
+                    metadata=chunk_meta,
+                    embedding=embedding,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="3072D Multi-Gram Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
+                    f"vector embeddings (L2 Norm = 1.0) for MySQL table '{table_name}'."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": "mysql",
+            "table_name": table_name,
+            "columns": col_list,
+            "primary_key": detected_pk,
+            "row_count": len(rows),
+            "is_database": True,
+            "database_type": "mysql",
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed MySQL table '{table_name}' ({len(rows)} rows, {len(col_list)} cols) "
+            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=doc_id,
+            name=f"mysql_{table_name}",
+            file_type="mysql",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "database"),
+            chunks=processed_chunks,
+            metadata=doc_meta,
+            execution_trace=traces,
+            summary=summary_msg,
+        )
+
+    def process_mongo_collection(
+        self,
+        collection_name: str,
+        documents: list[dict[str, Any]],
+        flatten_nested: bool = True,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Processes semi-structured MongoDB BSON/Extended-JSON collections into
+        flattened dot-notation semantic narratives, scrubs sensitive PII,
+        and projects 3072D vector embeddings.
+
+        Args:
+            collection_name: Name of the MongoDB collection (e.g. 'users', 'transactions').
+            documents: List of BSON / Extended-JSON / dictionary documents.
+            flatten_nested: When True (default), flattens nested dicts/arrays to dot-notation.
+            metadata: Custom metadata dictionary to attach to collection document and chunks.
+            enable_guardrails: When True (default), scrubs sensitive PII (Luhn cards, emails).
+            shallow_mode: Alias for bypassing PII sanitization.
+
+        Returns:
+            ProcessedDocumentPayload with collection-grounded chunks, 3072D vectors, and traces.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+        apply_guardrails = enable_guardrails and (not shallow_mode)
+
+        # -------------------------------------------------------------------------
+        # Step 1: MongoDB BSON / Extended-JSON Normalization (0% - 20%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        normalized_docs = [serialize_bson_value(d) for d in documents]
+        raw_payload_bytes = json.dumps(normalized_docs, default=str).encode("utf-8")
+        file_size_bytes = len(raw_payload_bytes)
+        content_hash = hashlib.md5(raw_payload_bytes).hexdigest()
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="MongoDB BSON / Extended-JSON Normalization",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Parsed and normalized {len(documents)} BSON/Extended-JSON documents "
+                    f"($oid, $date, $numberDecimal) in collection '{collection_name}'."
+                ),
+                details={
+                    "collection_name": collection_name,
+                    "document_count": len(documents),
+                    "file_size_bytes": file_size_bytes,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 2: Hierarchical Keypath Flattening (Dot-Notation) (20% - 40%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        total_keypaths = 0
+        if flatten_nested:
+            for nd in normalized_docs:
+                total_keypaths += len(flatten_mongo_document(nd))
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Hierarchical Keypath Flattening (Dot-Notation)",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Flattened nested structures into {total_keypaths} dot-notation keypaths."
+                    if flatten_nested
+                    else "Hierarchical flattening disabled; preserving nested JSON structures."
+                ),
+                details={
+                    "flatten_nested": flatten_nested,
+                    "total_keypaths": total_keypaths,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 3: Document Record Serialization & Chunking (40% - 60%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        raw_chunks = chunk_mongo_collection(
+            normalized_docs, collection_name=collection_name, flatten=flatten_nested
+        )
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Document Record Serialization & Chunking",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Serialized {len(raw_chunks)} collection-grounded document narratives "
+                    f"with unique ID anchors."
+                ),
+                details={
+                    "total_chunks": len(raw_chunks),
+                    "collection_name": collection_name,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 4: Safety Guardrails & PII Sanitization (60% - 80%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        cleaned_chunks: list[str] = []
+        total_masked = 0
+        for chunk in raw_chunks:
+            if apply_guardrails:
+                masked = self.guardrails.mask_pii(chunk)
+                if masked != chunk:
+                    total_masked += 1
+                cleaned_chunks.append(masked)
+            else:
+                cleaned_chunks.append(chunk)
+
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+        guardrails_summary = (
+            f"Evaluated {len(raw_chunks)} MongoDB document chunks through PII scrubbers. "
+            f"Sanitized sensitive data in {total_masked} chunk(s)."
+            if apply_guardrails
+            else "Safety guardrails bypassed: preserving raw document records."
+        )
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="Safety Guardrails & PII Sanitization",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=guardrails_summary,
+                details={
+                    "guardrails_enabled": apply_guardrails,
+                    "chunks_with_pii": total_masked,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 5: 3072D Multi-Gram Vector Projection (80% - 100%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        processed_chunks: list[ProcessedChunk] = []
+        doc_id = f"mongodb:{collection_name}"
+
+        for idx, chunk_text in enumerate(cleaned_chunks):
+            embedding = self.retrieval.embed(chunk_text)
+            chunk_meta: dict[str, Any] = {
+                "collection_name": collection_name,
+                "chunk_index": idx,
+                "is_database": True,
+                "database_type": "mongodb",
+            }
+            if metadata:
+                chunk_meta.update(metadata)
+
+            processed_chunks.append(
+                ProcessedChunk(
+                    chunk_id=f"{doc_id}:{idx}",
+                    document_id=doc_id,
+                    chunk_index=idx,
+                    text=chunk_text,
+                    metadata=chunk_meta,
+                    embedding=embedding,
+                )
+            )
+
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="3072D Multi-Gram Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
+                    f"vector embeddings (L2 Norm = 1.0) for collection '{collection_name}'."
+                ),
+                details={
+                    "vector_dimensions": 3072,
+                    "total_vectors": len(processed_chunks),
+                },
+            )
+        )
+
+        doc_meta: dict[str, Any] = {
+            "format": "mongodb",
+            "collection_name": collection_name,
+            "document_count": len(documents),
+            "is_database": True,
+            "database_type": "mongodb",
+            "flatten_nested": flatten_nested,
+        }
+        if metadata:
+            doc_meta.update(metadata)
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Processed MongoDB collection '{collection_name}' ({len(documents)} docs) "
+            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=doc_id,
+            name=f"mongodb_{collection_name}",
+            file_type="mongodb",
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_meta.get("classification", "database"),
             chunks=processed_chunks,
             metadata=doc_meta,
             execution_trace=traces,

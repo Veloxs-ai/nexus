@@ -100,7 +100,12 @@ del mod, name, sys
 # because the modules they pull in resolve the layer packages by name.
 from nexus.client import NexusClient  # noqa: E402
 from nexus.config import load_config  # noqa: E402
-from nexus.database import PGVECTOR_DDL_SCHEMA, get_pgvector_column_type  # noqa: E402
+from nexus.database import (  # noqa: E402
+    MONGO_ATLAS_VECTOR_SEARCH_INDEX,
+    MYSQL_DDL_SCHEMA,
+    PGVECTOR_DDL_SCHEMA,
+    get_pgvector_column_type,
+)
 from nexus.models import (  # noqa: E402
     LayerStatus,
     NexusConfig,
@@ -111,6 +116,8 @@ from nexus.models import (  # noqa: E402
 from nexus.platform import NexusPlatform  # noqa: E402
 
 __all__ = [
+    "MONGO_ATLAS_VECTOR_SEARCH_INDEX",
+    "MYSQL_DDL_SCHEMA",
     "PGVECTOR_DDL_SCHEMA",
     "LayerStatus",
     "NexusClient",

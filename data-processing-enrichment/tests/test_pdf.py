@@ -48,9 +48,10 @@ def make_test_pdf(pages_text: list[str]) -> bytes:
         stream_raw = b"BT /F1 12 Tf 72 700 Td (" + safe_text + b") Tj ET"
         compressed = zlib.compress(stream_raw)
 
-        objects[page_id] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {content_id} 0 R >>".encode("ascii")
+        page_dict_str = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {content_id} 0 R >>"
         )
+        objects[page_id] = page_dict_str.encode("ascii")
         objects[content_id] = (
             f"<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode("ascii")
             + compressed
@@ -98,7 +99,9 @@ def test_decode_pdf_hex_string():
 
 
 def test_extract_text_from_content_stream():
-    stream_data = b"BT /F1 12 Tf 72 712 Td (Executive Summary) Tj T* (Revenue increased by 30%) Tj ET"
+    stream_data = (
+        b"BT /F1 12 Tf 72 712 Td (Executive Summary) Tj T* (Revenue increased by 30%) Tj ET"
+    )
     text = extract_text_from_content_stream(stream_data)
     assert "Executive Summary" in text
     assert "Revenue increased by 30%" in text

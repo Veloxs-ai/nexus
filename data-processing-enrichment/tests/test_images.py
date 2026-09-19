@@ -27,7 +27,9 @@ from nexus_processing.images import (
 )
 
 
-def make_test_png(width: int = 8, height: int = 8, color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
+def make_test_png(
+    width: int = 8, height: int = 8, color: tuple[int, int, int] = (255, 0, 0)
+) -> bytes:
     sig = b"\x89PNG\r\n\x1a\n"
     ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
@@ -47,12 +49,16 @@ def make_test_png(width: int = 8, height: int = 8, color: tuple[int, int, int] =
     return sig + ihdr + idat + iend
 
 
-def make_test_bmp(width: int = 8, height: int = 8, color: tuple[int, int, int] = (0, 255, 0)) -> bytes:
+def make_test_bmp(
+    width: int = 8, height: int = 8, color: tuple[int, int, int] = (0, 255, 0)
+) -> bytes:
     row_bytes = ((width * 3 + 3) // 4) * 4
     pixel_data_size = row_bytes * height
     file_size = 54 + pixel_data_size
     header = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, 54)
-    dib = struct.pack("<IIIHHIIIIII", 40, width, height, 1, 24, 0, pixel_data_size, 2835, 2835, 0, 0)
+    dib = struct.pack(
+        "<IIIHHIIIIII", 40, width, height, 1, 24, 0, pixel_data_size, 2835, 2835, 0, 0
+    )
 
     pixels = bytearray()
     padding = b"\x00" * (row_bytes - width * 3)
