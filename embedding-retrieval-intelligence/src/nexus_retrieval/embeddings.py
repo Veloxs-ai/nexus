@@ -70,6 +70,96 @@ class HashingEmbedder:
         return normalize_vector(vector) if self.normalize else vector
 
 
+class ImageEmbedder:
+    """High-dimensional visual feature projection embedder.
+
+    Projects spatial luminance grids, gradient transitions, 3D color histograms,
+    and perceptual edge signatures into a 3072-dimensional vector space with
+    exact IEEE 754 L2 unit normalization.
+    """
+
+    def __init__(self, dimensions: int = 3072, normalize: bool = True) -> None:
+        self.dimensions = dimensions
+        self.normalize = normalize
+
+    def embed_features(
+        self,
+        spatial_grid: list[float],
+        color_histogram: list[float] | None = None,
+        luminance_histogram: list[float] | None = None,
+        horizontal_gradients: list[float] | None = None,
+        vertical_gradients: list[float] | None = None,
+        edge_signature: str | None = None,
+        aspect_ratio: float = 1.0,
+    ) -> list[float]:
+        vector = [0.0] * self.dimensions
+
+        # 1. Spatial Grid Projection (8x8 = 64 spatial cells)
+        grid_dim = math.isqrt(len(spatial_grid)) or 8
+        for idx, val in enumerate(spatial_grid):
+            r = idx // grid_dim
+            c = idx % grid_dim
+            quantized_val = min(19, int(val * 20))
+            token = f"pos_{r}_{c}_val_{quantized_val}"
+            h1 = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            h2 = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+            sign1 = 1.0 if (h1 % 2 == 0) else -1.0
+            sign2 = 1.0 if (h2 % 2 == 0) else -1.0
+            weight = 1.0 + val * 2.0
+            vector[h1] += weight * sign1
+            vector[h2] += (weight * 0.75) * sign2
+
+        # 2. Spatial Gradient Transitions (Horizontal & Vertical Edges)
+        if horizontal_gradients:
+            for idx, g in enumerate(horizontal_gradients):
+                g_bin = max(-5, min(5, int(g * 10)))
+                token = f"grad_h_{idx}_{g_bin}"
+                h = int(hashlib.sha1(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += 1.8 * abs(g) * sign
+
+        if vertical_gradients:
+            for idx, g in enumerate(vertical_gradients):
+                g_bin = max(-5, min(5, int(g * 10)))
+                token = f"grad_v_{idx}_{g_bin}"
+                h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += 1.8 * abs(g) * sign
+
+        # 3. 3D Color Histogram Projection (64 RGB-cube bins)
+        if color_histogram:
+            for bin_idx, freq in enumerate(color_histogram):
+                if freq > 0.001:
+                    token = f"color_bin_{bin_idx}"
+                    h = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+                    sign = 1.0 if (h % 2 == 0) else -1.0
+                    vector[h] += (freq * 5.0) * sign
+
+        # 4. Luminance Intensity Distribution (32 bins)
+        if luminance_histogram:
+            for bin_idx, freq in enumerate(luminance_histogram):
+                if freq > 0.001:
+                    token = f"lum_bin_{bin_idx}"
+                    h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+                    sign = 1.0 if (h % 2 == 0) else -1.0
+                    vector[h] += (freq * 4.0) * sign
+
+        # 5. Perceptual dHash Signature & Aspect Ratio
+        if edge_signature:
+            # Hash 4-character sub-windows of the 16-hex dHash
+            for i in range(0, len(edge_signature) - 3, 2):
+                chunk = edge_signature[i : i + 4]
+                h = int(hashlib.sha1(f"dhash_{chunk}".encode()).hexdigest(), 16) % self.dimensions
+                sign = 1.0 if (h % 2 == 0) else -1.0
+                vector[h] += 2.2 * sign
+
+        ar_token = f"ar_{int(aspect_ratio * 10)}"
+        h_ar = int(hashlib.md5(ar_token.encode("utf-8")).hexdigest(), 16) % self.dimensions
+        vector[h_ar] += 1.2
+
+        return normalize_vector(vector) if self.normalize else vector
+
+
 def normalize_vector(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(value * value for value in vector))
     if magnitude == 0:

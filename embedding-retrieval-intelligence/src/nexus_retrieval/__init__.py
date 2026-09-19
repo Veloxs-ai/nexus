@@ -16,9 +16,15 @@
 
 """Embedding and retrieval intelligence package."""
 
-from .embeddings import HashingEmbedder, cosine_similarity
+from .embeddings import HashingEmbedder, ImageEmbedder, cosine_similarity
 from .engine import RetrievalEngine
 
-__all__ = ["HashingEmbedder", "RetrievalEngine", "__version__", "cosine_similarity"]
+__all__ = [
+    "HashingEmbedder",
+    "ImageEmbedder",
+    "RetrievalEngine",
+    "__version__",
+    "cosine_similarity",
+]
 
 __version__ = "0.1.0"

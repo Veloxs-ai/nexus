@@ -37,6 +37,8 @@ try:
     from nexus.experience.service import ExperienceService
     from nexus.guardrails.engine import GuardrailsEngine
     from nexus.processing.engine import ProcessingEngine
+    from nexus.processing.images import process_image_binary
+    from nexus.retrieval.embeddings import ImageEmbedder
     from nexus.retrieval.engine import RetrievalEngine
 except (ImportError, ModuleNotFoundError):
     from nexus_experience.config import AuthConfig, EngagementConfig
@@ -46,6 +48,8 @@ except (ImportError, ModuleNotFoundError):
     from nexus_experience.service import ExperienceService
     from nexus_guardrails.engine import GuardrailsEngine
     from nexus_processing.engine import ProcessingEngine
+    from nexus_processing.images import process_image_binary
+    from nexus_retrieval.embeddings import ImageEmbedder
     from nexus_retrieval.engine import RetrievalEngine
 
 
@@ -83,6 +87,7 @@ class NexusClient:
             base_dir=self.base_dir,
             retrieval_engine=self.retrieval,
         )
+        self.image_embedder = ImageEmbedder(dimensions=3072, normalize=True)
 
         if experience_service is not None:
             self.experience = experience_service
@@ -130,7 +135,28 @@ class NexusClient:
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         detected_format = (file_type or Path(name).suffix.removeprefix(".") or "text").lower()
-        clean_text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        # Automatic routing for image payloads
+        if detected_format in ("png", "jpg", "jpeg", "bmp"):
+            raw_img_bytes = None
+            if isinstance(text, bytes | bytearray):
+                raw_img_bytes = bytes(text)
+            elif isinstance(text, str):
+                p = Path(text)
+                if p.is_file():
+                    raw_img_bytes = p.read_bytes()
+            if raw_img_bytes is not None:
+                return self.process_image(
+                    image_id=document_id,
+                    name=name,
+                    image_bytes=raw_img_bytes,
+                    format_hint=detected_format,
+                    metadata=metadata,
+                )
+
+        clean_text = (
+            text.replace("\r\n", "\n").replace("\r", "\n") if isinstance(text, str) else str(text)
+        )
         normalized_text = unicodedata.normalize("NFKC", clean_text)
         file_size_bytes = len(normalized_text.encode("utf-8"))
         content_hash = hashlib.md5(normalized_text.encode("utf-8")).hexdigest()
@@ -360,3 +386,236 @@ class NexusClient:
     def embed(self, text: str) -> list[float]:
         """Generates a pure 3072-dimensional normalized embedding vector."""
         return self.retrieval.embed(text)
+
+    def embed_image(self, image_bytes: bytes, format_hint: str | None = None) -> list[float]:
+        """Generates a pure 3072-dimensional normalized visual embedding vector."""
+        visual_payload = process_image_binary(image_bytes, format_hint=format_hint)
+        return self.image_embedder.embed_features(
+            spatial_grid=visual_payload.spatial_grid,
+            color_histogram=visual_payload.color_histogram,
+            luminance_histogram=visual_payload.luminance_histogram,
+            horizontal_gradients=visual_payload.horizontal_gradients,
+            vertical_gradients=visual_payload.vertical_gradients,
+            edge_signature=visual_payload.edge_signature,
+            aspect_ratio=visual_payload.metadata.aspect_ratio,
+        )
+
+    def process_image(
+        self,
+        image_id: str,
+        name: str,
+        image_bytes: bytes | None = None,
+        file_path: str | Path | None = None,
+        format_hint: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ProcessedDocumentPayload:
+        """Processes an image through pure-Python decoding, spatial grid decomposition,
+        color and luminance distribution analysis, and 3072D vector projection.
+
+        Args:
+            image_id: Unique identifier for the image document.
+            name: Filename or descriptor (e.g. 'diagram.png').
+            image_bytes: Raw binary image payload.
+            file_path: Optional path to read image from disk if image_bytes not provided.
+            format_hint: Optional format hint ('png', 'jpeg', 'bmp').
+            metadata: Custom metadata dictionary to attach to image document and chunk.
+
+        Returns:
+            ProcessedDocumentPayload with visual metadata, 3072D embedding, and 5-stage telemetry.
+        """
+        t_start_total = time.perf_counter()
+        traces: list[ProcessingStageTrace] = []
+
+        # Read binary data
+        if image_bytes is not None:
+            raw_data = image_bytes
+        elif file_path is not None:
+            raw_data = Path(file_path).read_bytes()
+        else:
+            raise ValueError("Either image_bytes or file_path must be provided to process_image.")
+
+        # -------------------------------------------------------------------------
+        # Step 1: Binary Ingestion & Format Validation (0% - 20%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        file_size_bytes = len(raw_data)
+        content_hash = hashlib.sha256(raw_data).hexdigest()
+        detected_format = (format_hint or Path(name).suffix.removeprefix(".") or "unknown").lower()
+        dt_step1 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=1,
+                stage_name="Binary Header & Format Validation",
+                status="completed",
+                duration_ms=round(dt_step1, 2),
+                summary=(
+                    f"Validated {file_size_bytes} bytes of image payload. "
+                    f"Format hint: '{detected_format}'. Computed SHA256: {content_hash[:10]}..."
+                ),
+                details={
+                    "format_hint": detected_format,
+                    "file_size_bytes": file_size_bytes,
+                    "content_hash": content_hash,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 2: Pixel Scanline & Binary Decompression (20% - 40%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        visual_payload = process_image_binary(raw_data, format_hint=detected_format)
+        meta = visual_payload.metadata
+        dt_step2 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=2,
+                stage_name="Pixel Scanline & Binary Decompression",
+                status="completed",
+                duration_ms=round(dt_step2, 2),
+                summary=(
+                    f"Decoded {meta.format} stream "
+                    f"({meta.width}x{meta.height}, {meta.color_mode}). "
+                    f"Aspect ratio: {meta.aspect_ratio}."
+                ),
+                details={
+                    "format": meta.format,
+                    "width": meta.width,
+                    "height": meta.height,
+                    "color_mode": meta.color_mode,
+                    "aspect_ratio": meta.aspect_ratio,
+                    "has_alpha": meta.has_alpha,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 3: Spatial Luminance Grid Decomposition (40% - 60%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        grid_cells_count = len(visual_payload.spatial_grid)
+        dt_step3 = (time.perf_counter() - t0) * 1000.0
+        total_gradients = len(visual_payload.horizontal_gradients) + len(
+            visual_payload.vertical_gradients
+        )
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=3,
+                stage_name="Spatial Luminance Grid Decomposition",
+                status="completed",
+                duration_ms=round(dt_step3, 2),
+                summary=(
+                    f"Downsampled canvas into {grid_cells_count}-cell spatial luminance matrix. "
+                    f"Extracted {total_gradients} spatial gradient vectors."
+                ),
+                details={
+                    "grid_dimensions": "8x8",
+                    "total_cells": grid_cells_count,
+                    "horizontal_gradients": len(visual_payload.horizontal_gradients),
+                    "vertical_gradients": len(visual_payload.vertical_gradients),
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 4: 3D Color Histogram & Perceptual dHash (60% - 80%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        active_colors = sum(1 for c in visual_payload.color_histogram if c > 0)
+        dt_step4 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=4,
+                stage_name="3D Color Histogram & Perceptual dHash",
+                status="completed",
+                duration_ms=round(dt_step4, 2),
+                summary=(
+                    f"Quantized 64-bin RGB color distribution ({active_colors} active bins) "
+                    f"and computed 64-bit perceptual dHash: {visual_payload.edge_signature}."
+                ),
+                details={
+                    "color_bins": 64,
+                    "active_color_bins": active_colors,
+                    "luminance_bins": 32,
+                    "perceptual_dhash": visual_payload.edge_signature,
+                },
+            )
+        )
+
+        # -------------------------------------------------------------------------
+        # Step 5: 3072D Multi-Gram Visual Vector Projection (80% - 100%)
+        # -------------------------------------------------------------------------
+        t0 = time.perf_counter()
+        visual_vector = self.image_embedder.embed_features(
+            spatial_grid=visual_payload.spatial_grid,
+            color_histogram=visual_payload.color_histogram,
+            luminance_histogram=visual_payload.luminance_histogram,
+            horizontal_gradients=visual_payload.horizontal_gradients,
+            vertical_gradients=visual_payload.vertical_gradients,
+            edge_signature=visual_payload.edge_signature,
+            aspect_ratio=meta.aspect_ratio,
+        )
+        dt_step5 = (time.perf_counter() - t0) * 1000.0
+
+        traces.append(
+            ProcessingStageTrace(
+                step_number=5,
+                stage_name="3072D Multi-Gram Visual Vector Projection",
+                status="completed",
+                duration_ms=round(dt_step5, 2),
+                summary=(
+                    "Projected spatial luminance, color distribution, and edge signatures into "
+                    "normalized 3072-dimensional vector space (L2 Norm = 1.0)."
+                ),
+                details={
+                    "vector_dimensions": len(visual_vector),
+                    "l2_norm": 1.0,
+                },
+            )
+        )
+
+        # Prepare document chunk and payload metadata
+        doc_metadata: dict[str, Any] = {
+            "format": meta.format,
+            "width": meta.width,
+            "height": meta.height,
+            "aspect_ratio": meta.aspect_ratio,
+            "color_mode": meta.color_mode,
+            "has_alpha": meta.has_alpha,
+            "dhash": visual_payload.edge_signature,
+            "is_image": True,
+        }
+        if metadata:
+            doc_metadata.update(metadata)
+
+        chunk = ProcessedChunk(
+            chunk_id=f"{image_id}:0",
+            document_id=image_id,
+            chunk_index=0,
+            text=visual_payload.narrative_summary,
+            metadata=doc_metadata,
+            embedding=visual_vector,
+        )
+
+        total_ms = (time.perf_counter() - t_start_total) * 1000.0
+        summary_msg = (
+            f"Successfully processed image '{name}' ({meta.format} {meta.width}x{meta.height}) "
+            f"into vector(3072) in {total_ms:.1f}ms."
+        )
+
+        return ProcessedDocumentPayload(
+            document_id=image_id,
+            name=name,
+            file_type=meta.format.lower(),
+            file_size_bytes=file_size_bytes,
+            content_hash=content_hash,
+            classification=doc_metadata.get("classification", "visual"),
+            chunks=[chunk],
+            metadata=doc_metadata,
+            execution_trace=traces,
+            summary=summary_msg,
+        )

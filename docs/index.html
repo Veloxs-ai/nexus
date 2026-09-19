@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nexus — Enterprise Intelligence Framework</title>
+  <meta name="description" content="An open-source, config-driven enterprise framework for secure, governed AI applications, 3072D vector intelligence, and intelligent workflows.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <style>
+    /* ==========================================================================
+       THEME SYSTEM: LIGHT CREAMY WHITE & CHARCOAL COAL DARK
+       ========================================================================== */
+    :root {
+      --transition-speed: 0.22s;
+      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    /* ☀️ LIGHT THEME: Light Creamy White / Warm Alabaster */
+    [data-theme="light"] {
+      --bg-base: #FBF9F5;              /* Light Creamy shade of white */
+      --bg-surface: #FFFFFF;           /* Crisp White Card Surface */
+      --bg-surface-subtle: #F4EFE6;    /* Cream Sub-Surface */
+      --bg-surface-hover: #EFE8DC;     /* Hover Cream */
+      
+      --text-primary: #1C1917;         /* Deep Warm Charcoal Ink */
+      --text-secondary: #57534E;       /* Warm Stone Slate */
+      --text-muted: #8C857B;           /* Soft Stone */
+      --text-inverse: #FFFFFF;
+      
+      --border-subtle: #E8E2D5;        /* Soft Cream Border */
+      --border-strong: #D5CCC0;        /* Defined Stone Border */
+      
+      --accent: #0D9488;               /* Deep Teal Emerald */
+      --accent-hover: #0F766E;
+      --accent-subtle: #E6F4F1;        /* Soft Mint Cream */
+      --accent-text: #0F766E;
+      
+      --shadow-sm: 0 1px 3px rgba(28, 25, 23, 0.04), 0 1px 2px rgba(28, 25, 23, 0.02);
+      --shadow-md: 0 4px 16px -2px rgba(28, 25, 23, 0.06), 0 2px 6px -1px rgba(28, 25, 23, 0.03);
+      --shadow-lg: 0 12px 32px -4px rgba(28, 25, 23, 0.08), 0 4px 12px -2px rgba(28, 25, 23, 0.04);
+      
+      --code-block-bg: #1A1D20;
+      --code-block-text: #E5E7EB;
+    }
+
+    /* 🌙 DARK THEME: Deep Charcoal & Coal */
+    [data-theme="dark"] {
+      --bg-base: #101214;              /* Deep Charcoal Coal Background */
+      --bg-surface: #171A1D;           /* Elevated Coal Surface */
+      --bg-surface-subtle: #1F2328;    /* Sub-card surface */
+      --bg-surface-hover: #262B32;     /* Surface Hover */
+      
+      --text-primary: #F3F4F6;         /* Crisp Off-White */
+      --text-secondary: #9CA3AF;       /* Muted Ash */
+      --text-muted: #6B7280;           /* Deep Charcoal Slate */
+      --text-inverse: #101214;
+      
+      --border-subtle: #24292F;        /* Deep Charcoal Border */
+      --border-strong: #374151;        /* Defined Coal Border */
+      
+      --accent: #14B8A6;               /* Luminous Teal */
+      --accent-hover: #2DD4BF;
+      --accent-subtle: #132E2B;        /* Soft Dark Teal */
+      --accent-text: #2DD4BF;
+      
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 16px 36px -4px rgba(0, 0, 0, 0.6);
+      
+      --code-block-bg: #131619;
+      --code-block-text: #E5E7EB;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      transition: background-color var(--transition-speed) ease, color var(--transition-speed) ease;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+
+    a:hover {
+      color: var(--accent-hover);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* NAVBAR */
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      transition: border-color var(--transition-speed) ease;
+    }
+
+    [data-theme="light"] .navbar {
+      background-color: rgba(251, 249, 245, 0.88);
+    }
+    [data-theme="dark"] .navbar {
+      background-color: rgba(16, 18, 20, 0.88);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 72px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+
+    .brand-badge {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background-color: var(--accent-subtle);
+      color: var(--accent-text);
+      border: 1px solid rgba(13, 148, 136, 0.2);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-link {
+      font-size: 0.92rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: color 0.15s ease;
+    }
+
+    .nav-link:hover {
+      color: var(--text-primary);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .theme-toggle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background-color: var(--bg-surface-subtle);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .theme-toggle-btn:hover {
+      background-color: var(--bg-surface-hover);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    .btn-github {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      border-radius: 10px;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+      transition: all 0.2s ease;
+    }
+
+    .btn-github:hover {
+      color: var(--text-primary);
+      background-color: var(--bg-surface-hover);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+
+    /* HERO */
+    .hero {
+      padding: 80px 0 50px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--accent-text);
+      background-color: var(--accent-subtle);
+      padding: 6px 14px;
+      border-radius: 100px;
+      margin-bottom: 24px;
+      border: 1px solid rgba(13, 148, 136, 0.2);
+    }
+
+    .hero-title {
+      font-size: clamp(2.4rem, 5.5vw, 4.2rem);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+      color: var(--text-primary);
+      max-width: 920px;
+      margin: 0 auto 20px;
+      text-wrap: balance;
+    }
+
+    .hero-title span {
+      background: linear-gradient(135deg, var(--accent) 0%, #3B82F6 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-desc {
+      font-size: 1.2rem;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0 auto 36px;
+      text-wrap: balance;
+    }
+
+    .hero-cta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin-bottom: 48px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      background-color: var(--accent);
+      color: #FFFFFF;
+      box-shadow: 0 4px 14px rgba(13, 148, 136, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .btn-primary:hover {
+      background-color: var(--accent-hover);
+      color: #FFFFFF;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(13, 148, 136, 0.4);
+    }
+
+    .install-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .install-pill:hover {
+      border-color: var(--accent);
+      background-color: var(--bg-surface-hover);
+    }
+
+    .copy-icon {
+      color: var(--text-muted);
+      transition: color 0.15s ease;
+    }
+
+    .install-pill:hover .copy-icon {
+      color: var(--accent);
+    }
+
+    /* 5-STAGE PLAYGROUND */
+    .playground-section {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 36px;
+      margin-bottom: 64px;
+      box-shadow: var(--shadow-md);
+    }
+
+    .playground-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .playground-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 10px;
+      display: block;
+    }
+
+    .code-window {
+      background-color: var(--code-block-bg);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      background-color: rgba(255, 255, 255, 0.04);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: #9CA3AF;
+    }
+
+    .code-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .code-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .code-dot:nth-child(1) { background-color: #EF4444; }
+    .code-dot:nth-child(2) { background-color: #F59E0B; }
+    .code-dot:nth-child(3) { background-color: #10B981; }
+
+    pre code {
+      display: block;
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: var(--code-block-text);
+      overflow-x: auto;
+    }
+
+    .syntax-kw { color: #F472B6; }
+    .syntax-fn { color: #60A5FA; }
+    .syntax-str { color: #34D399; }
+    .syntax-cm { color: #6B7280; font-style: italic; }
+
+    .telemetry-box {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .telemetry-step {
+      background-color: var(--bg-surface-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px 18px;
+      transition: all 0.2s ease;
+    }
+
+    .telemetry-step:hover {
+      border-color: var(--accent);
+      background-color: var(--bg-surface-hover);
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+
+    .step-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .step-time {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: var(--accent-text);
+      background-color: var(--accent-subtle);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .step-desc {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    /* 7 LAYERS GRID */
+    .section-header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    .section-title {
+      font-size: 2.2rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: var(--text-primary);
+      margin-bottom: 12px;
+    }
+
+    .section-desc {
+      font-size: 1.05rem;
+      color: var(--text-secondary);
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .layers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 80px;
+    }
+
+    .layer-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.25s ease;
+    }
+
+    .layer-card:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-md);
+      border-color: var(--border-strong);
+    }
+
+    .layer-badge {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      background-color: var(--accent-subtle);
+      padding: 3px 8px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: 12px;
+    }
+
+    .layer-card h3 {
+      font-size: 1.22rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.015em;
+      margin-bottom: 8px;
+    }
+
+    .layer-card p {
+      font-size: 0.92rem;
+      color: var(--text-secondary);
+      line-height: 1.55;
+      margin-bottom: 16px;
+    }
+
+    .layer-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 14px;
+    }
+
+    .layer-features li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .layer-features li::before {
+      content: "•";
+      color: var(--accent);
+      font-weight: bold;
+    }
+
+    /* FOOTER */
+    footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 48px 0;
+      background-color: var(--bg-surface);
+      transition: border-color var(--transition-speed) ease;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 24px;
+      list-style: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAVBAR -->
+  <header class="navbar">
+    <div class="container nav-inner">
+      <div class="brand">
+        <span>NEXUS</span>
+        <span class="brand-badge">v3.0.1</span>
+      </div>
+      
+      <ul class="nav-links">
+        <li><a href="#engine" class="nav-link">5-Stage Engine</a></li>
+        <li><a href="#layers" class="nav-link">7 Layers</a></li>
+        <li><a href="#quickstart" class="nav-link">Quickstart</a></li>
+        <li><a href="https://github.com/Veloxs-ai/nexus" class="nav-link" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+
+      <div class="nav-actions">
+        <!-- Theme Toggle -->
+        <button id="themeToggle" class="theme-toggle-btn" aria-label="Toggle dark/light theme" title="Toggle theme">
+          <svg id="sunIcon" style="display:none;" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+          </svg>
+          <svg id="moonIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+        </button>
+
+        <a href="https://github.com/Veloxs-ai/nexus" target="_blank" rel="noopener" class="btn-github">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"></path>
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- HERO SECTION -->
+  <main class="container">
+    <section class="hero">
+      <div class="hero-eyebrow">
+        <span>⚡ Apache-2.0 Open Source</span>
+      </div>
+      <h1 class="hero-title">
+        The Enterprise Intelligence <span>Framework</span>
+      </h1>
+      <p class="hero-desc">
+        A decoupled, high-performance Python engine for format-aware chunking, 3072D vector projections, configurable PII guardrails, and secure hybrid retrieval.
+      </p>
+      
+      <div class="hero-cta">
+        <a href="#quickstart" class="btn-primary">
+          Get Started
+        </a>
+        <div class="install-pill" id="copyInstall" title="Click to copy install command">
+          <code>pip install veloxs-nexus</code>
+          <svg class="copy-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5-STAGE ENGINE INTERACTIVE TELEMETRY -->
+    <section id="engine" class="playground-section">
+      <div class="playground-grid">
+        <div>
+          <span class="section-eyebrow">Production Engine</span>
+          <h2 style="font-size:1.8rem; font-weight:700; margin-bottom:12px;">Unified In-Memory Client</h2>
+          <p style="color:var(--text-secondary); margin-bottom:24px; font-size:0.95rem;">
+            Process raw PDFs, CSVs, JSON, and live PostgreSQL tables into 3072D embeddings with real-time 5-stage telemetry trace in ~2 milliseconds.
+          </p>
+          
+          <div class="code-window">
+            <div class="code-header">
+              <div class="code-dots">
+                <div class="code-dot"></div>
+                <div class="code-dot"></div>
+                <div class="code-dot"></div>
+              </div>
+              <span>app.py</span>
+            </div>
+            <pre><code><span class="syntax-kw">import</span> nexus
+
+<span class="syntax-cm"># 1. Thread-safe in-memory client (zero disk I/O)</span>
+client = nexus.NexusClient(in_memory_only=<span class="syntax-kw">True</span>)
+
+<span class="syntax-cm"># 2. Pipeline document with 5-stage telemetry</span>
+doc = client.process_document(
+    document_id=<span class="syntax-str">"doc-01"</span>,
+    name=<span class="syntax-str">"salaries.csv"</span>,
+    text=<span class="syntax-str">"Emp,Salary,Card\nAditya,120k,4532-8921-1123-9988"</span>,
+    file_type=<span class="syntax-str">"csv"</span>,
+    enable_guardrails=<span class="syntax-kw">True</span>
+)
+
+<span class="syntax-fn">print</span>(doc.summary)
+<span class="syntax-cm"># Projected 3072D vector (L2 norm = 1.0)</span></code></pre>
+          </div>
+        </div>
+
+        <div>
+          <span class="section-eyebrow">Real-Time Execution Trace</span>
+          <h3 style="font-size:1.4rem; font-weight:700; margin-bottom:16px;">5-Stage Telemetry Breakdown</h3>
+          
+          <div class="telemetry-box">
+            <div class="telemetry-step">
+              <div class="step-header">
+                <span class="step-title">1. Document Ingestion & UTF-8 Normalization</span>
+                <span class="step-time">0.02 ms</span>
+              </div>
+              <p class="step-desc">Normalizes UTF-8 content, standardizes CRLF endings, and computes SHA-256 / MD5 content hashes.</p>
+            </div>
+
+            <div class="telemetry-step">
+              <div class="step-header">
+                <span class="step-title">2. Format-Aware Structural Chunking</span>
+                <span class="step-time">0.04 ms</span>
+              </div>
+              <p class="step-desc">Generates tabular narratives with <code>[Row ID: x]</code>, preserving column headers and structure.</p>
+            </div>
+
+            <div class="telemetry-step">
+              <div class="step-header">
+                <span class="step-title">3. Metadata & Entity Classification</span>
+                <span class="step-time">0.03 ms</span>
+              </div>
+              <p class="step-desc">Classifies domain taxonomy, extracts entities, and creates immutable audit metadata.</p>
+            </div>
+
+            <div class="telemetry-step">
+              <div class="step-header">
+                <span class="step-title">4. Safety Guardrails & PII Sanitization</span>
+                <span class="step-time">0.25 ms</span>
+              </div>
+              <p class="step-desc">Redacts Luhn credit cards, SSNs, and emails when enabled (or bypasses with <code>enable_guardrails=False</code>).</p>
+            </div>
+
+            <div class="telemetry-step">
+              <div class="step-header">
+                <span class="step-title">5. 3072D Vector Projection (IEEE 754)</span>
+                <span class="step-time">1.76 ms</span>
+              </div>
+              <p class="step-desc">Projects unit-normalized 3072-dimensional embeddings compatible with PostgreSQL <code>vector(3072)</code>.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7 DECOUPLED LAYERS MATRIX -->
+    <section id="layers" style="margin-bottom:80px;">
+      <div class="section-header">
+        <span class="section-eyebrow">Architecture</span>
+        <h2 class="section-title">Seven Loosely Coupled Layers</h2>
+        <p class="section-desc">Each layer is an independently installable package adhering to zero inter-layer import constraints.</p>
+      </div>
+
+      <div class="layers-grid">
+        <div class="layer-card">
+          <span class="layer-badge">Layer 1</span>
+          <h3>Data Connectivity</h3>
+          <p>Multi-source ingestion for REST APIs, batch directory drops, CSVs, and real-time database CDC event streams.</p>
+          <ul class="layer-features">
+            <li>Same-origin redirect security</li>
+            <li>Debezium CDC streaming</li>
+            <li>Batch directory watchers</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 2</span>
+          <h3>Processing & Enrichment</h3>
+          <p>Context-preserving structural tokenization, row narrative generation, and domain classification.</p>
+          <ul class="layer-features">
+            <li>CSV row narratives [Row ID: x]</li>
+            <li>JSON object block extraction</li>
+            <li>Unicode normalization</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 3</span>
+          <h3>Retrieval Intelligence</h3>
+          <p>Unit-normalized 3072D embeddings, BM25 lexical indexing, knowledge graph traversals, and hybrid RRF fusion.</p>
+          <ul class="layer-features">
+            <li>3072D vector projections</li>
+            <li>IEEE 754 exact precision ($L_2=1.0$)</li>
+            <li>Reciprocal Rank Fusion</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 4</span>
+          <h3>Orchestration & Guardrails</h3>
+          <p>Strict policy enforcement, regex PII scrubbers with Luhn checksum validation, and grounded RAG verification.</p>
+          <ul class="layer-features">
+            <li>Luhn credit card redaction</li>
+            <li>Prompt injection filters</li>
+            <li>Grounded citation verification</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 5</span>
+          <h3>Experience & Channels</h3>
+          <p>Lightweight FastAPI gateway, Python SDK client, and interactive AI assistant interfaces.</p>
+          <ul class="layer-features">
+            <li>FastAPI REST endpoints</li>
+            <li>In-memory gateway</li>
+            <li>Interactive assistant channels</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 6</span>
+          <h3>Security & Governance</h3>
+          <p>Multi-tenant isolation, dynamic tenant-bound HKDF key derivation, RBAC primitives, and tamper-proof audit trails.</p>
+          <ul class="layer-features">
+            <li>Dynamic HKDF cryptographic salting</li>
+            <li>Role-based access control</li>
+            <li>Tamper-evident audit logging</li>
+          </ul>
+        </div>
+
+        <div class="layer-card">
+          <span class="layer-badge">Layer 7</span>
+          <h3>Observability & Monitoring</h3>
+          <p>Real-time telemetry, structured event logging, distributed span tracing, and Prometheus metrics exporters.</p>
+          <ul class="layer-features">
+            <li>Prometheus metrics exporter</li>
+            <li>Distributed span traces</li>
+            <li>Rule-based alerting engine</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- QUICKSTART -->
+    <section id="quickstart" class="playground-section" style="text-align:center; padding: 48px;">
+      <span class="section-eyebrow">Developer Ready</span>
+      <h2 style="font-size:2rem; font-weight:700; margin-bottom:12px;">Get Started in 30 Seconds</h2>
+      <p style="color:var(--text-secondary); max-width:540px; margin:0 auto 28px;">
+        Nexus is completely self-contained with deterministic offline execution and zero required cloud credentials.
+      </p>
+
+      <div style="display:inline-block; text-align:left; max-width:600px; width:100%;">
+        <div class="code-window">
+          <div class="code-header">
+            <span>Terminal</span>
+          </div>
+          <pre><code><span class="syntax-cm"># Install from PyPI</span>
+pip install veloxs-nexus[postgres]
+
+<span class="syntax-cm"># Verify installation and platform status</span>
+nexus validate-config configs/nexus.json
+nexus layers</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="container footer-inner">
+      <div>
+        <strong>Nexus Enterprise Intelligence Framework</strong> — Released under Apache-2.0 License. Copyright 2026 Veloxs AI Inc.
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/Veloxs-ai/nexus" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://pypi.org/project/veloxs-nexus/" target="_blank" rel="noopener">PyPI</a></li>
+        <li><a href="https://github.com/Veloxs-ai/nexus/blob/main/docs/INTEGRATION_GUIDE.md" target="_blank" rel="noopener">Integration Guide</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- THEME TOGGLE SCRIPT -->
+  <script>
+    const toggleBtn = document.getElementById('themeToggle');
+    const sunIcon = document.getElementById('sunIcon');
+    const moonIcon = document.getElementById('moonIcon');
+    const copyBtn = document.getElementById('copyInstall');
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('nexus-theme', theme);
+      if (theme === 'dark') {
+        sunIcon.style.display = 'block';
+        moonIcon.style.display = 'none';
+      } else {
+        sunIcon.style.display = 'none';
+        moonIcon.style.display = 'block';
+      }
+    }
+
+    const savedTheme = localStorage.getItem('nexus-theme') || 
+      (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    applyTheme(savedTheme);
+
+    toggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      applyTheme(current === 'dark' ? 'light' : 'dark');
+    });
+
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText('pip install veloxs-nexus');
+      const originalText = copyBtn.querySelector('code').innerText;
+      copyBtn.querySelector('code').innerText = 'Copied to clipboard!';
+      setTimeout(() => {
+        copyBtn.querySelector('code').innerText = originalText;
+      }, 2000);
+    });
+  </script>
+</body>
+</html>

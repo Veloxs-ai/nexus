@@ -17,7 +17,14 @@
 """Data processing and enrichment package."""
 
 from .engine import ProcessingEngine
+from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
 
-__all__ = ["ProcessingEngine", "__version__"]
+__all__ = [
+    "ImageMetadata",
+    "ProcessingEngine",
+    "VisualFeaturePayload",
+    "__version__",
+    "process_image_binary",
+]
 
 __version__ = "0.1.0"
