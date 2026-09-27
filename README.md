@@ -42,7 +42,7 @@ Nexus provides seven composable capabilities. Each is an independently installab
 
 | Capability | Package | What it does |
 |---|---|---|
-| **Data Connectivity** | `nexus.pipeline` | REST connectors with pagination and SSRF defense, batch file drops, streaming events; CDC normalization (Debezium, Maxwell, MongoDB change streams, generic webhooks) with HMAC-signed delivery |
+| **Data Connectivity** | `nexus.pipeline` | REST connectors with pagination and SSRF defense, batch file drops, streaming events; CDC normalization (Debezium, Maxwell, MongoDB change streams, PostgreSQL `pgoutput` logical replication, generic webhooks) with HMAC-signed delivery |
 | **Processing & Enrichment** | `nexus.processing` | Native pure-Python parsers for Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, Audio (WAV/MP3/AIFF), Video (MP4/MOV), Images (PNG/JPEG/BMP), Code AST, OpenAPI, SQLite, MySQL, MongoDB, Email, Chat, Slack exports, CSV, Markdown, and Text; optional OCR / Whisper / video demuxing; format-preserving tokenization (FF1) |
 | **Knowledge & Retrieval** | `nexus.retrieval` | Semantic embeddings (FastEmbed `bge-small-en-v1.5`, 384D, local ONNX — or OpenAI), cross-encoder re-ranking, lexical (BM25-style), hybrid RRF, and knowledge-graph retrieval with pluggable stores |
 | **Intelligent RAG** | `nexus.guardrails` | Grounded answers with citations, PII masking, prompt-injection defense, fail-closed policy checks |
@@ -298,6 +298,17 @@ events = cdc.normalize_change_events(payload)       # dict, list, {"events": [..
 for event in events:
     text = cdc.change_event_text(event)             # one chunk per record
     ...                                             # upsert / delete by event.key
+
+# PostgreSQL logical replication (built-in pgoutput plugin, no server extension)
+from nexus.processing.pgoutput import PostgresLogicalStream
+
+stream = PostgresLogicalStream("postgresql://reader@db/bank?sslmode=verify-full", "my_slot", "my_publication")
+assert not stream.prerequisites()          # wal_level, REPLICATION role, publication, primary keys
+stream.ensure_slot()
+for txn in stream.transactions():           # committed transactions, in order
+    if txn:
+        apply(txn.events)                   # your durable write
+        stream.confirm(txn.end_lsn)         # only now may the server free that WAL
 
 # Signed webhook delivery (HMAC-SHA256 with a 5-minute replay window)
 ok = cdc.verify_webhook_signature(secret, raw_body, signature_header, timestamp_header)
