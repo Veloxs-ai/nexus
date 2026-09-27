@@ -127,3 +127,8 @@ def test_legacy_apis_are_removed():
         pass
     else:  # pragma: no cover
         raise AssertionError("legacy CDC normalizer should be removed")
+
+
+def test_auto_provider_means_local_fastembed(monkeypatch):
+    monkeypatch.setenv("NEXUS_EMBEDDING_PROVIDER", "auto")
+    assert semantic.create_text_embedder() is semantic.create_text_embedder("fastembed")

@@ -153,6 +153,8 @@ class OpenAIEmbedder:
 def create_text_embedder(provider: str | None = None, model_name: str | None = None) -> TextEmbedder:
     """Process-wide cached semantic text embedder (fastembed | openai)."""
     choice = (provider or os.environ.get("NEXUS_EMBEDDING_PROVIDER") or "fastembed").strip().lower()
+    if choice == "auto":  # historical default: the local model
+        choice = "fastembed"
     if choice == "openai":
         key = f"openai:{model_name or os.environ.get('NEXUS_OPENAI_EMBEDDING_MODEL') or ''}"
         factory = lambda: OpenAIEmbedder(model_name=model_name)  # noqa: E731

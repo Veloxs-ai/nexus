@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DDL builders `pgvector_ddl(dim)` (HNSW + generated `tsvector` with GIN), `mysql_ddl(dim)`, `mongo_atlas_vector_index(dim)`; `get_pgvector_column_type(dim)` returns `halfvec` above 2000 dimensions.
 
 ### Changed
-- `fastembed` is a core dependency; the retrieval engine, indexer and hybrid search use the semantic embedder.
+- `fastembed` is a core dependency (`NEXUS_EMBEDDING_PROVIDER=auto` is accepted as an alias for it); the retrieval engine, indexer and hybrid search use the semantic embedder.
 - Processing stages end with "… Chunk Assembly" (no vector projection).
 - OCR and Whisper models are loaded lazily, shared process-wide, run on CUDA or Apple MPS when available (`NEXUS_ML_DEVICE`), and oversized images are downscaled to 2560 px before OCR.
 - Ingestion PII masking also covers API keys (OpenAI/AWS/Google/GitHub/Slack/Stripe), JWTs and international phone numbers; detectors apply in a fixed specific-to-generic order.
