@@ -24,6 +24,7 @@ Data Connectivity → Processing & Enrichment → Knowledge & Retrieval → Inte
 - [Quick start](#quick-start)
 - [Multimodal Ingestion (Office, Audio, Video, Code, DBs)](#multimodal-ingestion-office-audio-video-code-dbs)
 - [Semantic embeddings & re-ranking](#semantic-embeddings--re-ranking)
+- [Operations: rules, contact policy and cases](#operations-rules-contact-policy-and-cases)
 - [Live sources: CDC, webhooks & Slack](#live-sources-cdc-webhooks--slack)
 - [Build a RAG workflow](#build-a-rag-workflow)
 - [Architecture](#architecture)
@@ -318,6 +319,36 @@ ok = slack_export.verify_slack_signature(signing_secret, raw_body, x_slack_times
 action, message, deleted_ts = slack_export.slack_event_message(event)   # upsert | delete | ignore
 chunks = slack_export.messages_to_chunks("eng", messages, users)        # same chunking as export files
 ```
+
+---
+
+## Operations: rules, contact policy and cases
+
+`nexus.operations` holds the pieces for turning live data into accountable actions (loan reminders before a due date, work orders for a degrading machine):
+
+```python
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+from nexus.operations import ContactPolicy, evaluate_strategy, idempotency_key
+
+strategy = {
+    "facts": {"days_to_due": "days_until(next_due_date)"},
+    "tables": {"treatment": {"hit_policy": "first", "rules": [
+        {"id": "DUE_SOON", "when": "0 <= days_to_due <= 3", "then": {"action": "reminder", "channel": "sms"}},
+    ], "default": {"action": "monitor"}}},
+    "steps": ["treatment"],
+}
+result = evaluate_strategy(strategy, {"next_due_date": "2026-09-29"}, today=date(2026, 9, 27))
+result.outputs        # {'action': 'reminder', 'channel': 'sms'}
+result.reason_codes   # ['treatment:DUE_SOON']
+
+policy = ContactPolicy.preset("IN_RBI")   # 08:00–19:00 recipient time, caps, consent, DND
+policy.check("sms", datetime(2026, 9, 27, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))).allowed   # False
+
+idempotency_key("PL0000123", "emi:2026-10", "T-3", "sms")   # send-once key for an outbox
+```
+
+Rule expressions are parsed against an allow-list (comparisons, `and`/`or`, arithmetic, `in`, a few safe functions such as `days_until`), so rules can be stored as data and edited by business users without any risk of code execution.
 
 ---
 

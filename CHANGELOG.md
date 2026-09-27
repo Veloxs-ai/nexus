@@ -5,6 +5,11 @@ All notable changes to Nexus are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] — Unreleased
+
+### Added
+- **Operations building blocks** (`nexus.operations`, pure Python, no new dependencies) for governed, continuous decisions: a safe expression language for business rules (allow-listed syntax, no code execution, missing fields never raise), versioned decision tables (`first` / `priority` / `collect` / `unique` hit policies, computed outputs, evaluation traces), strategies (derived facts plus an ordered chain of tables with reason codes), a contact policy engine (contact hours by recipient timezone, frequency caps, consent, do-not-disturb, conversation cooling-off; `IN_RBI` and `US_REG_F` presets), case state machines, permanent idempotency keys and deterministic test/control assignment.
+
 ## [3.0.1] — 2026-09-27
 
 **Breaking for integrators of 3.0.0** — processing no longer produces vectors, and the legacy 3072D hashing projection with every API kept for it is removed. Embed chunk text at storage time with `embed_texts()` / `embed_query()`. See "Upgrading from 3.0.0" in the README. This release consolidates the unpublished 3.2.1–4.0.0 development versions.

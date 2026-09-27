@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veloxs-nexus"
-version = "3.0.1"
+version = "3.1.0.dev0"
 description = "Nexus — Enterprise Intelligence Framework. Build secure, governed AI applications, retrieval systems, agents, and intelligent workflows."
 readme = "README.md"
 requires-python = ">=3.11"
