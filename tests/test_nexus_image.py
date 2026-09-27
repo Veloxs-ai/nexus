@@ -62,11 +62,8 @@ def test_nexus_client_process_image():
 
     chunk = doc.chunks[0]
     assert chunk.chunk_id == "img_test_01:0"
-    assert len(chunk.embedding) == 3072
 
     # Verify IEEE 754 L2 unit normalization
-    norm = math.sqrt(sum(x * x for x in chunk.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Verify 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
@@ -79,23 +76,13 @@ def test_nexus_client_process_image():
     assert doc.execution_trace[1].stage_name == "Pixel Scanline & Binary Decompression"
     assert doc.execution_trace[2].stage_name == "Spatial Luminance Grid Decomposition"
     assert doc.execution_trace[3].stage_name == "3D Color Histogram & Perceptual dHash"
-    assert doc.execution_trace[4].stage_name == "3072D Multi-Gram Visual Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Visual Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="visual_assets")
     results = client.search("diagram", limit=5)
     assert len(results) >= 1
     assert any(r.id == "img_test_01:0" for r in results)
-
-
-def test_nexus_client_embed_image():
-    client = NexusClient(in_memory_only=True)
-    png_data = make_png_bytes(8, 8, color=(255, 128, 0))
-
-    vec = client.embed_image(png_data, format_hint="png")
-    assert len(vec) == 3072
-    norm = math.sqrt(sum(x * x for x in vec))
-    assert abs(norm - 1.0) < 1e-7
 
 
 def test_process_document_image_routing():
@@ -111,5 +98,41 @@ def test_process_document_image_routing():
     assert doc.document_id == "img_routed_01"
     assert doc.file_type == "png"
     assert len(doc.chunks) == 1
-    assert len(doc.chunks[0].embedding) == 3072
     assert len(doc.execution_trace) == 5
+
+
+def make_bmp_bytes(width: int = 8, height: int = 8) -> bytes:
+    row_bytes = width * 3
+    padded_row = (row_bytes + 3) & ~3
+    image_size = padded_row * height
+    bf_off_bits = 54
+    bf_size = bf_off_bits + image_size
+    header = struct.pack("<2sIHHI", b"BM", bf_size, 0, 0, bf_off_bits)
+    info = struct.pack("<IIIHHIIIIII", 40, width, height, 1, 24, 0, image_size, 2835, 2835, 0, 0)
+    pad = b"\x00" * (padded_row - row_bytes)
+    pixels = (b"\x00\x00\xff" * width + pad) * height
+    return header + info + pixels
+
+
+def test_nexus_client_image_extension_mismatch_and_ocr():
+    """Validates that JPEG bytes named with .png extension decode properly and ground OCR text."""
+    client = NexusClient(in_memory_only=True)
+    # Generate BMP bytes passed as text-rich image.png
+    bmp_bytes = make_bmp_bytes()
+
+    doc = client.process_document(
+        document_id="img_text_rich",
+        name="text-rich image.png",
+        text=bmp_bytes,
+        ocr_text="Q4 Financial Report - Net Profit +24%",
+        caption="Balance sheet infograph",
+    )
+    assert doc.document_id == "img_text_rich"
+    assert doc.metadata["format"] == "BMP"  # Detected actual magic bytes despite .png filename!
+    assert doc.metadata["caption"] == "Balance sheet infograph"
+    assert doc.metadata["ocr_text"] == "Q4 Financial Report - Net Profit +24%"
+    assert len(doc.chunks) == 1
+    chunk = doc.chunks[0]
+    assert "Balance sheet infograph" in chunk.text
+    assert "Q4 Financial Report" in chunk.text
+

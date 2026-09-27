@@ -172,6 +172,8 @@ def process_email_binary(
     raw_bytes: bytes,
     filename: str = "message.eml",
     chunk_char_limit: int = 1500,
+    ocr_provider: Any = None,
+    auto_extract: bool = True,
 ) -> EmailPayload:
     """Parses an RFC 5322 MIME email message into headers, attachments, and narrative chunks.
 
@@ -179,6 +181,8 @@ def process_email_binary(
         raw_bytes: Raw binary email bytes.
         filename: Optional descriptive filename for grounding citations.
         chunk_char_limit: Maximum characters per body chunk (default: 1500).
+        ocr_provider: Optional OCRProvider for extracting text from image attachments.
+        auto_extract: When True (default), attempts OCR on image attachments.
 
     Returns:
         EmailPayload containing parsed headers, plain/HTML bodies, and grounded chunks.
@@ -214,6 +218,8 @@ def process_email_binary(
     plain_parts: list[str] = []
     html_parts: list[str] = []
     attachments: list[AttachmentInfo] = []
+    forwarded_chunks: list[EmailChunk] = []
+    calendar_chunks: list[str] = []
 
     for part in msg.walk():
         content_disposition = str(part.get_content_disposition() or "").lower()
@@ -230,6 +236,67 @@ def process_email_binary(
                     size_bytes=att_size,
                 )
             )
+            if content_type == "message/rfc822":
+                nested_bytes = part.get_payload(decode=True)
+                if nested_bytes is None:
+                    # message/rfc822 may have sub-parts
+                    sub = part.get_payload()
+                    if isinstance(sub, list) and sub:
+                        nested_bytes = sub[0].as_bytes()
+                    elif hasattr(sub, 'as_bytes'):
+                        nested_bytes = sub.as_bytes()
+                if nested_bytes:
+                    try:
+                        nested_result = process_email_binary(
+                            nested_bytes,
+                            filename=f"forwarded_{att_name or 'message.eml'}",
+                            chunk_char_limit=chunk_char_limit,
+                        )
+                        # Prefix forwarded chunks
+                        for fwd_chunk in nested_result.chunks:
+                            fwd_chunk.text = f"[Forwarded] {fwd_chunk.text}"
+                            fwd_chunk.narrative_text = (
+                                f"[Forwarded] {fwd_chunk.narrative_text}"
+                            )
+                            forwarded_chunks.append(fwd_chunk)
+                    except Exception:
+                        pass
+            # Image attachments: extract text via process_image_binary
+            elif (
+                content_type.startswith("image/")
+                and payload_data
+                and auto_extract
+            ):
+                try:
+                    from .images import process_image_binary
+
+                    img_payload = process_image_binary(
+                        payload_data,
+                        filename=att_name,
+                        ocr_provider=ocr_provider,
+                        auto_extract=auto_extract,
+                    )
+                    parts_list: list[str] = []
+                    if img_payload.metadata.ocr_text:
+                        parts_list.append(img_payload.metadata.ocr_text)
+                    if img_payload.metadata.caption:
+                        parts_list.append(img_payload.metadata.caption)
+                    if parts_list:
+                        forwarded_chunks.append(
+                            EmailChunk(
+                                chunk_index=len(forwarded_chunks),
+                                text=(
+                                    f"[Image: {att_name}] "
+                                    + " ".join(parts_list)
+                                ),
+                                narrative_text=(
+                                    f"[Image Attachment: {att_name}] "
+                                    + " ".join(parts_list)
+                                ),
+                            )
+                        )
+                except Exception:
+                    pass
         elif content_type == "text/plain":
             try:
                 content = part.get_content()
@@ -248,6 +315,34 @@ def process_email_binary(
                 raw_p = part.get_payload(decode=True)
                 if raw_p:
                     html_parts.append(raw_p.decode("utf-8", errors="replace").strip())
+        elif content_type == "text/calendar":
+            cal_bytes = part.get_payload(decode=True)
+            if cal_bytes:
+                cal_text = cal_bytes.decode("utf-8", errors="replace")
+                # Extract basic iCalendar fields
+                summary_m = re.search(r'SUMMARY:(.*?)$', cal_text, re.M)
+                dtstart_m = re.search(r'DTSTART[^:]*:(.*?)$', cal_text, re.M)
+                dtend_m = re.search(r'DTEND[^:]*:(.*?)$', cal_text, re.M)
+                organizer_m = re.search(r'ORGANIZER[^:]*:(?:mailto:)?(.*?)$', cal_text, re.M)
+                location_m = re.search(r'LOCATION:(.*?)$', cal_text, re.M)
+                description_m = re.search(r'DESCRIPTION:(.*?)$', cal_text, re.M)
+                
+                cal_parts = []
+                summary = summary_m.group(1).strip() if summary_m else "Calendar Event"
+                cal_parts.append(f"[Calendar Event: {summary}]")
+                if organizer_m:
+                    cal_parts.append(f"Organizer: {organizer_m.group(1).strip()}")
+                if dtstart_m:
+                    cal_parts.append(f"Start: {dtstart_m.group(1).strip()}")
+                if dtend_m:
+                    cal_parts.append(f"End: {dtend_m.group(1).strip()}")
+                if location_m:
+                    cal_parts.append(f"Location: {location_m.group(1).strip()}")
+                if description_m:
+                    cal_parts.append(f"Description: {description_m.group(1).strip()}")
+                
+                calendar_text = " | ".join(cal_parts)
+                calendar_chunks.append(calendar_text)
 
     body_plain = "\n\n".join(plain_parts).strip()
     body_html = "\n\n".join(html_parts).strip()
@@ -319,6 +414,70 @@ def process_email_binary(
                     narrative_text=narrative,
                 )
             )
+
+    # 6. Safety split for overflow chunks
+    MAX_CHUNK_CHARS = 3000
+    final_chunks: list[EmailChunk] = []
+    final_idx = 0
+    for c in chunks:
+        if len(c.text) <= MAX_CHUNK_CHARS:
+            c.chunk_index = final_idx
+            final_chunks.append(c)
+            final_idx += 1
+        else:
+            # Split at word boundaries
+            words = c.text.split()
+            current = ""
+            for word in words:
+                if len(current) + len(word) + 1 > MAX_CHUNK_CHARS:
+                    if current:
+                        narr = (
+                            c.narrative_text.replace(c.text, current.strip())
+                            if c.text in c.narrative_text
+                            else c.narrative_text
+                        )
+                        final_chunks.append(
+                            EmailChunk(
+                                chunk_index=final_idx,
+                                text=current.strip(),
+                                narrative_text=narr,
+                            )
+                        )
+                        final_idx += 1
+                    current = word
+                else:
+                    current = f"{current} {word}" if current else word
+            if current:
+                narr = (
+                    c.narrative_text.replace(c.text, current.strip())
+                    if c.text in c.narrative_text
+                    else c.narrative_text
+                )
+                final_chunks.append(
+                    EmailChunk(
+                        chunk_index=final_idx,
+                        text=current.strip(),
+                        narrative_text=narr,
+                    )
+                )
+                final_idx += 1
+
+    for cal_text in calendar_chunks:
+        final_chunks.append(
+            EmailChunk(
+                chunk_index=final_idx,
+                text=cal_text,
+                narrative_text=f"{header_citation}\n{cal_text}"
+            )
+        )
+        final_idx += 1
+        
+    for fwd in forwarded_chunks:
+        fwd.chunk_index = final_idx
+        final_chunks.append(fwd)
+        final_idx += 1
+    
+    chunks = final_chunks
 
     meta = EmailMetadata(
         filename=filename,

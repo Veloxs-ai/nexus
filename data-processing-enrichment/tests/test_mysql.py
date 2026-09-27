@@ -14,10 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from nexus_processing.cdc import normalize_change_event
 from nexus_processing.mysql import (
-    MYSQL_DDL_SCHEMA,
     chunk_mysql_table,
-    normalize_mysql_cdc_event,
     serialize_mysql_row,
 )
 
@@ -70,7 +69,7 @@ def test_chunk_mysql_table_single_and_batch():
     assert chunk_mysql_table([], table_name="audit_logs") == []
 
 
-def test_normalize_mysql_cdc_event_insert():
+def test_debezium_mysql_insert():
     debezium_event = {
         "payload": {
             "op": "c",
@@ -80,15 +79,14 @@ def test_normalize_mysql_cdc_event_insert():
             "before": None,
         }
     }
-    normalized = normalize_mysql_cdc_event(debezium_event)
-    assert normalized["operation"] == "INSERT"
-    assert normalized["database"] == "production"
-    assert normalized["table"] == "orders"
-    assert normalized["record"]["order_id"] == 5001
-    assert normalized["timestamp_ms"] == 1726765200000
+    ev = normalize_change_event(debezium_event)
+    assert ev.operation == "INSERT" and ev.source_format == "debezium"
+    assert ev.database == "production" and ev.table == "orders"
+    assert ev.record["order_id"] == 5001
+    assert ev.timestamp_ms == 1726765200000
 
 
-def test_normalize_mysql_cdc_event_update_and_delete():
+def test_debezium_mysql_update_and_delete():
     update_event = {
         "payload": {
             "op": "u",
@@ -97,10 +95,9 @@ def test_normalize_mysql_cdc_event_update_and_delete():
             "after": {"id": 42, "email": "new@example.com"},
         }
     }
-    norm_update = normalize_mysql_cdc_event(update_event)
-    assert norm_update["operation"] == "UPDATE"
-    assert norm_update["record"]["email"] == "new@example.com"
-    assert norm_update["before"]["email"] == "old@example.com"
+    ev_update = normalize_change_event(update_event)
+    assert ev_update.operation == "UPDATE"
+    assert ev_update.record["email"] == "new@example.com" and ev_update.key == "42"
 
     delete_event = {
         "payload": {
@@ -110,12 +107,6 @@ def test_normalize_mysql_cdc_event_update_and_delete():
             "after": None,
         }
     }
-    norm_delete = normalize_mysql_cdc_event(delete_event)
-    assert norm_delete["operation"] == "DELETE"
-    assert norm_delete["record"]["id"] == 42
-
-
-def test_mysql_ddl_schema():
-    assert "CREATE TABLE IF NOT EXISTS knowledge_documents" in MYSQL_DDL_SCHEMA
-    assert "CREATE TABLE IF NOT EXISTS knowledge_chunks" in MYSQL_DDL_SCHEMA
-    assert "ENGINE=InnoDB" in MYSQL_DDL_SCHEMA
+    ev_delete = normalize_change_event(delete_event)
+    assert ev_delete.operation == "DELETE" and ev_delete.is_delete
+    assert ev_delete.record["id"] == 42

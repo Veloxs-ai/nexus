@@ -22,9 +22,34 @@ import json
 import re
 
 
-def chunk_csv(csv_str: str) -> list[str]:
-    """Transforms tabular CSV matrix rows into rich contextual narratives with explicit Row IDs."""
+def pack_rows(rows: list[str], header: str = "", max_chars: int = 1500) -> list[str]:
+    """Pack consecutive row narratives into row-group chunks.
+
+    One-row-per-chunk floods top-k retrieval with near-identical fragments and
+    wastes one vector per ~80 characters. Row groups keep rows verbatim, repeat
+    the column header in every group so each chunk is self-describing, and stay
+    well inside embedding-model context limits.
+    """
     chunks: list[str] = []
+    prefix = f"{header}\n" if header else ""
+    current: list[str] = []
+    size = len(prefix)
+    for row in rows:
+        row = row.strip()
+        if not row:
+            continue
+        if current and size + len(row) + 1 > max_chars:
+            chunks.append(prefix + "\n".join(current))
+            current, size = [], len(prefix)
+        current.append(row)
+        size += len(row) + 1
+    if current:
+        chunks.append(prefix + "\n".join(current))
+    return chunks
+
+
+def chunk_csv(csv_str: str, max_chars: int = 1500) -> list[str]:
+    """Transforms tabular CSV rows into row-group narratives with explicit Row IDs."""
     try:
         clean_input = csv_str.replace("\r\n", "\n").replace("\r", "\n")
         lines = [line for line in clean_input.strip().splitlines() if line.strip()]
@@ -37,13 +62,18 @@ def chunk_csv(csv_str: str) -> list[str]:
                 break
         clean_csv = "\n".join(lines[start_idx:])
         reader = csv.DictReader(io.StringIO(clean_csv))
+        rows: list[str] = []
         for row_idx, row in enumerate(reader, start=1):
-            row_items = [f"{k.strip()}: {v.strip()}" for k, v in row.items() if k and v is not None]
+            row_items = [
+                f"{k.strip()}: {v.strip()}" for k, v in row.items() if k and isinstance(v, str)
+            ]
             if row_items:
-                narrative = f"[Row ID: {row_idx}] " + " | ".join(row_items)
-                chunks.append(narrative)
+                rows.append(f"[Row ID: {row_idx}] " + " | ".join(row_items))
+        columns = [c.strip() for c in (reader.fieldnames or []) if c]
+        header = f"Columns: {', '.join(columns)}" if columns else ""
+        chunks = pack_rows(rows, header=header, max_chars=max_chars)
     except Exception:
-        pass
+        chunks = []
     return chunks if chunks else chunk_smart_text(csv_str)
 
 
@@ -114,9 +144,71 @@ def chunk_smart_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200
             chunks.append(chunk)
 
         next_start = max(0, split_point - chunk_overlap)
+        if 0 < next_start < split_point:
+            # Start the overlap window on a word boundary, never mid-word.
+            boundary = remaining_text.find(" ", next_start, split_point)
+            if boundary != -1:
+                next_start = boundary + 1
         remaining_text = remaining_text[next_start:].strip()
 
     return chunks
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+
+
+def chunk_markdown(text: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> list[str]:
+    """Heading-aware chunking for Markdown / structured text.
+
+    Splits on headings first so a chunk never straddles two sections, then
+    applies paragraph/sentence-aware sizing inside long sections. Every chunk
+    is prefixed with its heading breadcrumb (``Section: A > B``) so that it is
+    self-describing for both the embedding model and the LLM - retrieving
+    "3. Refund window" out of context otherwise loses which policy it belongs to.
+    """
+    clean_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not clean_text:
+        return []
+    lines = clean_text.split("\n")
+    if not any(_HEADING_RE.match(line) for line in lines):
+        return chunk_smart_text(clean_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    sections: list[tuple[list[str], str]] = []
+    path: list[tuple[int, str]] = []
+    buf: list[str] = []
+    in_code = False
+
+    def flush() -> None:
+        body = "\n".join(buf).strip()
+        if body:
+            sections.append(([t for _, t in path], body))
+        buf.clear()
+
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_code = not in_code
+        match = None if in_code else _HEADING_RE.match(line)
+        if match:
+            flush()
+            level = len(match.group(1))
+            path = [(lvl, t) for lvl, t in path if lvl < level]
+            path.append((level, match.group(2).strip()))
+            buf.append(line)
+        else:
+            buf.append(line)
+    flush()
+
+    chunks: list[str] = []
+    for heading_path, body in sections:
+        crumb = " > ".join(heading_path)
+        prefix = f"Section: {crumb}\n" if crumb else ""
+        budget = max(200, chunk_size - len(prefix))
+        # Heading-only sections are merged into the next chunk via the breadcrumb.
+        if len(body.split("\n")) == 1 and _HEADING_RE.match(body):
+            continue
+        for piece in chunk_smart_text(body, chunk_size=budget, chunk_overlap=chunk_overlap):
+            chunks.append(prefix + piece)
+    return chunks or chunk_smart_text(clean_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
 def chunk_words(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:

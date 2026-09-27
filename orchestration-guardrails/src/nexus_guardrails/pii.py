@@ -23,18 +23,34 @@ from .models import Finding
 from .normalization import luhn_valid, normalize_text
 
 PATTERNS = {
+    # Secrets first: they may contain digit runs the generic patterns would split.
+    "jwt": re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
+    "api_key": re.compile(
+        r"\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}"
+        r"|gh[pousr]_[A-Za-z0-9]{36}|xox[abprs]-[A-Za-z0-9-]{10,}|sk_(?:live|test)_[A-Za-z0-9]{16,})"
+    ),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    "phone": re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
     "credit_card": re.compile(r"\b(?:\d[ -]?){13,19}\b"),
+    "phone": re.compile(
+        r"(?:(?<![\w+])\+\d{1,3}[-.\s]?\d{2,5}[-.\s]?\d{3,5}[-.\s]?\d{3,5}\b)"
+        r"|\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
+    ),
+    "ip_address": re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
 }
 
 MASKS = {
+    "jwt": "[JWT_TOKEN]",
+    "api_key": "[API_KEY]",
     "email": "[EMAIL]",
     "ssn": "[SSN]",
-    "phone": "[PHONE]",
     "credit_card": "[CREDIT_CARD]",
+    "phone": "[PHONE]",
+    "ip_address": "[IP_ADDRESS]",
 }
+
+# Detectors are always applied in PATTERNS order (specific formats before generic numbers).
+_ORDER = list(PATTERNS)
 
 
 def _matches(detector: str, candidate: str) -> bool:
@@ -67,7 +83,7 @@ def mask_pii(text: str, config: PiiConfig) -> str:
     if not config.enabled or not config.mask:
         return text
     masked = normalize_text(text)
-    for detector in config.detectors:
+    for detector in sorted(config.detectors, key=lambda d: _ORDER.index(d) if d in _ORDER else len(_ORDER)):
         pattern = PATTERNS.get(detector)
         if not pattern:
             continue

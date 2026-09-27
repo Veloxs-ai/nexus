@@ -29,13 +29,25 @@ class IntegrationConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    provider: str = "local_hashing"
-    dimensions: int = 3072
-    normalize: bool = True
+    """Semantic embedding model for the retrieval engine.
+
+    provider: "fastembed" (local ONNX, default) or "openai" (hosted API).
+    dimensions: output size for providers that support truncation (OpenAI); for
+    FastEmbed it is determined by the model and this value is informational.
+    """
+
+    provider: str = "fastembed"
+    model: str | None = None
+    dimensions: int | None = None
 
     @model_validator(mode="after")
-    def validate_dimensions(self) -> EmbeddingConfig:
-        if self.dimensions <= 0:
+    def validate_provider(self) -> EmbeddingConfig:
+        if self.provider not in ("fastembed", "openai"):
+            raise ValueError(
+                f"unsupported embedding provider '{self.provider}': use 'fastembed' or 'openai' "
+                "(the 'local_hashing' projection was removed in Nexus 4.0 - see MIGRATION.md)"
+            )
+        if self.dimensions is not None and self.dimensions <= 0:
             raise ValueError("embedding dimensions must be greater than zero")
         return self
 

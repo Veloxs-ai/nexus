@@ -58,6 +58,72 @@ def _col_letter_to_index(col_str: str) -> int:
     return max(0, idx - 1)
 
 
+# Image extensions recognized in OpenXML media folders
+_IMAGE_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp",
+})
+
+
+def _extract_images_from_zip(
+    zf: zipfile.ZipFile,
+    media_prefix: str,
+    ocr_provider: Any = None,
+    auto_extract: bool = True,
+) -> list[str]:
+    """Extracts text from embedded images in an Office ZIP archive.
+
+    Uses ``process_image_binary`` from images.py so improvements to image
+    processing automatically benefit all document formats (PPTX, DOCX, XLSX).
+
+    Args:
+        zf: Open ZipFile of the Office document.
+        media_prefix: Path prefix for media files (e.g. "ppt/media/").
+        ocr_provider: Optional OCRProvider for text extraction from images.
+        auto_extract: When True, auto-detects OCR provider if not passed.
+
+    Returns:
+        List of extracted text strings from embedded images.
+    """
+    from .images import process_image_binary
+
+    image_texts: list[str] = []
+    for name in zf.namelist():
+        if not name.startswith(media_prefix):
+            continue
+        ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in _IMAGE_EXTENSIONS:
+            continue
+        try:
+            img_bytes = zf.read(name)
+            if not img_bytes:
+                continue
+            payload = process_image_binary(
+                img_bytes,
+                filename=name.split("/")[-1],
+                ocr_provider=ocr_provider,
+                auto_extract=auto_extract,
+            )
+            parts: list[str] = []
+            basename = name.split("/")[-1]
+            if payload.metadata.ocr_text:
+                parts.append(payload.metadata.ocr_text)
+            if payload.metadata.caption:
+                parts.append(payload.metadata.caption)
+            if parts:
+                image_texts.append(
+                    f"[Image: {basename}] " + " ".join(parts)
+                )
+            else:
+                w = payload.metadata.width
+                h = payload.metadata.height
+                image_texts.append(
+                    f"[Embedded Image: {basename} {w}x{h}px]"
+                )
+        except Exception:
+            continue
+    return image_texts
+
+
 def _get_rel_id(attrib: dict[str, str]) -> str | None:
     """Extracts relationship ID (e.g. 'rId1') from element attributes."""
     for k, v in attrib.items():
@@ -143,27 +209,212 @@ class PresentationPayload:
     slides: list[SlideData] = field(default_factory=list)
 
 
+def _is_legacy_xls(raw_bytes: bytes, filename: str) -> bool:
+    """Detects whether bytes or filename denote a legacy Microsoft Excel (.xls / BIFF) file."""
+    if raw_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return True
+    lower = filename.lower()
+    return lower.endswith(".xls") and not lower.endswith(".xlsx")
+
+
+def _process_legacy_xls_fallback(raw_bytes: bytes, filename: str) -> SpreadsheetPayload:
+    """Zero-dependency fallback for legacy .xls files when xlrd is not installed.
+
+    Extracts textual and tabular sequences from OLE2 / BIFF binary streams,
+    providing structured spreadsheet chunks for downstream indexing.
+    """
+    ascii_matches = re.findall(rb"[\x20-\x7E]{3,}", raw_bytes)
+    utf16_matches = re.findall(rb"(?:[\x20-\x7E]\x00){2,}", raw_bytes)
+
+    extracted_lines: list[str] = []
+    ignored_patterns = {
+        b"Root Entry",
+        b"Workbook",
+        b"Book",
+        b"\x05DocumentSummaryInformation",
+        b"\x05SummaryInformation",
+        b"CompObj",
+    }
+
+    for m in ascii_matches:
+        if m not in ignored_patterns:
+            try:
+                decoded = m.decode("latin-1").strip()
+                if len(decoded) >= 2 and not decoded.startswith("_"):
+                    extracted_lines.append(decoded)
+            except Exception:
+                pass
+
+    for m in utf16_matches:
+        try:
+            decoded = m.decode("utf-16le").strip()
+            if len(decoded) >= 2 and decoded not in extracted_lines and not decoded.startswith("_"):
+                extracted_lines.append(decoded)
+        except Exception:
+            pass
+
+    row_chunks: list[SpreadsheetRowChunk] = []
+    chunk_size = 5
+    sheet_name = "Sheet1"
+    headers = [f"Col_{i+1}" for i in range(chunk_size)]
+
+    for idx, i in enumerate(range(0, len(extracted_lines), chunk_size), 1):
+        row_slice = extracted_lines[i : i + chunk_size]
+        row_dict = {f"Col_{j+1}": val for j, val in enumerate(row_slice)}
+        narrative = (
+            f"[Workbook: {filename} | Sheet: {sheet_name} | Row {idx}] "
+            + " | ".join(f"Col_{j+1}: {val}" for j, val in enumerate(row_slice))
+        )
+        row_chunks.append(
+            SpreadsheetRowChunk(
+                sheet_name=sheet_name,
+                row_index=idx,
+                data=row_dict,
+                narrative_text=narrative,
+            )
+        )
+
+    meta = SpreadsheetMetadata(
+        filename=filename,
+        format="xls",
+        sheet_names=[sheet_name],
+        total_sheets=1,
+        total_rows=len(row_chunks),
+        total_cells=len(extracted_lines),
+        file_size_bytes=len(raw_bytes),
+    )
+    sheet_data = SheetData(
+        sheet_name=sheet_name,
+        total_rows=len(row_chunks),
+        total_columns=chunk_size,
+        headers=headers,
+        rows=row_chunks,
+    )
+    return SpreadsheetPayload(
+        metadata=meta,
+        sheets=[sheet_data],
+        all_chunks=row_chunks,
+    )
+
+
+def _process_legacy_xls(raw_bytes: bytes, filename: str) -> SpreadsheetPayload:
+    """Parses legacy Microsoft Excel (.xls / BIFF8) workbooks.
+
+    Leverages xlrd if available in the runtime environment (with full cell type
+    and formula support), falling back gracefully to pure-Python OLE2 stream extraction.
+    """
+    try:
+        import xlrd
+
+        wb = xlrd.open_workbook(file_contents=raw_bytes)
+        processed_sheets: list[SheetData] = []
+        all_chunks: list[SpreadsheetRowChunk] = []
+        total_populated_cells = 0
+        total_rows_all_sheets = 0
+
+        for s_idx in range(wb.nsheets):
+            sheet = wb.sheet_by_index(s_idx)
+            sheet_name = sheet.name or f"Sheet{s_idx + 1}"
+            num_rows = sheet.nrows
+            num_cols = sheet.ncols
+            if num_rows == 0:
+                continue
+
+            headers: list[str] = []
+            for c in range(num_cols):
+                val = sheet.cell_value(0, c)
+                headers.append(str(val).strip() if val != "" else f"col_{c}")
+
+            sheet_row_chunks: list[SpreadsheetRowChunk] = []
+            for r in range(1, num_rows):
+                row_dict: dict[str, Any] = {}
+                narrative_items: list[str] = []
+                for c in range(num_cols):
+                    val = sheet.cell_value(r, c)
+                    if val != "" and val is not None:
+                        total_populated_cells += 1
+                        header = headers[c] if c < len(headers) else f"col_{c}"
+                        if isinstance(val, float) and val.is_integer():
+                            val = int(val)
+                        row_dict[header] = val
+                        narrative_items.append(f"{header}: {val}")
+
+                if not narrative_items:
+                    continue
+
+                row_narrative = (
+                    f"[Workbook: {filename} | Sheet: {sheet_name} | Row {r + 1}] "
+                    + " | ".join(narrative_items)
+                )
+                chunk = SpreadsheetRowChunk(
+                    sheet_name=sheet_name,
+                    row_index=r + 1,
+                    data=row_dict,
+                    narrative_text=row_narrative,
+                )
+                sheet_row_chunks.append(chunk)
+                all_chunks.append(chunk)
+
+            total_rows_all_sheets += len(sheet_row_chunks)
+            processed_sheets.append(
+                SheetData(
+                    sheet_name=sheet_name,
+                    total_rows=num_rows,
+                    total_columns=num_cols,
+                    headers=headers,
+                    rows=sheet_row_chunks,
+                )
+            )
+
+        meta = SpreadsheetMetadata(
+            filename=filename,
+            format="xls",
+            sheet_names=[s.sheet_name for s in processed_sheets],
+            total_sheets=len(processed_sheets),
+            total_rows=total_rows_all_sheets,
+            total_cells=total_populated_cells,
+            file_size_bytes=len(raw_bytes),
+        )
+        return SpreadsheetPayload(
+            metadata=meta,
+            sheets=processed_sheets,
+            all_chunks=all_chunks,
+        )
+    except ImportError:
+        return _process_legacy_xls_fallback(raw_bytes, filename)
+    except Exception:
+        return _process_legacy_xls_fallback(raw_bytes, filename)
+
+
 def process_spreadsheet_binary(
     raw_bytes: bytes,
     filename: str = "workbook.xlsx",
+    ocr_provider: Any = None,
+    auto_extract: bool = True,
 ) -> SpreadsheetPayload:
-    """Parses an Excel (.xlsx) OpenXML archive into structured sheets and row narratives.
+    """Parses an Excel (.xlsx or legacy .xls) archive into structured sheets and row narratives.
 
     Zero third-party dependencies: relies strictly on standard library
-    ``zipfile`` and ``xml.etree.ElementTree``.
+    ``zipfile`` and ``xml.etree.ElementTree`` for modern .xlsx, with seamless
+    xlrd / OLE2 fallback for legacy .xls files.
 
     Args:
-        raw_bytes: Binary bytes of the .xlsx file.
+        raw_bytes: Binary bytes of the .xlsx or .xls file.
         filename: Optional descriptive filename for narrative groundings.
+        ocr_provider: Optional OCRProvider for extracting text from embedded images.
+        auto_extract: When True (default), attempts OCR on embedded images.
 
     Returns:
         SpreadsheetPayload containing workbook metadata, sheets, and tabular row chunks.
 
     Raises:
-        ValueError: If archive is corrupted or not a valid XLSX container.
+        ValueError: If archive is corrupted or not a valid spreadsheet container.
     """
     if not raw_bytes:
         raise ValueError("Cannot process empty spreadsheet bytes.")
+
+    if _is_legacy_xls(raw_bytes, filename):
+        return _process_legacy_xls(raw_bytes, filename)
 
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
@@ -373,6 +624,25 @@ def process_spreadsheet_binary(
             )
         )
 
+    # Extract text from embedded images in xl/media/
+    image_texts = _extract_images_from_zip(
+        zf, "xl/media/", ocr_provider, auto_extract
+    )
+    if image_texts:
+        img_combined = "\n".join(image_texts)
+        all_chunks.append(
+            SpreadsheetRowChunk(
+                sheet_name="[Embedded Images]",
+                row_index=0,
+                text=img_combined,
+                narrative_text=(
+                    f"[Workbook: {filename} | Embedded Images]\n"
+                    f"{img_combined}"
+                ),
+                word_count=len(img_combined.split()),
+            )
+        )
+
     meta = SpreadsheetMetadata(
         filename=filename,
         format="xlsx",
@@ -393,15 +663,19 @@ def process_spreadsheet_binary(
 def process_presentation_binary(
     raw_bytes: bytes,
     filename: str = "presentation.pptx",
+    ocr_provider: Any = None,
+    auto_extract: bool = True,
 ) -> PresentationPayload:
     """Parses a PowerPoint (.pptx) OpenXML archive into structured slide representations.
 
-    Extracts slide titles, body content, and speaker notes with zero dependencies
+    Extracts slide titles, body content, speaker notes, and embedded image text
     via standard library ``zipfile`` and ``xml.etree.ElementTree``.
 
     Args:
         raw_bytes: Binary bytes of the .pptx file.
         filename: Optional descriptive filename for narrative groundings.
+        ocr_provider: Optional OCRProvider for extracting text from embedded images.
+        auto_extract: When True (default), attempts OCR on embedded images.
 
     Returns:
         PresentationPayload containing deck metadata and slide objects with speaker notes.
@@ -450,14 +724,18 @@ def process_presentation_binary(
         except ET.ParseError:
             pass
 
-    # Fallback to sorting slides in zip if presentation.xml is missing or sparse
     if not ordered_slide_paths:
+        def _slide_num(path: str) -> int:
+            m = re.search(r"slide(\d+)\.xml", path)
+            return int(m.group(1)) if m else 0
+
         ordered_slide_paths = sorted(
             [
                 name
                 for name in namelist
                 if name.startswith("ppt/slides/slide") and name.endswith(".xml")
-            ]
+            ],
+            key=_slide_num,
         )
 
     slides: list[SlideData] = []
@@ -529,48 +807,97 @@ def process_presentation_binary(
             except ET.ParseError:
                 pass
 
-        # 4. Extract Slide Title and Body Text
+        # 4. Extract Slide Title, Body Text, Tables, and Grouped Shapes
         title = ""
         body_paragraphs: list[str] = []
         shape_count = 0
 
+        # Step A: Identify explicit title shape first
         for sp in slide_root.iter():
-            if _local_tag(sp) != "sp":
-                continue
-            shape_count += 1
+            if _local_tag(sp) == "sp":
+                shape_count += 1
+                for ph in sp.iter():
+                    if _local_tag(ph) == "ph":
+                        ph_type = ph.attrib.get("type", "")
+                        if ph_type in ("title", "ctrTitle") and not title:
+                            t_nodes = [t.text for t in sp.iter() if _local_tag(t) == "t" and t.text]
+                            sp_t = " ".join(t_nodes).strip()
+                            if sp_t:
+                                title = sp_t
+                                break
 
-            # Check if this shape is a title
-            is_title = False
-            for ph in sp.iter():
-                if _local_tag(ph) == "ph":
-                    ph_type = ph.attrib.get("type", "")
-                    if ph_type in ("title", "ctrTitle"):
-                        is_title = True
-                        break
+        # Step B: Extract Tables (<a:tbl>)
+        for tbl in slide_root.iter():
+            if _local_tag(tbl) == "tbl":
+                shape_count += 1
+                table_rows: list[str] = []
+                for tr in tbl.iter():
+                    if _local_tag(tr) == "tr":
+                        row_cells: list[str] = []
+                        for tc in tr.iter():
+                            if _local_tag(tc) == "tc":
+                                cell_texts = [
+                                    t.text for t in tc.iter()
+                                    if _local_tag(t) == "t" and t.text
+                                ]
+                                cell_str = " ".join(cell_texts).strip()
+                                row_cells.append(cell_str if cell_str else "-")
+                        if any(c != "-" for c in row_cells):
+                            table_rows.append(" | ".join(row_cells))
+                if table_rows:
+                    body_paragraphs.append("[Table]\n" + "\n".join(table_rows))
 
-            # Collect text within shape
-            para_texts: list[str] = []
-            for p in sp.iter():
-                if _local_tag(p) == "p":
-                    t_nodes = [t.text for t in p.iter() if _local_tag(t) == "t" and t.text]
-                    line_text = "".join(t_nodes).strip()
-                    if line_text:
-                        para_texts.append(line_text)
+        # Step C: Extract text from all shapes, groups, and text frames
+        for sp in slide_root.iter():
+            tag = _local_tag(sp)
+            if tag in ("sp", "grpSp", "graphicFrame"):
+                if tag != "sp":
+                    shape_count += 1
+                # Skip if contains table (already processed in Step B)
+                if any(_local_tag(sub) == "tbl" for sub in sp.iter()):
+                    continue
 
-            combined_sp_text = "\n".join(para_texts).strip()
-            if not combined_sp_text:
-                continue
+                is_title = False
+                for ph in sp.iter():
+                    if _local_tag(ph) == "ph":
+                        ph_type = ph.attrib.get("type", "")
+                        if ph_type in ("title", "ctrTitle"):
+                            is_title = True
+                            break
 
-            if is_title and not title:
-                title = combined_sp_text
-            elif not title and idx == 1 and not body_paragraphs:
-                # First text on slide 1 if no explicit title
-                title = combined_sp_text
-            else:
-                body_paragraphs.append(combined_sp_text)
+                para_texts: list[str] = []
+                for p in sp.iter():
+                    if _local_tag(p) == "p":
+                        t_nodes = [t.text for t in p.iter() if _local_tag(t) == "t" and t.text]
+                        line_text = "".join(t_nodes).strip()
+                        if line_text:
+                            para_texts.append(line_text)
+
+                combined_sp_text = "\n".join(para_texts).strip()
+                if not combined_sp_text:
+                    continue
+
+                if (is_title and not title) or (
+                    not title and idx == 1 and not body_paragraphs
+                ):
+                    title = combined_sp_text
+                elif combined_sp_text != title and combined_sp_text not in body_paragraphs:
+                    body_paragraphs.append(combined_sp_text)
 
         if not title:
-            title = f"Slide {idx}"
+            if body_paragraphs:
+                first_line = body_paragraphs[0].split("\n")[0].strip()
+                if len(first_line) < 100:
+                    title = first_line
+                    remaining = "\n".join(body_paragraphs[0].split("\n")[1:]).strip()
+                    if remaining:
+                        body_paragraphs[0] = remaining
+                    else:
+                        body_paragraphs.pop(0)
+                else:
+                    title = f"Slide {idx}"
+            else:
+                title = f"Slide {idx}"
 
         body_text = "\n".join(body_paragraphs).strip()
         slide_titles.append(title)
@@ -596,6 +923,44 @@ def process_presentation_binary(
             narrative_text=narrative_text,
         )
         slides.append(slide_data)
+
+    # Extract SmartArt diagram text from ppt/diagrams/dataN.xml
+    smartart_texts: list[str] = []
+    for zname in zf.namelist():
+        if zname.startswith("ppt/diagrams/data") and zname.endswith(".xml"):
+            try:
+                dgm_root = ET.fromstring(zf.read(zname))
+                # DrawingML diagram namespace
+                dgm_ns = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+                a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                for pt_elem in dgm_root.iter(f"{{{dgm_ns}}}pt"):
+                    for t_elem in pt_elem.iter(f"{{{a_ns}}}t"):
+                        if t_elem.text and t_elem.text.strip():
+                            smartart_texts.append(t_elem.text.strip())
+            except Exception:
+                pass
+
+    if smartart_texts and slides:
+        last_slide = slides[-1]
+        smartart_combined = "\n".join(smartart_texts)
+        last_slide.body_text += f"\n\n[SmartArt Data]\n{smartart_combined}"
+        last_slide.narrative_text += f"\n\n[SmartArt Data]\n{smartart_combined}"
+        extra_words = len(smartart_combined.split())
+        last_slide.word_count += extra_words
+        total_words += extra_words
+
+    # Extract text from embedded images in ppt/media/
+    image_texts = _extract_images_from_zip(
+        zf, "ppt/media/", ocr_provider, auto_extract
+    )
+    if image_texts and slides:
+        img_combined = "\n".join(image_texts)
+        last_slide = slides[-1]
+        last_slide.body_text += f"\n\n{img_combined}"
+        last_slide.narrative_text += f"\n\n{img_combined}"
+        extra_words = len(img_combined.split())
+        last_slide.word_count += extra_words
+        total_words += extra_words
 
     metadata = PresentationMetadata(
         filename=filename,
@@ -641,6 +1006,8 @@ class WordMetadata:
     file_size_bytes: int = 0
     title: str = ""
     author: str = ""
+    header_texts: list[str] = field(default_factory=list)
+    footer_texts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -651,11 +1018,74 @@ class WordPayload:
     chunks: list[WordSectionChunk]
 
 
+
+def group_word_sections(chunks: list[WordSectionChunk], filename: str, max_chars: int = 1200) -> list[WordSectionChunk]:
+    """Merge a section's heading, paragraphs and list items into section-sized chunks.
+
+    One chunk per paragraph produced heading-only chunks and hundreds of tiny
+    fragments per document, which wastes vectors and scatters an answer across
+    many hits. Consecutive body items of the same section are packed up to
+    ``max_chars``; the heading travels with its section; tables stay separate.
+    """
+    grouped: list[WordSectionChunk] = []
+    body: list[WordSectionChunk] = []
+    heading: WordSectionChunk | None = None
+
+    def flush() -> None:
+        nonlocal body, heading
+        if not body:
+            return
+        first = body[0]
+        lines = ([heading.text] if heading is not None and heading.section_title == first.section_title else [])
+        lines += [c.text for c in body]
+        text = "\n".join(lines)
+        grouped.append(
+            WordSectionChunk(
+                chunk_id=first.chunk_id,
+                section_title=first.section_title,
+                heading_level=first.heading_level,
+                item_type="section",
+                index=first.index,
+                text=text,
+                narrative_text=f"[Document: {filename} | Section: {first.section_title}]\n{text}",
+                word_count=sum(c.word_count for c in body),
+                metadata={"paragraphs": len(body), "first_index": first.index, "last_index": body[-1].index},
+            )
+        )
+        body = []
+        heading = None
+
+    for chunk in chunks:
+        if chunk.item_type == "heading":
+            flush()
+            if heading is not None:
+                grouped.append(heading)  # heading with no body of its own
+            heading = chunk
+            continue
+        if chunk.item_type in ("paragraph", "list_item"):
+            size = sum(len(c.text) + 1 for c in body)
+            if body and (chunk.section_title != body[0].section_title or size + len(chunk.text) > max_chars):
+                flush()
+            body.append(chunk)
+            continue
+        flush()
+        if heading is not None:
+            grouped.append(heading)
+            heading = None
+        grouped.append(chunk)
+    flush()
+    if heading is not None:
+        grouped.append(heading)
+    return grouped
+
+
 def process_word_binary(
     raw_bytes: bytes,
     filename: str = "document.docx",
+    ocr_provider: Any = None,
+    auto_extract: bool = True,
 ) -> WordPayload:
-    """Extracts structural headings, paragraphs, and tables from Word (.docx) documents."""
+    """Extracts headings, paragraphs, tables, and embedded image text from Word (.docx)."""
     if not raw_bytes.startswith(b"PK\x03\x04"):
         raise ValueError(f"Invalid DOCX container for '{filename}': missing ZIP magic header.")
 
@@ -866,6 +1296,99 @@ def process_word_binary(
                     )
                 )
 
+    # Extract headers and footers for document metadata
+    header_texts: list[str] = []
+    footer_texts: list[str] = []
+    for zname in archive.namelist():
+        if zname.startswith("word/header") and zname.endswith(".xml"):
+            try:
+                hdr_root = ET.fromstring(archive.read(zname))
+                hdr_parts = []
+                for elem in hdr_root.iter():
+                    if _local_tag(elem) == "t" and elem.text:
+                        hdr_parts.append(elem.text)
+                if hdr_parts:
+                    header_texts.append(" ".join(hdr_parts))
+            except Exception:
+                pass
+        elif zname.startswith("word/footer") and zname.endswith(".xml"):
+            try:
+                ftr_root = ET.fromstring(archive.read(zname))
+                ftr_parts = []
+                for elem in ftr_root.iter():
+                    if _local_tag(elem) == "t" and elem.text:
+                        ftr_parts.append(elem.text)
+                if ftr_parts:
+                    footer_texts.append(" ".join(ftr_parts))
+            except Exception:
+                pass
+
+    # Extract footnotes and endnotes
+    footnote_texts: list[str] = []
+    for fn_file in ("word/footnotes.xml", "word/endnotes.xml"):
+        if fn_file in archive.namelist():
+            try:
+                fn_root = ET.fromstring(archive.read(fn_file))
+                for fn_elem in fn_root.iter():
+                    if _local_tag(fn_elem) in ("footnote", "endnote"):
+                        fn_id = fn_elem.get(
+                            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id",
+                            fn_elem.get("id", ""),
+                        )
+                        # Skip separator footnotes (id 0 and 1)
+                        if fn_id in ("0", "1", "-1"):
+                            continue
+                        fn_parts = []
+                        for t_elem in fn_elem.iter():
+                            if _local_tag(t_elem) == "t" and t_elem.text:
+                                fn_parts.append(t_elem.text)
+                        if fn_parts:
+                            footnote_texts.append(" ".join(fn_parts))
+            except Exception:
+                pass
+
+    if footnote_texts:
+        chunk_seq += 1
+        fn_text = "\n".join(footnote_texts)
+        fn_words = len(fn_text.split())
+        total_words += fn_words
+        narrative = f"[Document: {filename} | Footnotes]\n{fn_text}"
+        chunks.append(
+            WordSectionChunk(
+                chunk_id=f"fn_{chunk_seq}",
+                section_title="Footnotes",
+                heading_level=0,
+                item_type="paragraph",
+                index=total_paragraphs + 1,
+                text=fn_text,
+                narrative_text=narrative,
+                word_count=fn_words,
+            )
+        )
+
+    # Extract text from embedded images in word/media/
+    image_texts = _extract_images_from_zip(
+        archive, "word/media/", ocr_provider, auto_extract
+    )
+    if image_texts:
+        chunk_seq += 1
+        img_combined = "\n".join(image_texts)
+        img_words = len(img_combined.split())
+        total_words += img_words
+        narrative = f"[Document: {filename} | Embedded Images]\n{img_combined}"
+        chunks.append(
+            WordSectionChunk(
+                chunk_id=f"img_{chunk_seq}",
+                section_title="Embedded Images",
+                heading_level=0,
+                item_type="paragraph",
+                index=total_paragraphs + 2,
+                text=img_combined,
+                narrative_text=narrative,
+                word_count=img_words,
+            )
+        )
+
     metadata = WordMetadata(
         filename=filename,
         format="docx",
@@ -877,6 +1400,8 @@ def process_word_binary(
         file_size_bytes=len(raw_bytes),
         title=doc_title,
         author=doc_author,
+        header_texts=header_texts,
+        footer_texts=footer_texts,
     )
 
     return WordPayload(

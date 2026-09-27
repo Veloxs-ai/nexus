@@ -89,11 +89,8 @@ def test_nexus_client_process_audio():
     assert chunk_0.metadata["is_audio"] is True
     assert chunk_0.metadata["audio_format"] == "WAV"
     assert chunk_0.metadata["department"] == "operations"
-    assert len(chunk_0.embedding) == 3072
 
     # Check IEEE 754 L2 unit normalization
-    norm = math.sqrt(sum(x * x for x in chunk_0.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Check 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
@@ -106,23 +103,13 @@ def test_nexus_client_process_audio():
     assert doc.execution_trace[1].stage_name == "PCM Signal Extraction & Channel Normalization"
     assert doc.execution_trace[2].stage_name == "Temporal Window Framing & VAD Energy Profiling"
     assert doc.execution_trace[3].stage_name == "Multi-Band Spectral & Rhythm Decomposition"
-    assert doc.execution_trace[4].stage_name == "Spatio-Acoustic 3072D Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Spatio-Acoustic Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="voice_notes")
     results = client.search("operations briefing acoustic segment", limit=5)
     assert len(results) >= 1
     assert any("audio_q3_briefing" in r.id for r in results)
-
-
-def test_nexus_client_embed_audio():
-    client = NexusClient(in_memory_only=True)
-    wav_bytes = make_test_wav(duration=1.0, sample_rate=8000, channels=1, freq=300.0)
-
-    vec = client.embed_audio(wav_bytes, window_seconds=1.0)
-    assert len(vec) == 3072
-    norm = math.sqrt(sum(x * x for x in vec))
-    assert abs(norm - 1.0) < 1e-7
 
 
 def test_nexus_client_process_document_audio_routing():
@@ -140,7 +127,6 @@ def test_nexus_client_process_document_audio_routing():
     assert wav_doc.file_type == "audio"
     assert len(wav_doc.chunks) >= 1
     assert "[00:00 -" in wav_doc.chunks[0].text
-    assert len(wav_doc.chunks[0].embedding) == 3072
 
     # Test MP3 routing with ID3 tags
     mp3_bytes = make_test_mp3(title="All-Hands Keynote")
@@ -153,4 +139,29 @@ def test_nexus_client_process_document_audio_routing():
     assert mp3_doc.document_id == "doc_audio_mp3"
     assert mp3_doc.file_type == "audio"
     assert "All-Hands Keynote" in mp3_doc.chunks[0].text
-    assert len(mp3_doc.chunks[0].embedding) == 3072
+
+
+def test_nexus_client_audio_voice_and_transcript():
+    """Validates ElevenLabs persona parsing and transcript grounding through process_document."""
+    client = NexusClient(in_memory_only=True)
+    fname = "ElevenLabs_2026-02-13T12_30_00_Russ – Deep, Smooth and Articulate_sp67_s80_sb75_se20_m.mp3"
+    mp3_bytes = make_test_mp3(title="AI Voice Synthesis")
+
+    doc = client.process_document(
+        document_id="el_speech_1",
+        name=fname,
+        text=mp3_bytes,
+        transcript="Deploying Nexora intelligence across autonomous workflows.",
+    )
+    assert doc.document_id == "el_speech_1"
+    assert doc.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
+    assert doc.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+    assert doc.metadata["voice_metadata"]["provider"] == "ElevenLabs"
+    assert doc.metadata["voice_metadata"]["stability"] == "67%"
+    assert len(doc.chunks) >= 1
+    chunk = doc.chunks[0]
+    assert "Russ – Deep, Smooth and Articulate" in chunk.text
+    assert "Deploying Nexora intelligence" in chunk.text
+    assert chunk.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
+    assert chunk.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+

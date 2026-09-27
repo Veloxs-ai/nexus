@@ -43,6 +43,9 @@ class VideoMetadata:
     keyframe_count: int
     fps: float
     file_size_bytes: int
+    has_audio: bool = False
+    has_subtitles: bool = False
+    audio_tracks: int = 0
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -166,6 +169,10 @@ def demux_mp4(data: bytes) -> VideoMetadata:
             if timescale > 0:
                 duration_seconds = duration / timescale
 
+        # Track count and handler detection
+        audio_tracks = 0
+        subtitles_found = False
+
         # Parse video track 'trak'
         if b"trak" in moov_boxes:
             for trak_offset, trak_size in moov_boxes[b"trak"]:
@@ -192,6 +199,18 @@ def demux_mp4(data: bytes) -> VideoMetadata:
                     mdia_off, mdia_sz = trak_sub[b"mdia"][0]
                     stream.seek(mdia_off)
                     mdia_sub = parse_iso_boxes(stream, mdia_off + mdia_sz)
+
+                    # Handler reference atom 'hdlr' for audio/video/subtitles
+                    if b"hdlr" in mdia_sub:
+                        hdlr_off, _ = mdia_sub[b"hdlr"][0]
+                        if hdlr_off + 16 <= stream_len:
+                            stream.seek(hdlr_off + 8)
+                            handler_type = stream.read(4)
+                            if handler_type == b"soun":
+                                audio_tracks += 1
+                            elif handler_type in (b"subt", b"sbtl", b"text"):
+                                subtitles_found = True
+
                     if b"minf" in mdia_sub:
                         minf_off, minf_sz = mdia_sub[b"minf"][0]
                         stream.seek(minf_off)
@@ -215,10 +234,13 @@ def demux_mp4(data: bytes) -> VideoMetadata:
                                 stream.seek(stss_off + 4)
                                 k_count = struct.unpack(">I", stream.read(4))[0]
                                 if 0 < k_count < 10000:
-                                    keyframe_indices = [
-                                        struct.unpack(">I", stream.read(4))[0]
-                                        for _ in range(k_count)
-                                    ]
+                                    try:
+                                        keyframe_indices = [
+                                            struct.unpack(">I", stream.read(4))[0]
+                                            for _ in range(k_count)
+                                        ]
+                                    except struct.error:
+                                        keyframe_indices = []
 
     if duration_seconds <= 0.0:
         duration_seconds = 30.0
@@ -240,7 +262,15 @@ def demux_mp4(data: bytes) -> VideoMetadata:
         keyframe_count=keyframe_count,
         fps=fps,
         file_size_bytes=stream_len,
-        details={"keyframe_indices_sample": keyframe_indices[:10]},
+        has_audio=audio_tracks > 0,
+        has_subtitles=subtitles_found,
+        audio_tracks=audio_tracks,
+        details={
+            "audio_tracks": audio_tracks,
+            "has_audio": audio_tracks > 0,
+            "has_subtitles": subtitles_found,
+            "keyframe_indices_sample": keyframe_indices[:10],
+        },
     )
 
 
@@ -252,6 +282,7 @@ def segment_temporal_scenes(
     data: bytes,
     scene_interval_seconds: float = 10.0,
     transcript_segments: list[dict[str, Any]] | None = None,
+    filename: str = "video.mp4",
 ) -> list[VideoSceneChunk]:
     """Divides the video timeline into temporal windows, extracting motion vectors
     and keyframe signatures for grounded search citations.
@@ -313,13 +344,14 @@ def segment_temporal_scenes(
                     matched_lines.append(seg.get("text", "").strip())
             transcript_text = " ".join(matched_lines)
 
+        audio_desc = f"Audio: {'Yes' if meta.has_audio else 'No'}"
         narrative = (
-            f"[Video: {meta.format} | {ts_label}] Scene {i + 1}: "
-            f"Duration {dur}s | Motion: {intensity} ({motion_score}) | "
+            f"[Video: {filename} | {ts_label}] Scene {i + 1}: "
+            f"Duration {dur}s | Motion: {intensity} ({motion_score}) | {audio_desc} | "
             f"Keyframe dHash: {dhash_hex}"
         )
         if transcript_text:
-            narrative += f' | Dialogue: "{transcript_text[:120]}"'
+            narrative += f' | Dialogue: "{transcript_text[:140]}"'
 
         scenes.append(
             VideoSceneChunk(
@@ -344,13 +376,121 @@ def process_video_binary(
     data: bytes,
     scene_interval_seconds: float = 10.0,
     transcript_segments: list[dict[str, Any]] | None = None,
+    transcript: str | None = None,
+    captions: list[str] | None = None,
+    filename: str = "video.mp4",
+    demuxer: Any | None = None,
+    transcriber: Any | None = None,
+    ocr_provider: Any | None = None,
+    auto_extract: bool = False,
 ) -> VideoPayload:
     """Universal pure-Python entry point for demuxing and chunking video into temporal scenes."""
     meta = demux_mp4(data)
+
+    total_duration = max(1.0, meta.duration_seconds)
+    interval = max(2.0, scene_interval_seconds)
+    num_scenes = max(1, math.ceil(total_duration / interval))
+
+    if transcript and not transcript_segments:
+        words = transcript.split()
+        words_per_scene = max(1, len(words) // num_scenes)
+        transcript_segments = []
+        for s_idx in range(num_scenes):
+            w_slice = words[s_idx * words_per_scene : (s_idx + 1) * words_per_scene]
+            if s_idx == num_scenes - 1:
+                w_slice = words[s_idx * words_per_scene :]
+            transcript_segments.append(
+                {
+                    "start": round(s_idx * interval, 2),
+                    "end": round(min(total_duration, (s_idx + 1) * interval), 2),
+                    "text": " ".join(w_slice),
+                }
+            )
+    elif captions and not transcript_segments:
+        transcript_segments = []
+        for c_idx, cap in enumerate(captions):
+            transcript_segments.append(
+                {
+                    "start": round(c_idx * interval, 2),
+                    "end": round(min(total_duration, (c_idx + 1) * interval), 2),
+                    "text": cap,
+                }
+            )
+
     scenes = segment_temporal_scenes(
         meta=meta,
         data=data,
         scene_interval_seconds=scene_interval_seconds,
         transcript_segments=transcript_segments,
+        filename=filename,
     )
+
+    # --- ML-Powered Content Extraction (Pluggable) ---
+    # Step 1: Auto-detect providers if auto_extract is enabled
+    if auto_extract:
+        if demuxer is None:
+            from .ml_providers import auto_detect_demuxer
+            demuxer = auto_detect_demuxer()
+        if transcriber is None:
+            from .ml_providers import auto_detect_transcriber
+            transcriber = auto_detect_transcriber()
+        if ocr_provider is None:
+            from .ml_providers import auto_detect_ocr_provider
+            ocr_provider = auto_detect_ocr_provider()
+
+    # Step 2: Extract audio and transcribe if demuxer + transcriber available
+    ml_transcript = ""
+    ml_timed_segments: list[dict] = []
+    if demuxer is not None and transcriber is not None and not transcript:
+        try:
+            audio_wav = demuxer.extract_audio(data)
+            if audio_wav:
+                ml_transcript, ml_timed_segments = transcriber.transcribe(audio_wav)
+                if ml_transcript and not transcript:
+                    transcript = ml_transcript
+        except Exception:
+            pass
+
+    # Step 3: Extract keyframes and run OCR if demuxer + ocr_provider available
+    ml_keyframe_texts: dict[float, str] = {}  # timestamp -> ocr text
+    if demuxer is not None and ocr_provider is not None:
+        try:
+            max_kf = min(len(scenes) * 2, 50) if scenes else 20
+            keyframes = demuxer.extract_keyframes(data, max_frames=max_kf)
+            for kf_time, kf_bytes in keyframes:
+                try:
+                    kf_text = ocr_provider.extract_text(kf_bytes)
+                    if kf_text:
+                        ml_keyframe_texts[kf_time] = kf_text
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Step 4: Merge ML-extracted content into scene chunks
+    if ml_timed_segments or ml_keyframe_texts:
+        for scene in scenes:
+            # Map transcript segments by time overlap
+            if ml_timed_segments:
+                seg_parts = []
+                for ts in ml_timed_segments:
+                    seg_start = ts.get("start", 0.0)
+                    seg_end = ts.get("end", 0.0)
+                    if seg_end > scene.start_seconds and seg_start < scene.end_seconds:
+                        seg_parts.append(ts.get("text", ""))
+                if seg_parts:
+                    scene.transcript_segment = " ".join(seg_parts).strip()
+
+            # Map keyframe OCR text to scenes by timestamp
+            if ml_keyframe_texts:
+                kf_texts = []
+                for kf_time, kf_text in ml_keyframe_texts.items():
+                    if scene.start_seconds <= kf_time < scene.end_seconds:
+                        kf_texts.append(kf_text)
+                if kf_texts:
+                    on_screen = " | ".join(kf_texts)
+                    scene.narrative_summary = (
+                        f"{scene.narrative_summary} On-screen text: {on_screen}"
+                    )
+
     return VideoPayload(metadata=meta, scenes=scenes)

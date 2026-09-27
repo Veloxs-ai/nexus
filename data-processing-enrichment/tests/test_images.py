@@ -114,3 +114,29 @@ def test_process_image_binary_features():
     assert len(payload.edge_signature) == 16  # 64-bit hex dHash
     assert "PNG" in payload.narrative_summary
     assert "Dimensions: 16x16" in payload.narrative_summary
+
+
+def test_image_format_mismatch_resilience():
+    """Validates that a JPEG image passed with format_hint='png' (or .png filename) decodes properly."""
+    # BMP image passed with format_hint='png'
+    raw_bmp = make_test_bmp()
+    payload = process_image_binary(raw_bmp, format_hint="png")
+    assert payload.metadata.format == "BMP"
+    assert payload.metadata.width == 8
+    assert payload.metadata.height == 8
+
+
+def test_image_ocr_and_caption():
+    """Validates that OCR text and captions are grounded into image narrative and metadata."""
+    raw_bmp = make_test_bmp()
+    payload = process_image_binary(
+        raw_bmp,
+        format_hint="bmp",
+        ocr_text="Total Revenue: $1,250,000",
+        caption="Financial balance sheet chart",
+    )
+    assert payload.metadata.ocr_text == "Total Revenue: $1,250,000"
+    assert payload.metadata.caption == "Financial balance sheet chart"
+    assert "Financial balance sheet chart" in payload.narrative_summary
+    assert "Total Revenue: $1,250,000" in payload.narrative_summary
+

@@ -53,7 +53,7 @@ def sample_config(tmp_path: Path) -> RetrievalConfig:
     )
     return RetrievalConfig.model_validate(
         {
-            "embedding": {"provider": "local_hashing", "dimensions": 32, "normalize": True},
+            "embedding": {"provider": "fastembed"},
             "stores": {
                 "vector_index_uri": "vector.json",
                 "lexical_index_uri": "lexical.json",

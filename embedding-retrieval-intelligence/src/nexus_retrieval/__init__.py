@@ -16,23 +16,17 @@
 
 """Embedding and retrieval intelligence package."""
 
-from .embeddings import (
-    AudioEmbedder,
-    HashingEmbedder,
-    ImageEmbedder,
-    VideoEmbedder,
-    cosine_similarity,
-)
+from .embeddings import cosine_similarity
 from .engine import RetrievalEngine
+from .semantic import create_reranker, create_text_embedder, embedder_for
 
 __all__ = [
-    "AudioEmbedder",
-    "HashingEmbedder",
-    "ImageEmbedder",
     "RetrievalEngine",
-    "VideoEmbedder",
     "__version__",
     "cosine_similarity",
+    "create_reranker",
+    "create_text_embedder",
+    "embedder_for",
 ]
 
 __version__ = "0.1.0"

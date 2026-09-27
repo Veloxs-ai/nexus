@@ -113,11 +113,8 @@ def test_nexus_client_process_pdf():
     assert chunk_0.metadata["page_number"] == 1
     assert chunk_0.metadata["width_pts"] == 612.0
     assert chunk_0.metadata["is_pdf"] is True
-    assert len(chunk_0.embedding) == 3072
 
     # Verify IEEE 754 L2 unit normalization
-    norm = math.sqrt(sum(x * x for x in chunk_0.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Check Page 2
     chunk_1 = doc.chunks[1]
@@ -136,7 +133,7 @@ def test_nexus_client_process_pdf():
     assert doc.execution_trace[1].stage_name == "FlateDecode Stream Decompression (zlib)"
     assert doc.execution_trace[2].stage_name == "PostScript Text Operator Decoding (BT/ET/Tj/TJ)"
     assert doc.execution_trace[3].stage_name == "Safety Guardrails & PII Sanitization"
-    assert doc.execution_trace[4].stage_name == "Page-Grounded 3072D Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Page-Grounded Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="executive_docs")
@@ -160,5 +157,4 @@ def test_nexus_client_process_document_pdf_routing():
     assert doc.file_type == "pdf"
     assert len(doc.chunks) == 1
     assert "[Page 1]" in doc.chunks[0].text
-    assert len(doc.chunks[0].embedding) == 3072
     assert len(doc.execution_trace) == 5

@@ -101,9 +101,9 @@ del mod, name, sys
 from nexus.client import NexusClient  # noqa: E402
 from nexus.config import load_config  # noqa: E402
 from nexus.database import (  # noqa: E402
-    MONGO_ATLAS_VECTOR_SEARCH_INDEX,
-    MYSQL_DDL_SCHEMA,
-    PGVECTOR_DDL_SCHEMA,
+    mongo_atlas_vector_index,
+    mysql_ddl,
+    pgvector_ddl,
     get_pgvector_column_type,
 )
 from nexus.models import (  # noqa: E402
@@ -116,9 +116,9 @@ from nexus.models import (  # noqa: E402
 from nexus.platform import NexusPlatform  # noqa: E402
 
 __all__ = [
-    "MONGO_ATLAS_VECTOR_SEARCH_INDEX",
-    "MYSQL_DDL_SCHEMA",
-    "PGVECTOR_DDL_SCHEMA",
+    "mongo_atlas_vector_index",
+    "mysql_ddl",
+    "pgvector_ddl",
     "LayerStatus",
     "NexusClient",
     "NexusConfig",

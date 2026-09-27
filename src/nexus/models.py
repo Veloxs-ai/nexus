@@ -81,7 +81,6 @@ class ProcessedChunk(BaseModel):
     chunk_index: int
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    embedding: list[float] = Field(default_factory=list)
 
 
 class ProcessingStageTrace(BaseModel):

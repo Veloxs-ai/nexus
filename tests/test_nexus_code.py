@@ -58,13 +58,11 @@ class TelemetryExporter:
 
     # Check 5 telemetry traces
     assert doc.execution_trace[0].stage_name == "Source Code Ingestion & Format Identification"
-    assert doc.execution_trace[4].stage_name == "AST-Grounded 3072D Vector Projection"
+    assert doc.execution_trace[4].stage_name == "AST-Grounded Chunk Assembly"
 
     # Verify chunks and 3072D embeddings
     assert len(doc.chunks) >= 2
     for chunk in doc.chunks:
-        assert len(chunk.embedding) == 3072
-        assert abs(_norm(chunk.embedding) - 1.0) < 1e-4
         assert chunk.metadata["is_code"] is True
 
 
@@ -108,8 +106,6 @@ def test_nexus_client_process_openapi():
     assert len(doc.execution_trace) == 5
 
     for chunk in doc.chunks:
-        assert len(chunk.embedding) == 3072
-        assert abs(_norm(chunk.embedding) - 1.0) < 1e-4
         assert chunk.metadata["is_openapi"] is True
 
 

@@ -83,8 +83,6 @@ class AccountManager:
 
     # Verify vector embeddings
     for chunk in payload.chunks:
-        assert len(chunk.embedding) == 3072
-        assert abs(_vec_norm(chunk.embedding) - 1.0) < 1e-4
         assert chunk.file_name == "accounts.py"
         assert "[Code AST: accounts.py" in chunk.narrative_text
 
@@ -96,8 +94,6 @@ def test_python_ast_syntax_error_fallback():
     assert payload.metadata.format == "python_ast"
     assert len(payload.chunks) == 1
     assert payload.chunks[0].symbol_type == "snippet"
-    assert len(payload.chunks[0].embedding) == 3072
-    assert abs(_vec_norm(payload.chunks[0].embedding) - 1.0) < 1e-4
 
 
 def test_polyglot_typescript_and_go():
@@ -126,8 +122,7 @@ export class OrderService {
     assert any(s.name == "OrderService" for s in ts_payload.symbols)
 
     for chunk in ts_payload.chunks:
-        assert len(chunk.embedding) == 3072
-        assert abs(_vec_norm(chunk.embedding) - 1.0) < 1e-4
+        assert chunk.body_text or chunk.signature
 
     # Go
     go_code = """
@@ -221,14 +216,10 @@ def test_openapi_specification_processing():
     assert ep.symbol_name == "submitQuery"
     assert ep.signature == "POST /api/v1/query"
     assert "dry_run" in ep.narrative_text
-    assert len(ep.embedding) == 3072
-    assert abs(_vec_norm(ep.embedding) - 1.0) < 1e-4
 
     model = schema_chunks[0]
     assert model.symbol_name == "QueryRequest"
     assert "prompt: string (required)" in model.narrative_text
-    assert len(model.embedding) == 3072
-    assert abs(_vec_norm(model.embedding) - 1.0) < 1e-4
 
 
 def test_process_code_generic_dispatcher():

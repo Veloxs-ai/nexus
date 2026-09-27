@@ -174,7 +174,7 @@ def test_nexus_client_process_spreadsheet():
         "Shared Strings & XML Schema Resolution",
         "Worksheet Tabular Framing & Cell Parsing",
         "Safety Guardrails & PII Sanitization",
-        "Sheet-Grounded 3072D Vector Projection",
+        "Sheet-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
@@ -184,10 +184,6 @@ def test_nexus_client_process_spreadsheet():
     chunk = doc.chunks[0]
     assert chunk.metadata["sheet_name"] == "Employees"
     assert chunk.metadata["department"] == "HR"
-    assert chunk.embedding is not None
-    assert len(chunk.embedding) == 3072
-    l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
-    assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
 
     # PII sanitization check (email masked)
     assert "alice.smith@example.com" not in chunk.text
@@ -223,7 +219,7 @@ def test_nexus_client_process_presentation():
         "Slide XML & DrawingML Text Extraction",
         "Speaker Notes & Hierarchy Resolution",
         "Safety Guardrails & PII Sanitization",
-        "Slide-Grounded 3072D Vector Projection",
+        "Slide-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
@@ -234,10 +230,6 @@ def test_nexus_client_process_presentation():
     assert "Private notes: Verify funding runway" in chunk.text
     assert "[EMAIL]" in chunk.text
 
-    # 3072D vector norm verification
-    assert len(chunk.embedding) == 3072
-    l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
-    assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
 
 
 def test_nexus_client_process_document_office_routing():
@@ -273,7 +265,7 @@ def test_nexus_client_process_document_office_routing():
     assert doc_docx.file_type == "word"
     assert doc_docx.metadata["total_headings"] == 2
     assert doc_docx.metadata["total_tables"] == 1
-    assert len(doc_docx.chunks) == 5
+    assert len(doc_docx.chunks) == 3  # section 1 (heading+para+list), heading 2, table
 
 
 def make_test_docx() -> bytes:
@@ -354,7 +346,7 @@ def test_nexus_client_process_word_document():
     assert doc.metadata["total_headings"] == 2
     assert doc.metadata["total_tables"] == 1
     assert doc.metadata["confidential"] is True
-    assert len(doc.chunks) == 5
+    assert len(doc.chunks) == 3  # section 1 (heading+para+list), heading 2, table
 
     # 5-stage trace validation
     assert len(doc.execution_trace) == 5
@@ -364,24 +356,43 @@ def test_nexus_client_process_word_document():
         "Document XML & Heading Hierarchy Parsing",
         "Section & Tabular Structure Framing",
         "Safety Guardrails & PII Sanitization",
-        "Document-Grounded 3072D Vector Projection",
+        "Document-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
 
     # PII masking verification
-    p_chunk = doc.chunks[1]
+    p_chunk = doc.chunks[0]
     assert "Contact:" in p_chunk.text
     assert "[EMAIL]" in p_chunk.text
     assert "legal.advisor@example.com" not in p_chunk.text
 
     # Table chunk verification
-    t_chunk = doc.chunks[4]
+    t_chunk = doc.chunks[-1]
     assert "| Deliverable | Fee |" in t_chunk.text
     assert "| Multimodal Engine | $50,000 |" in t_chunk.text
 
-    # 3072D vector norm verification
     for chunk in doc.chunks:
-        assert len(chunk.embedding) == 3072
-        l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
-        assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
+        assert chunk.text
+
+
+def test_process_document_legacy_xls():
+    """Validates that process_document routes .xls files seamlessly to spreadsheet processing."""
+    client = NexusClient()
+    ole2_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+    data = b"City\x00Robbery\x00Burglary\x00Metropolis\x00120\x00450\x00Gotham\x00310\x00980"
+    raw_xls = ole2_header + data
+
+    doc = client.process_document(
+        document_id="crime_stats",
+        name="crime.xls",
+        text=raw_xls,
+    )
+    assert doc.document_id == "crime_stats"
+    assert doc.file_type == "spreadsheet"
+    assert doc.metadata["format"] == "xls"
+    assert len(doc.chunks) >= 1
+    assert "Workbook: crime.xls" in doc.chunks[0].text
+    for c in doc.chunks:
+        assert c.text
+

@@ -18,12 +18,13 @@
 
 Decodes PNG, JPEG, and BMP image files using only the Python standard library
 (`struct`, `zlib`, `io`, `hashlib`, `math`), extracting spatial luminance grids,
-color distribution histograms, and perceptual edge signatures for 3072D vector projection.
+color distribution histograms, and perceptual edge signatures (image metadata).
 """
 
 from __future__ import annotations
 
 import io
+import re
 import struct
 import zlib
 from dataclasses import dataclass, field
@@ -39,6 +40,10 @@ class ImageMetadata:
     aspect_ratio: float
     file_size_bytes: int
     has_alpha: bool = False
+    filename: str = ""
+    embedded_text: str = ""
+    ocr_text: str = ""
+    caption: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -52,6 +57,7 @@ class VisualFeaturePayload:
     luminance_histogram: list[float]  # 32-bin perceptual intensity distribution
     edge_signature: str  # 64-bit hexadecimal dHash gradient signature
     narrative_summary: str
+    extracted_text: str = ""
 
 
 def detect_image_format(data: bytes) -> str:
@@ -83,6 +89,7 @@ def decode_png(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, in
     width, height = 0, 0
     bit_depth, color_type = 8, 2
     idat_chunks: list[bytes] = []
+    embedded_texts: list[str] = []
 
     while True:
         chunk_len_bytes = bio.read(4)
@@ -99,6 +106,43 @@ def decode_png(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, in
             )
         elif chunk_type == b"IDAT":
             idat_chunks.append(chunk_data)
+        elif chunk_type in (b"tEXt", b"zTXt", b"iTXt"):
+            try:
+                if chunk_type == b"tEXt":
+                    parts = chunk_data.split(b"\x00", 1)
+                    if len(parts) == 2:
+                        k = parts[0].decode("latin1", errors="ignore").strip()
+                        v = parts[1].decode("latin1", errors="ignore").strip()
+                        if k and v:
+                            embedded_texts.append(f"{k}: {v}")
+                elif chunk_type == b"zTXt":
+                    parts = chunk_data.split(b"\x00", 2)
+                    if len(parts) >= 2:
+                        k = parts[0].decode("latin1", errors="ignore").strip()
+                        compressed_val = chunk_data[len(parts[0]) + 2 :]
+                        raw = zlib.decompress(compressed_val)
+                        v = raw.decode("latin1", errors="ignore").strip()
+                        if k and v:
+                            embedded_texts.append(f"{k}: {v}")
+                elif chunk_type == b"iTXt":
+                    parts = chunk_data.split(b"\x00", 1)
+                    if len(parts) == 2:
+                        k = parts[0].decode("utf-8", errors="ignore").strip()
+                        rem = parts[1]
+                        if len(rem) >= 2:
+                            is_comp = rem[0] == 1
+                            null2 = rem.find(b"\x00", 2)
+                            if null2 != -1:
+                                null3 = rem.find(b"\x00", null2 + 1)
+                                if null3 != -1:
+                                    raw_text = rem[null3 + 1 :]
+                                    if is_comp:
+                                        raw_text = zlib.decompress(raw_text)
+                                    v = raw_text.decode("utf-8", errors="ignore").strip()
+                                    if k and v:
+                                        embedded_texts.append(f"{k}: {v}")
+            except Exception:
+                pass
         elif chunk_type == b"IEND":
             break
 
@@ -153,6 +197,7 @@ def decode_png(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, in
         aspect_ratio=round(width / max(1, height), 3),
         file_size_bytes=len(data),
         has_alpha=has_alpha,
+        embedded_text="\n".join(embedded_texts),
         details={"bit_depth": bit_depth, "color_type": color_type},
     )
     return meta, pixels
@@ -172,7 +217,7 @@ def decode_bmp(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, in
     if header_size >= 40:
         width, height, _planes, bpp = struct.unpack("<iiHH", data[18:30])
     else:
-        width, height, _planes, bpp = struct.unpack("<hhhh", data[18:26])
+        width, height, _planes, bpp = struct.unpack("<HHHH", data[18:26])
 
     width = abs(width)
     is_top_down = height < 0
@@ -221,7 +266,7 @@ def decode_bmp(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, in
 # 3. Pure Python JPEG Decoder & Marker Parser
 # =============================================================================
 def decode_jpeg(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, int]]]]:
-    """Parses JPEG markers (SOF0/SOF2, JFIF) and generates sampled perceptual grid."""
+    """Parses JPEG markers (SOF0/SOF2, COM, APP1) and generates sampled perceptual grid."""
     if not data.startswith(b"\xff\xd8"):
         raise ValueError("Invalid JPEG header signature.")
 
@@ -229,6 +274,7 @@ def decode_jpeg(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, i
     channels = 3
     idx = 2
     data_len = len(data)
+    embedded_texts: list[str] = []
 
     while idx < data_len - 4:
         if data[idx] != 0xFF:
@@ -236,11 +282,30 @@ def decode_jpeg(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, i
             continue
         marker = data[idx + 1]
         idx += 2
-        # SOF0 (Baseline), SOF1 (Extended), SOF2 (Progressive)
-        if marker in (0xC0, 0xC1, 0xC2):
-            _length, _precision, h, w, c = struct.unpack(">HBHBB", data[idx : idx + 7])
+        # SOF0-SOF15 (all Start of Frame markers), excluding DHT(0xC4), JPG(0xC8), DAC(0xCC)
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            _length, _precision, h, w, c = struct.unpack(">HBHHB", data[idx : idx + 8])
             width, height, channels = w, h, c
             break
+        elif marker == 0xFE:  # COM (Comment marker)
+            if idx + 2 <= data_len:
+                length = struct.unpack(">H", data[idx : idx + 2])[0]
+                com_bytes = data[idx + 2 : idx + length]
+                com_str = com_bytes.decode("utf-8", errors="ignore").strip()
+                if com_str:
+                    embedded_texts.append(com_str)
+                idx += length
+        elif marker == 0xE1:  # APP1 (EXIF / XMP)
+            if idx + 2 <= data_len:
+                length = struct.unpack(">H", data[idx : idx + 2])[0]
+                app1_bytes = data[idx + 2 : idx + length]
+                # Look for printable ASCII strings of meaningful length (e.g. descriptions/tags)
+                clean_strings = re.findall(rb"[\x20-\x7e]{4,}", app1_bytes)
+                for s in clean_strings[:5]:
+                    s_str = s.decode("ascii", errors="ignore").strip()
+                    if s_str and not s_str.startswith("Exif") and not s_str.startswith("http"):
+                        embedded_texts.append(s_str)
+                idx += length
         elif marker in (0xD9, 0xDA):  # EOI or SOS
             break
         else:
@@ -278,6 +343,7 @@ def decode_jpeg(data: bytes) -> tuple[ImageMetadata, list[list[tuple[int, int, i
         aspect_ratio=round(width / max(1, height), 3),
         file_size_bytes=len(data),
         has_alpha=False,
+        embedded_text="\n".join(embedded_texts),
         details={"channels": channels},
     )
     return meta, pixels
@@ -370,12 +436,26 @@ def extract_visual_features(
     avg_overall_lum = round(total_luminance / 64.0, 3)
     contrast_score = round(max(spatial_grid) - min(spatial_grid), 3)
 
-    narrative = (
-        f"[Image: {meta.format}] Dimensions: {meta.width}x{meta.height} | "
+    img_label = meta.filename or meta.format
+    narrative_lines = [
+        f"[Image: {img_label}] Format: {meta.format} | Dimensions: {meta.width}x{meta.height} | "
         f"Aspect Ratio: {meta.aspect_ratio} | Color Mode: {meta.color_mode} | "
         f"Mean Luminance: {avg_overall_lum} | Contrast: {contrast_score} | "
         f"Perceptual dHash: {edge_signature}"
-    )
+    ]
+    extracted_text_parts = []
+    if meta.caption:
+        narrative_lines.append(f"Caption: {meta.caption}")
+        extracted_text_parts.append(meta.caption)
+    if meta.ocr_text:
+        narrative_lines.append(f"Visual Text / Content: {meta.ocr_text}")
+        extracted_text_parts.append(meta.ocr_text)
+    elif meta.embedded_text:
+        narrative_lines.append(f"Embedded Text: {meta.embedded_text}")
+        extracted_text_parts.append(meta.embedded_text)
+
+    extracted_text = " | ".join(extracted_text_parts)
+    narrative = "\n".join(narrative_lines)
 
     return VisualFeaturePayload(
         metadata=meta,
@@ -386,13 +466,37 @@ def extract_visual_features(
         luminance_histogram=lum_hist,
         edge_signature=edge_signature,
         narrative_summary=narrative,
+        extracted_text=extracted_text,
     )
 
 
-def process_image_binary(data: bytes, format_hint: str | None = None) -> VisualFeaturePayload:
-    """Universal pure-Python entry point for decoding and extracting features from image bytes."""
-    detected = format_hint or detect_image_format(data)
+def process_image_binary(
+    data: bytes,
+    format_hint: str | None = None,
+    filename: str = "image",
+    ocr_text: str | None = None,
+    caption: str | None = None,
+    ocr_provider: Any | None = None,
+    auto_extract: bool = False,
+) -> VisualFeaturePayload:
+    """Universal pure-Python entry point for decoding and extracting features from image bytes.
+
+    Always inspects binary magic bytes first before trusting format_hint or filename,
+    guaranteeing that mismatched extensions (e.g. JPEG bytes in a .png file) decode safely.
+    
+    Notes:
+        New parameters ocr_provider and auto_extract can be used to plug in an OCRProvider.
+    """
+    magic_detected = detect_image_format(data)
+    detected = (
+        magic_detected
+        if magic_detected != "unknown"
+        else (format_hint or "unknown")
+    )
     detected = detected.lower().removeprefix(".")
+    # Guard: force unknown for empty payloads to avoid decoder crashes
+    if not data:
+        detected = "unknown"
 
     if detected == "png":
         meta, pixels = decode_png(data)
@@ -402,9 +506,15 @@ def process_image_binary(data: bytes, format_hint: str | None = None) -> VisualF
         meta, pixels = decode_jpeg(data)
     else:
         width, height = 256, 256
+        # Guard against empty data causing ZeroDivisionError
+        safe_data = data if data else b"\x00"
         pixels = [
             [
-                (data[i % len(data)], data[(i + 1) % len(data)], data[(i + 2) % len(data)])
+                (
+                    safe_data[i % len(safe_data)],
+                    safe_data[(i + 1) % len(safe_data)],
+                    safe_data[(i + 2) % len(safe_data)],
+                )
                 for i in range(16)
             ]
             for _ in range(16)
@@ -417,5 +527,28 @@ def process_image_binary(data: bytes, format_hint: str | None = None) -> VisualF
             aspect_ratio=1.0,
             file_size_bytes=len(data),
         )
+
+    meta.filename = filename
+
+    # --- ML-Powered Content Extraction (Pluggable) ---
+    # Priority: 1) Explicit pre-computed text  2) Pluggable provider  3) Auto-detect
+    auto_ocr = ""
+    if not ocr_text and not caption:
+        provider = ocr_provider
+        if provider is None and auto_extract:
+            from .ml_providers import auto_detect_ocr_provider
+            provider = auto_detect_ocr_provider()
+        if provider is not None:
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                auto_ocr = provider.extract_text(data)
+
+    if caption:
+        meta.caption = caption
+    if ocr_text:
+        meta.ocr_text = ocr_text
+    elif auto_ocr:
+        meta.ocr_text = auto_ocr
 
     return extract_visual_features(meta, pixels)

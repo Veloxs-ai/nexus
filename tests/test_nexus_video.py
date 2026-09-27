@@ -91,11 +91,8 @@ def test_nexus_client_process_video():
     assert scene_0.chunk_id == "vid_test_01:0"
     assert scene_0.metadata["timestamp"] == "[00:00 - 00:10]"
     assert scene_0.metadata["is_video"] is True
-    assert len(scene_0.embedding) == 3072
 
     # Verify IEEE 754 L2 unit normalization
-    norm = math.sqrt(sum(x * x for x in scene_0.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Verify 5-stage execution trace
     assert len(doc.execution_trace) == 5
@@ -108,29 +105,13 @@ def test_nexus_client_process_video():
     assert doc.execution_trace[1].stage_name == "Temporal Scene Segmentation & Keyframing"
     assert doc.execution_trace[2].stage_name == "Multi-Frame Spatial Feature Extraction"
     assert doc.execution_trace[3].stage_name == "Motion Dynamics & Temporal Delta Analysis"
-    assert doc.execution_trace[4].stage_name == "3072D Spatio-Temporal Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Spatio-Temporal Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="multimodal_videos")
     results = client.search("Spatio-temporal benchmarks", limit=5)
     assert len(results) >= 1
     assert any("vid_test_01" in r.id for r in results)
-
-
-def test_nexus_client_embed_video_scene():
-    client = NexusClient(in_memory_only=True)
-    grid = [0.5] * 64
-    vec = client.embed_video_scene(
-        spatial_grid=grid,
-        motion_score=0.2,
-        start_seconds=5.0,
-        end_seconds=15.0,
-        keyframe_dhash="abcd1234ef567890",
-        transcript_text="scene audio text",
-    )
-    assert len(vec) == 3072
-    norm = math.sqrt(sum(x * x for x in vec))
-    assert abs(norm - 1.0) < 1e-7
 
 
 def test_nexus_client_process_document_video_routing():
@@ -146,5 +127,25 @@ def test_nexus_client_process_document_video_routing():
     assert doc.document_id == "vid_routed_01"
     assert doc.file_type == "mp4"
     assert len(doc.chunks) == 2  # 20s / 10s = 2 scenes
-    assert len(doc.chunks[0].embedding) == 3072
     assert len(doc.execution_trace) == 5
+
+
+def test_nexus_client_video_with_transcript_and_filename():
+    """Validates video processing with transcript dialogue and filename grounding."""
+    client = NexusClient(in_memory_only=True)
+    mp4_bytes = make_test_mp4(duration_s=20.0)
+
+    doc = client.process_document(
+        document_id="vid_intro",
+        name="Nexus-Intro-Video.mov",
+        text=mp4_bytes,
+        transcript="Introducing Nexus autonomous vector index engine.",
+    )
+    assert doc.document_id == "vid_intro"
+    assert len(doc.chunks) == 2
+    assert "Nexus-Intro-Video.mov" in doc.chunks[0].text
+    assert "Dialogue" in doc.chunks[0].text
+    assert "Introducing Nexus" in doc.chunks[0].text
+    for chunk in doc.chunks:
+        assert "has_audio" in chunk.metadata
+

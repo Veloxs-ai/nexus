@@ -124,3 +124,19 @@ def test_process_video_binary_end_to_end():
     # 15s / 5s = 3 scenes
     assert len(payload.scenes) == 3
     assert payload.scenes[0].duration_seconds == 5.0
+
+
+def test_process_video_with_transcript_and_filename():
+    """Validates video scene chunking with natural language transcript and filename."""
+    mp4_data = make_test_mp4(duration_s=20.0)
+    payload = process_video_binary(
+        mp4_data,
+        scene_interval_seconds=10.0,
+        transcript="Introducing Nexus autonomous vector index engine.",
+        filename="Nexus-Intro-Video.mov",
+    )
+    assert payload.metadata.duration_seconds == 20.0
+    assert len(payload.scenes) == 2
+    assert "Nexus-Intro-Video.mov" in payload.scenes[0].narrative_summary
+    assert "Dialogue" in payload.scenes[0].narrative_summary
+

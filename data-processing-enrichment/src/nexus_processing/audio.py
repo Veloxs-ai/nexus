@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import io
 import math
+import re
 import struct
 import wave
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,9 @@ class AudioMetadata:
     total_frames: int
     file_size_bytes: int
     id3_tags: dict[str, str] = field(default_factory=dict)
+    speaker: str | None = None
+    transcript: str | None = None
+    voice_metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,8 @@ class AudioSegment:
     activity_level: str
     sub_band_energies: list[float]
     narrative_text: str
+    transcript: str | None = None
+    speaker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,8 @@ class AudioPayload:
     spectral_distribution: list[float]
     spectral_flux: list[float]
     acoustic_signature: str
+    transcript: str | None = None
+    speaker: str | None = None
 
 
 def format_audio_timestamp(seconds: float) -> str:
@@ -79,6 +89,41 @@ def format_audio_timestamp(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins:02d}:{secs:02d}"
+
+
+def parse_voice_filename(filename: str) -> dict[str, str]:
+    """Parses voice synthesis metadata, persona, and generation parameters from audio filename."""
+    meta: dict[str, str] = {}
+    if not filename:
+        return meta
+
+    stem = Path(filename).stem
+    el_pattern = re.compile(
+        r"^ElevenLabs_([0-9]{4}-[0-9]{2}-[0-9]{2}[T_0-9]+)_([^_]+)(?:_(.+))?$",
+        re.IGNORECASE,
+    )
+    match = el_pattern.match(stem)
+    if match:
+        meta["provider"] = "ElevenLabs"
+        meta["timestamp"] = match.group(1).replace("_", ":")
+        speaker_raw = match.group(2).strip()
+        meta["speaker"] = speaker_raw
+        if match.group(3):
+            params_raw = match.group(3)
+            meta["parameters"] = params_raw
+            sp_match = re.search(r"sp(\d+)", params_raw)
+            if sp_match:
+                meta["stability"] = f"{sp_match.group(1)}%"
+            s_match = re.search(r"(?:^|_)s(\d+)", params_raw)
+            if s_match:
+                meta["similarity"] = f"{s_match.group(1)}%"
+            sb_match = re.search(r"sb(\d+)", params_raw)
+            if sb_match:
+                meta["style_boost"] = f"{sb_match.group(1)}%"
+            se_match = re.search(r"se(\d+)", params_raw)
+            if se_match:
+                meta["speaker_boost"] = f"{se_match.group(1)}%"
+    return meta
 
 
 def parse_id3_metadata(raw_bytes: bytes) -> dict[str, str]:
@@ -120,9 +165,15 @@ def parse_id3_metadata(raw_bytes: bytes) -> dict[str, str]:
 
             if fid in frame_map and fpayload:
                 enc = fpayload[0]
+                if enc == 3:
+                    charset = "utf-8"
+                elif enc in (1, 2):
+                    charset = "utf-16"
+                else:
+                    charset = "latin1"
                 text = (
                     fpayload[1:]
-                    .decode("utf-8" if enc == 3 else "latin1", errors="ignore")
+                    .decode(charset, errors="ignore")
                     .strip("\x00")
                 )
                 tags[frame_map[fid]] = text
@@ -155,7 +206,7 @@ def _decode_wav_stream(
     """
     bio = io.BytesIO(raw_bytes)
     with wave.open(bio, "rb") as wf:
-        channels = wf.getnchannels()
+        channels = max(1, wf.getnchannels())
         sampwidth = wf.getsampwidth()
         sample_rate = wf.getframerate()
         num_frames = wf.getnframes()
@@ -191,14 +242,30 @@ def _decode_wav_stream(
                 mono_acc += raw_int / 8388608.0
             samples.append(mono_acc / channels)
     elif sampwidth == 4:
-        # 32-bit signed little-endian PCM
-        fmt = f"<{channels}i"
+        # 32-bit audio: try IEEE float first, then signed integer
+        fmt_float = f"<{channels}f"
+        fmt_int = f"<{channels}i"
         step = 4 * channels
-        for i in range(num_frames):
-            sub = pcm_bytes[i * step : (i + 1) * step]
-            vals = struct.unpack(fmt, sub)
-            mono = sum(vals) / (channels * 2147483648.0)
-            samples.append(mono)
+        # Detect format: if values as float are in [-1.0, 1.0] range, it's float
+        is_float = False
+        if num_frames > 0:
+            test_sub = pcm_bytes[:step]
+            if len(test_sub) == step:
+                test_vals = struct.unpack(fmt_float, test_sub)
+                if all(-1.0 <= v <= 1.0 for v in test_vals):
+                    is_float = True
+        if is_float:
+            for i in range(num_frames):
+                sub = pcm_bytes[i * step : (i + 1) * step]
+                vals = struct.unpack(fmt_float, sub)
+                mono = sum(vals) / channels
+                samples.append(max(-1.0, min(1.0, mono)))
+        else:
+            for i in range(num_frames):
+                sub = pcm_bytes[i * step : (i + 1) * step]
+                vals = struct.unpack(fmt_int, sub)
+                mono = sum(vals) / (channels * 2147483648.0)
+                samples.append(mono)
     else:
         raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
 
@@ -347,12 +414,23 @@ def compute_spectral_features(samples: list[float], sample_rate: int) -> tuple[f
     return round(centroid, 1), norm_bands
 
 
-def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> AudioPayload:
+def process_audio_binary(
+    audio_bytes: bytes,
+    window_seconds: float = 10.0,
+    transcript: str | None = None,
+    speaker: str | None = None,
+    filename: str | None = None,
+    transcriber: Any | None = None,
+    auto_extract: bool = False,
+) -> AudioPayload:
     """Parses binary audio streams, extracts acoustic telemetry, and frames
     into grounded segments.
     """
     file_size = len(audio_bytes)
     id3_tags = parse_id3_metadata(audio_bytes)
+    voice_info = parse_voice_filename(filename or "")
+    if speaker is None and "speaker" in voice_info:
+        speaker = voice_info["speaker"]
 
     detected_format = "wav"
     sample_rate = 44100
@@ -393,6 +471,35 @@ def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> Au
 
     total_samples = len(samples)
     duration_seconds = total_samples / sample_rate if sample_rate > 0 else 0.0
+
+    # --- ML-Powered Transcription (Pluggable) ---
+    # Priority: 1) Explicit pre-computed transcript  2) Pluggable provider  3) Auto-detect
+    auto_transcript = ""
+    auto_segments: list[dict] = []
+    if not transcript:
+        provider = transcriber
+        if provider is None and auto_extract:
+            from .ml_providers import auto_detect_transcriber
+            provider = auto_detect_transcriber()
+        if provider is not None:
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                auto_transcript, auto_segments = provider.transcribe(audio_bytes)
+        if auto_transcript:
+            transcript = auto_transcript
+
+    # Map transcribed segments to audio windows by time overlap
+    def _get_segment_transcript(start_sec: float, end_sec: float, timed_segs: list[dict]) -> str:
+        """Collects transcribed text that overlaps with [start_sec, end_sec] window."""
+        parts = []
+        for ts in timed_segs:
+            seg_start = ts.get("start", 0.0)
+            seg_end = ts.get("end", 0.0)
+            # Check overlap
+            if seg_end > start_sec and seg_start < end_sec:
+                parts.append(ts.get("text", ""))
+        return " ".join(parts).strip()
 
     # Frame into temporal segment windows
     win_sec = max(0.1, window_seconds)
@@ -435,11 +542,40 @@ def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> Au
         centroid, sub_bands = compute_spectral_features(seg_samples, sample_rate)
 
         # Grounded narrative text
-        tag_str = f" | Title: {id3_tags.get('title')}" if id3_tags.get("title") else ""
-        narrative = (
-            f"{t_label} Audio Segment{tag_str} | RMS: {rms:.3f} ({activity}) | "
-            f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
+        tag_items: list[str] = []
+        if filename:
+            tag_items.append(f"Audio: {filename}")
+        if speaker:
+            tag_items.append(f"Speaker/Persona: {speaker}")
+        if voice_info.get("parameters"):
+            tag_items.append(f"Settings: {voice_info['parameters']}")
+        if id3_tags.get("title"):
+            tag_items.append(f"Title: {id3_tags['title']}")
+        if id3_tags.get("artist"):
+            tag_items.append(f"Artist: {id3_tags['artist']}")
+
+        prefix = (
+            f"[{' | '.join(tag_items)} | {t_label}]"
+            if tag_items
+            else f"{t_label} Audio Segment"
         )
+
+        seg_transcript = (
+            _get_segment_transcript(start_s, end_s, auto_segments)
+            if auto_segments
+            else (transcript or None)
+        )
+        
+        if seg_transcript:
+            narrative = (
+                f'{prefix} Transcript: "{seg_transcript}" | RMS: {rms:.3f} ({activity}) | '
+                f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
+            )
+        else:
+            narrative = (
+                f"{prefix} | RMS: {rms:.3f} ({activity}) | "
+                f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
+            )
 
         segments.append(
             AudioSegment(
@@ -453,6 +589,8 @@ def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> Au
                 activity_level=activity,
                 sub_band_energies=sub_bands,
                 narrative_text=narrative,
+                transcript=seg_transcript,
+                speaker=speaker,
             )
         )
 
@@ -505,6 +643,9 @@ def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> Au
         total_frames=total_samples,
         file_size_bytes=file_size,
         id3_tags=id3_tags,
+        speaker=speaker,
+        transcript=transcript,
+        voice_metadata=voice_info,
     )
 
     return AudioPayload(
@@ -515,4 +656,6 @@ def process_audio_binary(audio_bytes: bytes, window_seconds: float = 10.0) -> Au
         spectral_distribution=spectral_distribution,
         spectral_flux=spectral_flux,
         acoustic_signature=acoustic_sig,
+        transcript=transcript,
+        speaker=speaker,
     )

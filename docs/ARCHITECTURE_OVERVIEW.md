@@ -73,7 +73,7 @@ Here is the breakdown of what each of the seven layers is designed to do, and wh
   - **Knowledge Graph**: Builds relationship graphs (linking documents to entities, tags, and parent scopes) and scores query overlap with node neighbors.
   - **Hybrid Search**: Combines vector, lexical, and graph search results using Reciprocal Rank Fusion (RRF) and custom reranking formulas.
 * **What it does NOT do**:
-  - Does not generate real semantic vector embeddings. The embedder is a deterministic hashing generator (`HashingEmbedder`) that creates a fingerprint based on word hashes.
+  - Embeds with a trained semantic model (FastEmbed `bge-small-en-v1.5`, local ONNX) or OpenAI; processing itself never produces vectors.
   - The vector store runs linear scans (`O(N)`) over in-memory entries, making it unsuitable for large-scale production without replacing it with an HNSW/ANN store (like pgvector or Qdrant).
   - The lexical search is a basic token overlap counter, not a statistical scoring algorithm like BM25 or TF-IDF.
 

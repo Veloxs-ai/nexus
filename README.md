@@ -7,7 +7,7 @@
 
 **Nexus is an open-source enterprise intelligence framework for building secure, governed AI applications, retrieval systems, agents, and intelligent workflows.**
 
-It sits *upstream and around* large language models: turning fragmented enterprise data into normalized vectors, contextual knowledge graphs, and grounded, policy-checked answers — without locking you into a particular model provider, vector database, or runtime.
+It sits *upstream and around* large language models: turning fragmented enterprise data into clean, grounded chunks, semantic embeddings, contextual knowledge graphs, and grounded, policy-checked answers — without locking you into a particular model provider, vector database, or runtime.
 
 ```
 Data Connectivity → Processing & Enrichment → Knowledge & Retrieval → Intelligent RAG
@@ -23,10 +23,13 @@ Data Connectivity → Processing & Enrichment → Knowledge & Retrieval → Inte
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Multimodal Ingestion (Office, Audio, Video, Code, DBs)](#multimodal-ingestion-office-audio-video-code-dbs)
+- [Semantic embeddings & re-ranking](#semantic-embeddings--re-ranking)
+- [Live sources: CDC, webhooks & Slack](#live-sources-cdc-webhooks--slack)
 - [Build a RAG workflow](#build-a-rag-workflow)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Running tests](#running-tests)
+- [Upgrading from 3.0.0](#upgrading-from-300)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
@@ -39,9 +42,9 @@ Nexus provides seven composable capabilities. Each is an independently installab
 
 | Capability | Package | What it does |
 |---|---|---|
-| **Data Connectivity** | `nexus.pipeline` | REST connectors with pagination and SSRF defense, batch file drops, streaming events, CDC (Debezium format) |
-| **Processing & Enrichment** | `nexus.processing` | Native zero-dependency parsers for Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, Audio (WAV/MP3/AIFF), Video (MP4/MOV), Images (PNG/JPEG/BMP), Code AST, OpenAPI, SQLite, MySQL, MongoDB, Email, Chat, CSV, Markdown, and Text; format-preserving tokenization (FF1) |
-| **Knowledge & Retrieval** | `nexus.retrieval` | Unified 3072D vector projection (IEEE 754 L2 unit norm = 1.0), lexical (BM25-style), hybrid RRF, and knowledge-graph retrieval with pluggable stores |
+| **Data Connectivity** | `nexus.pipeline` | REST connectors with pagination and SSRF defense, batch file drops, streaming events; CDC normalization (Debezium, Maxwell, MongoDB change streams, generic webhooks) with HMAC-signed delivery |
+| **Processing & Enrichment** | `nexus.processing` | Native pure-Python parsers for Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, Audio (WAV/MP3/AIFF), Video (MP4/MOV), Images (PNG/JPEG/BMP), Code AST, OpenAPI, SQLite, MySQL, MongoDB, Email, Chat, Slack exports, CSV, Markdown, and Text; optional OCR / Whisper / video demuxing; format-preserving tokenization (FF1) |
+| **Knowledge & Retrieval** | `nexus.retrieval` | Semantic embeddings (FastEmbed `bge-small-en-v1.5`, 384D, local ONNX — or OpenAI), cross-encoder re-ranking, lexical (BM25-style), hybrid RRF, and knowledge-graph retrieval with pluggable stores |
 | **Intelligent RAG** | `nexus.guardrails` | Grounded answers with citations, PII masking, prompt-injection defense, fail-closed policy checks |
 | **AI Orchestration** | `nexus.experience` | REST API, SDK, CLI, assistant sessions, channel adapters, API-key auth |
 | **Governance** | `nexus.security` | RBAC, multi-tenant isolation, authenticated encryption, immutable audit log |
@@ -49,29 +52,30 @@ Nexus provides seven composable capabilities. Each is an independently installab
 
 **Design properties worth knowing about:**
 
-- **Runs offline.** The default embedding provider is a local hashing projection — no model downloads, no API calls, no network egress. Good for air-gapped evaluation and deterministic tests.
+- **Runs locally.** Embeddings and re-ranking run on CPU through ONNX (FastEmbed); models download once and are cached (`NEXUS_MODEL_CACHE_DIR`). No API calls unless you choose the OpenAI provider.
+- **Resource-aware.** OCR and Whisper models load lazily, are shared process-wide, use CUDA or Apple MPS when present, and can be unloaded when idle (`release_idle_models`).
 - **Thread-safe and serverless-friendly.** In-memory stores are guarded by `threading.Lock`; `in_memory_only=True` (the default) skips disk I/O entirely.
 - **Typed configuration end to end.** Every layer's config is a Pydantic model, so a control plane can introspect the schema and render forms automatically.
 - **Multi-tenant by construction.** Encryption and tokenization derive a tenant-bound salt (`HKDF-SHA256`), so two tenants processing identical data produce cryptographically distinct ciphertext.
 
-> **On the embedding provider:** the built-in projection is a deterministic multi-gram hashing embedder, not a trained semantic model. It is excellent for reproducible local development, lexical-adjacent matching, and offline demos. For production semantic search, plug in your own embedding provider — the interface is designed for it. See [docs/USING_NEXUS.md](docs/USING_NEXUS.md).
+> **Processing and embedding are separate steps.** `process_*` methods return clean, grounded chunks (text + citations + metadata) and never vectors. Embed at storage time with `embed_texts()` / `embed_query()` so your index always uses one model. See [Semantic embeddings & re-ranking](#semantic-embeddings--re-ranking).
 
 ---
 
 ## Supported Formats & Modalities
 
-Nexus includes **zero-dependency, pure-Python binary and text decoders**. All modalities project into a unified **3072-dimensional vector space** with IEEE 754 $L_2$ unit normalization ($\|V\|_2 = 1.0$) and format-aware grounded citations.
+Nexus includes **pure-Python binary and text decoders**. Every modality produces text chunks with format-aware grounded citations, so all of them can be embedded into one semantic index.
 
 | Category | Supported Formats | Native Features & Grounding |
 |---|---|---|
-| **Office Documents** | `.docx` (Word), `.xlsx` (Excel), `.pptx` (PowerPoint) | OpenXML archive decompression; heading hierarchy (`Heading1..6`) & markdown tables for Word; multi-sheet cell matrices & row narratives for Excel; slide text, speaker notes & layouts for PowerPoint. |
-| **Documents & Data** | `.pdf`, `.csv`, `.md`, `.txt`, `.json`, `.jsonl` | ISO 32000-1 PDF stream decompression & page citations; CSV row-level narratives (`[Row ID: 1] col: val`); smart boundary-aware paragraph chunking for Markdown & text. |
-| **Audio & Speech** | `.wav`, `.aiff`, `.mp3` | Python 3.13-safe RIFF/AIFF/ID3 decoders; RMS loudness; Zero-Crossing Rate; Voice Activity Detection (VAD); 7-band spectral decomposition (20Hz–20kHz); temporal windows (`[00:00 - 00:10]`). |
-| **Video** | `.mp4`, `.mov`, `.m4v`, `.webm` | ISO BMFF container parser (`moov`/`trak`/`mdia`/`minf`); temporal scene framing; motion variance and spatio-temporal 3072D vector projection. |
-| **Images** | `.png`, `.jpeg`, `.jpg`, `.bmp` | Chunked binary parser; 8×8 luminance grid; 64-bin RGB color distribution; 64-bit perceptual difference hash (dHash). |
+| **Office Documents** | `.docx` (Word), `.xlsx` (Excel), `.pptx` (PowerPoint) | OpenXML archive decompression; heading hierarchy (`Heading1..6`) & markdown tables for Word; multi-sheet cell matrices & row narratives for Excel; slide text, speaker notes & layouts for PowerPoint; embedded image OCR. |
+| **Documents & Data** | `.pdf`, `.csv`, `.md`, `.txt`, `.json`, `.jsonl` | ISO 32000-1 PDF stream decompression & page citations; image XObject extraction; embedded image OCR; CSV row-level narratives (`[Row ID: 1] col: val`); smart boundary-aware paragraph chunking for Markdown & text. |
+| **Audio & Speech** | `.wav`, `.aiff`, `.mp3` | Python 3.13-safe RIFF/AIFF/ID3 decoders; RMS loudness; Zero-Crossing Rate; Voice Activity Detection (VAD); 7-band spectral decomposition (20Hz–20kHz); temporal windows (`[00:00 - 00:10]`); Whisper transcription. |
+| **Video** | `.mp4`, `.mov`, `.m4v`, `.webm` | ISO BMFF container parser (`moov`/`trak`/`mdia`/`minf`); temporal scene framing; keyframe OCR and audio-track transcription (optional `[video]`, `[ocr]`, `[audio-ml]`). |
+| **Images** | `.png`, `.jpeg`, `.jpg`, `.bmp`, `.gif`, `.tiff`, `.webp` | Chunked binary parser; dimensions and metadata; OCR of visible text (optional `[ocr]`, downscaled to 2560 px). |
 | **Code & APIs** | `.py`, `.ts`, `.js`, `.go`, `.rs`, `.java`, `.cpp`, `.cs`, OpenAPI 3.0/3.1, Swagger 2.0 | Standard library Python AST (signatures, parameters, decorators, cyclomatic complexity); polyglot regex scanners; OpenAPI operation and schema model extraction. |
-| **Databases** | SQLite (`.db`, `.sqlite`), MySQL, MongoDB | Binary SQLite header and B-tree page extraction; MySQL CDC binlog normalizer (Debezium/Maxwell); recursive BSON parser and dot-notation document flattener. |
-| **Messaging** | `.eml` (RFC 822/MIME), Chat (`slack`, `teams`) | Multipart MIME extraction, DKIM/SPF auth headers, thread conversation resolution, speaker turns, timestamp grounding. |
+| **Databases** | SQLite (`.db`, `.sqlite`), MySQL, MongoDB | Binary SQLite header and B-tree page extraction; CDC change-event normalizer (Debezium/Maxwell/MongoDB change streams); recursive BSON parser and dot-notation document flattener. |
+| **Messaging** | `.eml` (RFC 822/MIME), Chat (`slack`, `teams`), Slack export `.zip` / channel `.json`, live Slack events | Multipart MIME extraction, DKIM/SPF auth headers, thread conversation resolution, speaker turns, timestamp grounding; Slack threads grouped with replies and mentions resolved to names. |
 
 ---
 
@@ -88,6 +92,16 @@ Optional extras:
 ```bash
 pip install "veloxs-nexus[postgres]"   # pgvector + SQLAlchemy persistence
 pip install "veloxs-nexus[yaml]"       # YAML configuration files
+pip install "veloxs-nexus[ocr]"        # image / slide / keyframe OCR (EasyOCR)
+pip install "veloxs-nexus[audio-ml]"   # speech transcription (faster-whisper)
+pip install "veloxs-nexus[video]"      # video demuxing (PyAV)
+pip install "veloxs-nexus[all-ml]"     # all three
+```
+
+Semantic embeddings (FastEmbed) are part of the core install. On CPU-only servers, install the CPU build of PyTorch before the ML extras to avoid multi-gigabyte CUDA wheels:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 To work on Nexus itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -117,20 +131,20 @@ doc = client.process_document(
 
 print(f"{doc.name}: {len(doc.chunks)} chunks")
 print(doc.chunks[0].text)
+# Columns: employee_id, department, salary_usd, contact_email
 # [Row ID: 1] employee_id: 101 | department: Engineering | salary_usd: 145000 | contact_email: [EMAIL]
+# ...
 
 for step in doc.execution_trace:
     print(f"[{step.step_number}/5] {step.stage_name} ({step.duration_ms}ms)")
 ```
 
-Each chunk carries a 3072-dimensional embedding normalized to exact L2 unit length:
+Embed the chunks when you store them:
 
 ```python
-import math
-
-vector = doc.chunks[0].embedding
-print(len(vector), round(math.sqrt(sum(v * v for v in vector)), 6))
-# 3072 1.0
+vectors = client.embed_texts([c.text for c in doc.chunks])
+print(len(vectors[0]), client.embedding_info())
+# 384 {'provider': 'fastembed', 'model': 'BAAI/bge-small-en-v1.5', 'dimensions': 384}
 ```
 
 ### Raw fidelity mode
@@ -156,7 +170,7 @@ Nexus provides two flexible ways to ingest multimodal content:
 
 ### 1. Universal Ingestion (`client.process_document`)
 
-Pass raw `bytes` or a local file path along with the file `name`. Nexus automatically identifies the format, decompresses binary containers, frames structures, scrubs PII, and projects into 3072D vector space:
+Pass raw `bytes` or a local file path along with the file `name`. Nexus automatically identifies the format, decompresses binary containers, frames structures, scrubs PII, and returns grounded chunks:
 
 ```python
 import nexus
@@ -175,19 +189,19 @@ doc_word = client.process_document(
     text=docx_bytes,
 )
 
-# 3. Audio Streams (.wav, .mp3, .aiff) — VAD and 7-band spectral analysis
+# 3. Audio Streams (.wav, .mp3, .aiff) — metadata, VAD windows, Whisper transcript when installed
 doc_audio = client.process_document(
     name="earnings_call.wav",
     text=wav_bytes,
 )
 
-# 4. Video Files (.mp4, .mov) — ISO BMFF scene windows and motion variance
+# 4. Video Files (.mp4, .mov) — scene windows, transcript and keyframe OCR when installed
 doc_video = client.process_document(
     name="product_walkthrough.mp4",
     text=mp4_bytes,
 )
 
-# 5. High-Resolution Images (.png, .jpg) — 8x8 luminance and 64-bit dHash
+# 5. Images (.png, .jpg) — metadata and OCR text when installed
 doc_image = client.process_document(
     name="system_topology.png",
     text=png_bytes,
@@ -214,7 +228,7 @@ doc = client.process_audio(name="speech.wav", audio_bytes=raw_bytes, window_seco
 # Video (.mp4, .mov) with temporal scene framing
 doc = client.process_video(name="demo.mp4", video_bytes=raw_bytes, window_seconds=10.0)
 
-# Images (.png, .jpeg, .bmp) with 8x8 luminance grid
+# Images (.png, .jpeg, .bmp) with OCR text
 doc = client.process_image(name="chart.png", image_bytes=raw_bytes)
 
 # SQLite binary databases (.sqlite, .db)
@@ -229,7 +243,7 @@ doc = client.process_openapi(name="openapi.json", spec_data=spec_content)
 
 ### 3. Unified Cross-Modal Search
 
-Because all modalities project into the exact same **3072D vector space** with IEEE 754 $L_2$ unit normalization ($\|V\|_2 = 1.0$), you can index and query across text, spreadsheets, audio segments, and diagrams simultaneously:
+Every modality produces text chunks embedded by the same semantic model, so you can index and query across text, spreadsheets, audio transcripts, and diagrams at once:
 
 ```python
 # Index multi-format documents into a single collection
@@ -241,6 +255,57 @@ client.index_document(doc_audio, collection="enterprise_assets")
 results = client.search("quarterly revenue and SLA commitments", collection="enterprise_assets")
 for r in results:
     print(f"[{r.score:.3f}] {r.text[:120]}")
+```
+
+---
+
+## Semantic embeddings & re-ranking
+
+```python
+client = nexus.NexusClient(in_memory_only=True)
+
+passages = ["All database connections require TLS 1.3.", "Employees receive 20 days of PTO."]
+doc_vectors = client.embed_texts(passages)                 # passage encoding (batched)
+query_vector = client.embed_query("What encryption is required?")  # query encoding
+scores = client.rerank("What encryption is required?", passages)   # cross-encoder, 0..1
+```
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `NEXUS_EMBEDDING_PROVIDER` | `fastembed` | `fastembed` (local ONNX) or `openai` |
+| `NEXUS_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Any FastEmbed text model |
+| `NEXUS_EMBEDDING_DIMENSIONS` | model size (OpenAI: 384) | Output dimensions |
+| `NEXUS_MODEL_CACHE_DIR` | FastEmbed default | Where models are cached — mount a volume in containers |
+| `NEXUS_ML_DEVICE` | auto (`cuda` > `mps` > `cpu`) | Device for OCR / Whisper |
+
+Long-running services can free OCR / Whisper memory between jobs:
+
+```python
+from nexus.processing.ml_providers import release_idle_models
+
+release_idle_models(max_idle_seconds=600)  # models reload transparently on next use
+```
+
+---
+
+## Live sources: CDC, webhooks & Slack
+
+```python
+from nexus.processing import cdc, slack_export
+
+# Change data capture — one normalizer for Debezium, Maxwell, MongoDB change streams and generic events
+events = cdc.normalize_change_events(payload)       # dict, list, {"events": [...]} or NDJSON
+for event in events:
+    text = cdc.change_event_text(event)             # one chunk per record
+    ...                                             # upsert / delete by event.key
+
+# Signed webhook delivery (HMAC-SHA256 with a 5-minute replay window)
+ok = cdc.verify_webhook_signature(secret, raw_body, signature_header, timestamp_header)
+
+# Slack Events API
+ok = slack_export.verify_slack_signature(signing_secret, raw_body, x_slack_timestamp, x_slack_signature)
+action, message, deleted_ts = slack_export.slack_event_message(event)   # upsert | delete | ignore
+chunks = slack_export.messages_to_chunks("eng", messages, users)        # same chunking as export files
 ```
 
 ---
@@ -276,10 +341,10 @@ print(response.answer)  # grounded in the indexed chunk
 Every capability works standalone:
 
 ```python
-# Vector projection
-from nexus.retrieval.engine import RetrievalEngine
+# Semantic embedding
+from nexus.retrieval.semantic import create_text_embedder
 
-vector = RetrievalEngine().embed("Enterprise cloud infrastructure")
+vector = create_text_embedder().embed_query("Enterprise cloud infrastructure")
 
 # PII masking
 from nexus.guardrails.pii import mask_pii
@@ -349,15 +414,15 @@ Full detail: [docs/ARCHITECTURE_OVERVIEW.md](docs/ARCHITECTURE_OVERVIEW.md) · [
 
 ### PostgreSQL + pgvector
 
-For durable persistence, `nexus.database` ships a reference schema:
+For durable persistence, `nexus.database` builds a reference schema for your embedding size:
 
 ```python
-from nexus.database import PGVECTOR_DDL_SCHEMA
+from nexus import pgvector_ddl
 
-print(PGVECTOR_DDL_SCHEMA)
+print(pgvector_ddl(384))   # vector(384) + HNSW index + generated tsvector with a GIN index
 ```
 
-> **Index dimension limit.** pgvector's HNSW and IVFFlat indexes support up to 2000 dimensions for the `vector` type, below the 3072 Nexus emits by default. For an indexed column, either reduce `embedding.dimensions` to 2000 or below, or use `halfvec` with pgvector 0.7+. Without an index, 3072-dimension columns still store and scan correctly.
+Above 2000 dimensions the column becomes `halfvec` automatically (HNSW supports `halfvec` up to 4000 dimensions). `mysql_ddl(dim)` and `mongo_atlas_vector_index(dim)` cover MySQL 9 and MongoDB Atlas Vector Search.
 
 ---
 
@@ -383,7 +448,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 ## Running tests
 
-The suite is deterministic and fully offline — no network, no cloud services, no model downloads.
+The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git
@@ -413,6 +478,23 @@ ruff format --check .
 
 ---
 
+## Upgrading from 3.0.0
+
+3.0.1 separates processing from embedding and removes the legacy 3072D hashing projection:
+
+| Removed | Use instead |
+|---|---|
+| `NexusClient.embed()`, `ProcessedChunk.embedding`, `chunk_embeddings=` | `client.embed_texts([...])` at storage time, `client.embed_query(q)` at search time |
+| `embed_image` / `embed_audio` / `embed_video_scene` | Embed the chunk text produced by `process_image` / `process_audio` / `process_video` |
+| `HashingEmbedder`, `local_hashing` provider | `fastembed` (default) or `openai` |
+| `normalize_mysql_cdc_event`, `normalize_mongo_change_event` | `cdc.normalize_change_event` |
+| `PGVECTOR_DDL_SCHEMA`, `MYSQL_DDL_SCHEMA`, `MONGO_ATLAS_VECTOR_SEARCH_INDEX` | `pgvector_ddl(dim)`, `mysql_ddl(dim)`, `mongo_atlas_vector_index(dim)` |
+| `semantic` extra | Nothing — FastEmbed is a core dependency |
+
+Stored 3072D vectors are not compatible with the new model: re-embed stored chunk text once with `embed_texts()`. Full list in the [CHANGELOG](CHANGELOG.md).
+
+---
+
 ## Documentation
 
 | Guide | What it covers |
@@ -421,7 +503,7 @@ ruff format --check .
 | [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Design principles, the loose-coupling rule, and per-layer capabilities |
 | [Integration Guide](docs/INTEGRATION_GUIDE.md) | Installation, library vs. CLI integration patterns, environment variables |
 | [Processing Reference](docs/PROCESSING_REFERENCE.md) | Ingestion formats, the five processing phases, output structure, database setup |
-| [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and the 3072-dimension vector projection, specified precisely |
+| [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and how chunks are embedded, specified precisely |
 
 ---
 

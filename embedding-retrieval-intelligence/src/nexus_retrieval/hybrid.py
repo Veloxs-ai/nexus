@@ -19,7 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import RetrievalConfig
-from .embeddings import HashingEmbedder, tokenize
+from .embeddings import tokenize
+from .semantic import embedder_for
 from .graph import KnowledgeGraph
 from .lexical import LexicalIndex
 from .models import SearchResult
@@ -30,7 +31,7 @@ from .vector_store import LocalVectorStore
 def search(
     config: RetrievalConfig, query: str, base_dir: Path, limit: int = 10
 ) -> list[SearchResult]:
-    embedder = HashingEmbedder(config.embedding.dimensions, config.embedding.normalize)
+    embedder = embedder_for(config.embedding)
     # Counterpart to build_indexes(): read the indexes back off disk, so opt
     # out of the in-memory default that makes load() a no-op.
     vector_store = LocalVectorStore(config.stores.vector_index_uri, base_dir, in_memory_only=False)
@@ -40,7 +41,7 @@ def search(
     lexical_index.load()
     graph.load()
 
-    semantic = vector_store.search(embedder.embed(query), limit=limit * 3)
+    semantic = vector_store.search(embedder.embed_query(query), limit=limit * 3)
     lexical = lexical_index.search(query, limit=limit * 3)
     candidate_ids = {result.id for result in semantic + lexical}
     query_terms = tokenize(query)

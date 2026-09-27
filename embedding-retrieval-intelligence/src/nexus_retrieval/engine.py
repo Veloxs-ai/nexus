@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import EmbeddingConfig, RankingConfig, RetrievalConfig, StoreConfig
-from .embeddings import HashingEmbedder, tokenize
+from .embeddings import tokenize
+from .semantic import embedder_for
 from .graph import KnowledgeGraph
 from .lexical import LexicalIndex
 from .models import IndexedDocument, SearchResult, VectorEntry
@@ -31,7 +32,7 @@ from .vector_store import LocalVectorStore
 class RetrievalEngine:
     """In-memory vector embedding and hybrid retrieval intelligence engine.
 
-    Generates normalized 3072-dimensional multi-gram embeddings and conducts
+    Uses the configured semantic embedder (FastEmbed/OpenAI) and conducts
     hybrid (semantic + lexical + knowledge graph) retrieval with Reciprocal Rank Fusion.
     Provides complete thread safety and pure in-memory execution for serverless runtimes.
     """
@@ -46,7 +47,7 @@ class RetrievalEngine:
         in_memory_only: bool = True,
     ) -> None:
         self.config = config or RetrievalConfig(
-            embedding=EmbeddingConfig(dimensions=3072, normalize=True),
+            embedding=EmbeddingConfig(),
             stores=StoreConfig(
                 vector_index_uri="data/indexes/vector_index.json",
                 lexical_index_uri="data/indexes/lexical_index.json",
@@ -61,10 +62,7 @@ class RetrievalEngine:
         )
         self.base_dir = base_dir or Path.cwd()
         self.in_memory_only = in_memory_only
-        self.embedder = HashingEmbedder(
-            dimensions=self.config.embedding.dimensions,
-            normalize=self.config.embedding.normalize,
-        )
+        self.embedder = embedder_for(self.config.embedding)
         self.vector_store = vector_store or LocalVectorStore(
             self.config.stores.vector_index_uri, self.base_dir, in_memory_only=self.in_memory_only
         )
@@ -76,12 +74,12 @@ class RetrievalEngine:
         )
 
     def embed(self, text: str) -> list[float]:
-        """Generate pure 3072-dimensional normalized vector embedding."""
+        """Semantic passage embedding."""
         return self.embedder.embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Batch vector projection for multiple chunks."""
-        return [self.embed(text) for text in texts]
+        """Batched semantic passage embeddings."""
+        return self.embedder.embed_batch(texts)
 
     def add_entry(
         self,
@@ -126,7 +124,7 @@ class RetrievalEngine:
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         """Performs hybrid search combining vector, lexical, and graph signals with RRF."""
-        query_vector = self.embed(query)
+        query_vector = self.embedder.embed_query(query)
         semantic = self.vector_store.search(query_vector, limit=limit * 3)
         lexical = self.lexical_index.search(query, limit=limit * 3)
 

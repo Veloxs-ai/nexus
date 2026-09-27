@@ -192,3 +192,33 @@ def test_compute_spectral_features():
     assert c_high > c_low
     assert len(bands_high) == 7
     assert len(bands_low) == 7
+
+
+def test_elevenlabs_voice_parsing_and_transcript():
+    """Validates ElevenLabs voice persona extraction, generation settings, and transcript grounding."""
+    from nexus_processing.audio import parse_voice_filename
+
+    fname = "ElevenLabs_2026-02-13T12_30_00_Russ – Deep, Smooth and Articulate_sp67_s80_sb75_se20_m.mp3"
+    info = parse_voice_filename(fname)
+    assert info["provider"] == "ElevenLabs"
+    assert info["speaker"] == "Russ – Deep, Smooth and Articulate"
+    assert info["stability"] == "67%"
+    assert info["similarity"] == "80%"
+    assert info["style_boost"] == "75%"
+    assert info["speaker_boost"] == "20%"
+
+    # Generate synthetic MP3 audio bytes with ID3
+    raw_mp3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 200
+    payload = process_audio_binary(
+        raw_mp3,
+        filename=fname,
+        transcript="Welcome to Nexora intelligent vector processing.",
+    )
+    assert payload.metadata.speaker == "Russ – Deep, Smooth and Articulate"
+    assert payload.metadata.transcript == "Welcome to Nexora intelligent vector processing."
+    assert payload.metadata.voice_metadata["provider"] == "ElevenLabs"
+    assert len(payload.segments) >= 1
+    seg = payload.segments[0]
+    assert "Russ – Deep, Smooth and Articulate" in seg.narrative_text
+    assert "Welcome to Nexora" in seg.narrative_text
+

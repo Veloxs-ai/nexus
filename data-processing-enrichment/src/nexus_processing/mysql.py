@@ -22,45 +22,21 @@ normalizes Debezium/Maxwell binlog events, and defines production MySQL 8.0+ sch
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
-MYSQL_DDL_SCHEMA = """
--- MySQL 8.0+ Knowledge Documents & Vector Storage Schema
-CREATE TABLE IF NOT EXISTS knowledge_documents (
-    document_id         VARCHAR(128) NOT NULL PRIMARY KEY,
-    name                VARCHAR(255) NOT NULL,
-    file_type           VARCHAR(32) NOT NULL,
-    file_size_bytes     BIGINT NOT NULL,
-    content_hash        VARCHAR(64) NOT NULL,
-    classification      VARCHAR(64) DEFAULT 'database',
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_doc_hash (content_hash)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS knowledge_chunks (
-    chunk_id            VARCHAR(128) NOT NULL PRIMARY KEY,
-    document_id         VARCHAR(128) NOT NULL,
-    source_table        VARCHAR(128) NOT NULL,
-    chunk_index         INT NOT NULL,
-    chunk_text          TEXT NOT NULL,
-    metadata            JSON NULL,
-    embedding           JSON NOT NULL COMMENT '3072D IEEE 754 float array',
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
-    INDEX idx_chunks_doc (document_id),
-    INDEX idx_chunks_table (source_table)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-"""
 
 
 def serialize_mysql_row(
-    row: dict[str, Any], table_name: str, primary_key: str | None = None
+    row: dict[str, Any], table_name: str, primary_key: str | list[str] | None = None
 ) -> str:
     """Transforms a single relational table row into a structured, contextual narrative."""
-    # Determine primary key value
     pk_val = None
-    if primary_key and primary_key in row:
+    if isinstance(primary_key, list):
+        pk_parts = [str(row.get(k, "")) for k in primary_key if k in row]
+        pk_val = "-".join(pk_parts) if pk_parts else None
+    elif isinstance(primary_key, str) and primary_key in row:
         pk_val = row[primary_key]
     elif "id" in row:
         pk_val = row["id"]
@@ -76,10 +52,21 @@ def serialize_mysql_row(
     for col, val in row.items():
         if val is None:
             items.append(f"{col}: NULL")
-        elif isinstance(val, int | float | bool):
+        elif isinstance(val, bool | int | float):
             items.append(f"{col}: {val}")
+        elif isinstance(val, bytes):
+            items.append(f"<Binary:{len(val)}B>")
+        elif isinstance(
+            val, datetime.datetime | datetime.date | datetime.time
+        ):
+            items.append(f"{col}: {val.isoformat()}")
+        elif isinstance(val, datetime.timedelta):
+            total_secs = int(val.total_seconds())
+            items.append(f"{col}: {total_secs}s")
         else:
-            clean_str = str(val).replace("\r\n", " ").replace("\n", " ").strip()
+            clean_str = (
+                str(val).replace("\r\n", " ").replace("\n", " ").strip()
+            )
             items.append(f"{col}: {clean_str}")
 
     return pk_header + " | ".join(items)
@@ -88,7 +75,7 @@ def serialize_mysql_row(
 def chunk_mysql_table(
     rows: list[dict[str, Any]],
     table_name: str,
-    primary_key: str | None = None,
+    primary_key: str | list[str] | None = None,
     rows_per_chunk: int = 1,
 ) -> list[str]:
     """Chunks a list of relational table rows into individual or batched narrative chunks."""
@@ -113,37 +100,3 @@ def chunk_mysql_table(
     return chunks
 
 
-def normalize_mysql_cdc_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Normalizes MySQL Debezium or Maxwell binlog Change Data Capture event messages."""
-    payload = event.get("payload", event)
-    op_code = payload.get("op", payload.get("type", "r")).lower()
-
-    op_map = {
-        "c": "INSERT",
-        "insert": "INSERT",
-        "u": "UPDATE",
-        "update": "UPDATE",
-        "d": "DELETE",
-        "delete": "DELETE",
-        "r": "READ",
-        "read": "READ",
-    }
-    operation = op_map.get(op_code, "UNKNOWN")
-
-    before_state = payload.get("before")
-    after_state = payload.get("after", payload.get("data"))
-
-    record = after_state if operation != "DELETE" else before_state
-    source_info = payload.get("source", {})
-    table_name = source_info.get("table", event.get("table", "unknown_table"))
-    db_name = source_info.get("db", event.get("database", "unknown_db"))
-
-    return {
-        "operation": operation,
-        "database": db_name,
-        "table": table_name,
-        "record": record or {},
-        "before": before_state,
-        "after": after_state,
-        "timestamp_ms": payload.get("ts_ms", source_info.get("ts_ms", 0)),
-    }

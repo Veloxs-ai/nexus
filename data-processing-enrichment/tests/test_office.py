@@ -390,3 +390,103 @@ def test_process_word_success():
     assert "| Tier | Uptime |" in c_tbl.text
     assert "| Enterprise | 99.99% |" in c_tbl.text
     assert "Table 1" in c_tbl.narrative_text
+
+
+def test_process_legacy_xls():
+    """Validates that legacy .xls files (OLE2 / BIFF8) are parsed without BadZipFile."""
+    # OLE2 header magic + synthetic tabular records
+    ole2_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+    records = b"Header1\x00Header2\x00ValueA\x00ValueB\x00Record1\x00Record2"
+    xls_bytes = ole2_header + records
+
+    payload = process_spreadsheet_binary(xls_bytes, filename="crime.xls")
+    assert payload.metadata.format == "xls"
+    assert payload.metadata.filename == "crime.xls"
+    assert payload.metadata.total_sheets >= 1
+    assert len(payload.all_chunks) >= 1
+    assert "Workbook: crime.xls" in payload.all_chunks[0].narrative_text
+
+
+def test_process_presentation_tables_and_groups():
+    """Validates that PPTX slides with tables and grouped shapes are extracted."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+</Types>""",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>""",
+        )
+        zf.writestr(
+            "ppt/presentation.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId1"/>
+  </p:sldIdLst>
+</p:presentation>""",
+        )
+        zf.writestr(
+            "ppt/_rels/presentation.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>""",
+        )
+        # Slide with table in graphicFrame and group shape
+        zf.writestr(
+            "ppt/slides/slide1.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:txBody><a:p><a:r><a:t>Executive Summary</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:graphicFrame>
+        <a:graphic>
+          <a:graphicData>
+            <a:tbl>
+              <a:tr>
+                <a:tc><a:txBody><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></a:txBody></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></a:txBody></a:tc>
+              </a:tr>
+              <a:tr>
+                <a:tc><a:txBody><a:p><a:r><a:t>Q1</a:t></a:r></a:p></a:txBody></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:t>$10M</a:t></a:r></a:p></a:txBody></a:tc>
+              </a:tr>
+            </a:tbl>
+          </a:graphicData>
+        </a:graphic>
+      </p:graphicFrame>
+      <p:grpSp>
+        <p:sp>
+          <p:txBody><a:p><a:r><a:t>Grouped metric details</a:t></a:r></a:p></p:txBody>
+        </p:sp>
+      </p:grpSp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>""",
+        )
+
+    raw_bytes = buf.getvalue()
+    payload = process_presentation_binary(raw_bytes, filename="Presentation.pptx")
+    assert payload.metadata.total_slides == 1
+    slide = payload.slides[0]
+    assert slide.title == "Executive Summary"
+    assert "Quarter | Revenue" in slide.body_text
+    assert "Q1 | $10M" in slide.body_text
+    assert "Grouped metric details" in slide.body_text
+

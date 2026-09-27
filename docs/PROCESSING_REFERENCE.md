@@ -1,9 +1,9 @@
 # Nexus — Document Processing Reference
 
 > **Platform:** Nexus (7-Layer Enterprise AI Data & Retrieval Engine)  
-> **Embedding Standard:** 3072-Dimensional Multi-Gram Vector Projection (`vector(3072)`)  
+> **Embedding Standard:** Semantic embeddings at storage time — FastEmbed `BAAI/bge-small-en-v1.5` (`vector(384)`) by default  
 > **Processing Standard:** Format-Aware Tabular & Structural Document Chunking + PII Redaction  
-> **Version:** 2.0.0 Production  
+> **Version:** 3.0.1  
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## 1. Overview & Architecture
 
-Nexus is the **Enterprise Intelligence Framework** — a headless, seven-layer framework for data intelligence and vector retrieval. It operates upstream of large language models, converting raw unstructured and semi-structured enterprise documents into high-dimensional, normalized 3072D vector embeddings with strict fail-closed safety guardrails.
+Nexus is the **Enterprise Intelligence Framework** — a headless, seven-layer framework for data intelligence and vector retrieval. It operates upstream of large language models, converting raw unstructured and semi-structured enterprise documents into grounded, embedding-ready chunks (embedded with a semantic model at storage time) with strict fail-closed safety guardrails.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -42,11 +42,8 @@ Nexus is the **Enterprise Intelligence Framework** — a headless, seven-layer f
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    3. EMBEDDING & RETRIEVAL LAYER                           │
-│   • 3072-Dimensional Multi-Gram Vector Projection:                          │
-│       - Unigrams (1.5x): Base vocabulary tokens                             │
-│       - Bigrams  (2.0x): Multi-word phrase semantics                        │
-│       - Trigrams (2.5x): Named entities & compound phrases                  │
-│       - L2 Unit Normalization: ||V||₂ = 1.0 for exact Cosine Similarity     │
+│   • Semantic embeddings (embed_texts / embed_query, 384D bge-small, ONNX)   │
+│   • Cross-encoder re-ranking (rerank)                                       │
 │   • Hybrid Inverted Lexical + Entity Knowledge Graph + Reciprocal Rank (RRF)│
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
@@ -61,7 +58,7 @@ Nexus is the **Enterprise Intelligence Framework** — a headless, seven-layer f
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          5. OUTPUT DESTINATIONS                             │
-│     PostgreSQL pgvector (vector(3072)) · ClickHouse · JSONL Indices         │
+│     PostgreSQL pgvector (vector(384)) · MySQL 9 · Atlas · JSONL Indices     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,7 +99,7 @@ including how to install individual layers for isolated CLI or test use.
 | Command | Syntax | Description |
 |---|---|---|
 | **Validate Platform** | `python -m nexus.cli validate-platform configs/nexus.json` | Validates configuration integrity across all 7 layers. |
-| **Prepare / Ingest Data** | `python -m nexus.cli prepare-demo configs/nexus.json` | Processes raw documents, extracts chunks, and builds 3072D vector indices. |
+| **Prepare / Ingest Data** | `python -m nexus.cli prepare-demo configs/nexus.json` | Processes raw documents, extracts chunks, and builds semantic vector indices. |
 | **Semantic Query** | `python -m nexus.cli ask configs/nexus.json "<Query>"` | Performs hybrid retrieval, guardrail verification, and returns citations. |
 
 ---
@@ -129,7 +126,7 @@ Nexus provides zero-dependency, pure-Python native decoders for 8 enterprise for
   - **Audio Files (`.wav`, `.aiff`, `.mp3`)**: Python 3.13-safe signal decoding, RMS loudness profiling, Zero-Crossing Rate (ZCR), Voice Activity Detection (VAD), 7-band spectral decomposition (20Hz–20kHz), and temporal window framing (`[00:00 - 00:10]`).
 * **Video & Images**:
   - **Video Files (`.mp4`, `.mov`, `.m4v`, `.webm`)**: ISO BMFF container parser (`moov`/`trak`), temporal scene chunking, and motion variance.
-  - **Image Files (`.png`, `.jpeg`, `.jpg`, `.bmp`)**: 8×8 luminance grid, 64-bin RGB color distribution, and 64-bit dHash perceptual hashing.
+  - **Image Files (`.png`, `.jpeg`, `.jpg`, `.bmp`)**: dimensions and metadata, plus OCR of visible text with the optional `[ocr]` extra.
 * **Source Code & APIs**:
   - **Source Code (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.java`, `.cpp`, `.cs`)**: Python standard library AST (classes, functions, decorators, typed signatures, cyclomatic complexity) and polyglot regex scanners.
   - **OpenAPI / Swagger (`.json`, `.yaml`)**: OpenAPI 3.0/3.1 and Swagger 2.0 route, parameter, and schema model extraction.
@@ -208,17 +205,16 @@ Nexus processes documents through a standardized 5-stage execution pipeline:
 * Extracts named entities, ISO dates, and assigns classification categories.
 * Generates an MD5 `content_hash` for deduplication and incremental sync.
 
-### Phase 5: 3072-Dimensional Vector Projection
-* Projects every chunk into a normalized 3072-dimensional vector space:
-  * **Multi-Gram Token Projection**: Unigrams (1.5x), Bigrams (2.0x), Trigrams (2.5x).
-  * **Acoustic & Perceptual Features**: RMS envelope, spectral distribution, dHash bit-grids.
-  * **Exact L2 Unit Normalization**: $\|V\|_2 = 1.0$ for deterministic cosine similarity across all modalities.
+### Phase 5: Chunk Assembly
+* Assembles final chunks with grounded citations and metadata. Processing never produces vectors:
+  embed the chunk text at storage time with `client.embed_texts()` (and queries with `client.embed_query()`),
+  so the whole index uses one model.
 
 ---
 
 ## 5. Output Structure & Format
 
-Each processed document chunk produces a structured record containing its text, metadata, and 3072-dimensional vector:
+Each processed document chunk produces a structured record containing its text and metadata; the embedding is added when you store it:
 
 ```json
 {
@@ -235,13 +231,7 @@ Each processed document chunk produces a structured record containing its text, 
     "emails": ["[REDACTED_EMAIL]"],
     "content_hash": "e4d909c290d0fb1ca068ffaddf22cbd0"
   },
-  "embedding": [
-    0.024152,
-    -0.018431,
-    0.039120,
-    "...",
-    0.008412
-  ]
+  "embedding": "[384 floats from client.embed_texts(), added at storage time]"
 }
 ```
 
@@ -253,96 +243,55 @@ To store Nexus chunks and embeddings in a production relational/vector database,
 
 ### 6.1 PostgreSQL DDL (`pgvector`)
 
-```sql
--- 1. Enable the pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+Generate the schema for your embedding size instead of hand-writing it:
 
--- 2. Master Documents Table (3NF Compliant)
-CREATE TABLE knowledge_documents (
-    document_id         VARCHAR(128) PRIMARY KEY,
-    name                VARCHAR(255) NOT NULL,
-    file_type           VARCHAR(32) NOT NULL,
-    file_size_bytes     BIGINT NOT NULL,
-    content_hash        VARCHAR(64) NOT NULL,
-    classification      VARCHAR(64) DEFAULT 'general',
-    created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+```python
+from nexus import pgvector_ddl
 
--- 3. Document Chunks & 3072D Embedding Table
-CREATE TABLE knowledge_chunks (
-    chunk_id            VARCHAR(128) PRIMARY KEY,
-    document_id         VARCHAR(128) NOT NULL REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
-    source_job          VARCHAR(64) NOT NULL,
-    chunk_index         INTEGER NOT NULL,
-    chunk_text          TEXT NOT NULL,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    
-    -- 3072-Dimensional Vector Column
-    embedding           VECTOR(3072) NOT NULL,
-    
-    created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- 4. High-Performance HNSW Vector Index (Sub-millisecond Cosine ANN Search)
-CREATE INDEX idx_knowledge_chunks_embedding_hnsw 
-ON knowledge_chunks 
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
-
--- 5. Foreign Key & Metadata B-Tree Indexes
-CREATE INDEX idx_knowledge_chunks_doc_id ON knowledge_chunks(document_id);
-CREATE INDEX idx_knowledge_chunks_metadata ON knowledge_chunks USING gin(metadata);
+print(pgvector_ddl(384))
 ```
+
+It creates `knowledge_documents` and `knowledge_chunks` with a `vector(384)` column (`halfvec` above 2000 dimensions), an HNSW cosine index (`m = 16, ef_construction = 64`), a generated `tsvector` column with a GIN index for hybrid lexical search, and B-tree / GIN indexes on document id and metadata.
 
 ### 6.2 Python Insertion Example
 
 ```python
 import psycopg2
 from pgvector.psycopg2 import register_vector
-from nexus_retrieval.embeddings import HashingEmbedder
 
-# Connect to database
+import nexus
+
+client = nexus.NexusClient(in_memory_only=True)
 conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/nexus_enterprise")
 register_vector(conn)
-cursor = conn.cursor()
 
-# Generate 3072D embedding
-embedder = HashingEmbedder(dimensions=3072, normalize=True)
-chunk_text = "All employees must use MFA for sensitive systems."
-vector_3072 = embedder.embed(chunk_text)
+doc = client.process_document(document_id="doc-001", name="policy.md", text=policy_text, file_type="md")
+texts = [c.text for c in doc.chunks]
+vectors = client.embed_texts(texts)  # one batched call
 
-# Insert chunk
-cursor.execute(
-    """
-    INSERT INTO knowledge_chunks (chunk_id, document_id, source_job, chunk_index, chunk_text, embedding)
-    VALUES (%s, %s, %s, %s, %s, %s)
-    ON CONFLICT (chunk_id) DO UPDATE SET
-        chunk_text = EXCLUDED.chunk_text,
-        embedding = EXCLUDED.embedding;
-""",
-    ("doc-001:0", "doc-001", "policy_documents", 0, chunk_text, vector_3072),
-)
-
-conn.commit()
-cursor.close()
-conn.close()
+with conn, conn.cursor() as cur:
+    for i, (text, vec) in enumerate(zip(texts, vectors)):
+        cur.execute(
+            """
+            INSERT INTO knowledge_chunks (chunk_id, document_id, source_job, chunk_index, chunk_text, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (chunk_id) DO UPDATE SET chunk_text = EXCLUDED.chunk_text, embedding = EXCLUDED.embedding
+            """,
+            (f"doc-001:{i}", "doc-001", "policy_documents", i, text, vec),
+        )
 ```
 
 ### 6.3 Cosine Similarity Query Example
 
-```sql
--- Retrieve Top 5 Most Relevant Chunks for a 3072D Query Vector
-SELECT 
-    chunk_id,
-    document_id,
-    chunk_text,
-    metadata->>'document_title' AS title,
-    1 - (embedding <=> '[0.024152, -0.018431, ...]'::vector(3072)) AS cosine_similarity
-FROM knowledge_chunks
-ORDER BY embedding <=> '[0.024152, -0.018431, ...]'::vector(3072)
-LIMIT 5;
+```python
+query = client.embed_query("Is MFA required?")
+cur.execute(
+    "SELECT chunk_id, chunk_text, 1 - (embedding <=> %s::vector) AS similarity "
+    "FROM knowledge_chunks ORDER BY embedding <=> %s::vector LIMIT 20",
+    (query, query),
+)
+candidates = cur.fetchall()
+scores = client.rerank("Is MFA required?", [row[1] for row in candidates])  # re-rank the top 20
 ```
 
 ---
@@ -355,7 +304,7 @@ To operate and deploy the Nexus processing and output pipeline, the following te
 |---|---|---|---|
 | **Runtime** | Python | `3.11` or `3.12` | Core pipeline execution engine. |
 | **Package Manager** | pip | `venv` (stdlib), or any of conda / uv / Poetry | Isolated virtual environment. |
-| **Vector Database** | PostgreSQL + pgvector | PostgreSQL `15+`, pgvector `v0.5+` | Storage and indexing for `vector(3072)`. |
+| **Vector Database** | PostgreSQL + pgvector | PostgreSQL `15+`, pgvector `v0.7+` | Storage and HNSW indexing for `vector(384)` (or `halfvec` above 2000 dims). |
 | **Index Algorithm** | HNSW (Hierarchical Navigable Small World) | Built into pgvector | Sub-millisecond approximate nearest neighbor search. |
 | **Object Storage (Optional)** | AWS S3 / Google Cloud Storage | Standard | Landing zone for raw multi-gigabyte document batches. |
 | **Orchestration (Optional)** | Celery / Temporal / FastStream | Latest | Scalable distributed job scheduling. |

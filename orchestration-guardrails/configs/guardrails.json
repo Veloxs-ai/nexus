@@ -37,10 +37,12 @@
     "enabled": true,
     "mask": true,
     "detectors": [
+      "api_key",
+      "jwt",
       "email",
       "ssn",
-      "phone",
-      "credit_card"
+      "credit_card",
+      "phone"
     ]
   },
   "policies": [

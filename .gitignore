@@ -42,3 +42,9 @@ data/**/spans.jsonl
 data/**/alerts.jsonl
 **/data/processed/*.jsonl
 **/data/indexes/*.json
+
+# --- Local-only publishing & notes (see publish_local.sh) ---
+.pypi.env
+publish.local.yml
+publish_local.sh
+LOCAL_TESTING_AND_DEVELOPMENT.md

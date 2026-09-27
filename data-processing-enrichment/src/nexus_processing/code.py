@@ -14,24 +14,18 @@
 """Pure-Python, zero-dependency Code AST, Polyglot, and OpenAPI Specification Engine.
 
 Extracts syntax tree hierarchies, signatures, docstrings, classes, methods,
-OpenAPI paths, operations, schemas, and projects them into 3072-dimensional
-normalized vector space.
+OpenAPI paths, operations and schemas into grounded chunks.
 """
 
 from __future__ import annotations
 
 import ast
 import contextlib
-import hashlib
 import json
-import math
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
-
-EMBEDDING_DIM = 3072
-
 
 @dataclass
 class CodeSymbol:
@@ -67,7 +61,6 @@ class CodeChunk:
     body_text: str
     narrative_text: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    embedding: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -92,110 +85,6 @@ class CodeProcessingPayload:
     metadata: CodeMetadata
     chunks: list[CodeChunk]
     symbols: list[CodeSymbol]
-
-
-def _compute_l2_norm(vec: list[float]) -> list[float]:
-    """Computes IEEE 754 L2 unit normalization."""
-    sq_sum = sum(x * x for x in vec)
-    if sq_sum <= 1e-12:
-        val = 1.0 / math.sqrt(EMBEDDING_DIM)
-        return [val] * EMBEDDING_DIM
-    inv_norm = 1.0 / math.sqrt(sq_sum)
-    return [x * inv_norm for x in vec]
-
-
-def project_code_vector(
-    symbol_name: str,
-    symbol_type: str,
-    language: str,
-    signature: str,
-    docstring: str,
-    code_body: str,
-    complexity: int,
-    param_count: int,
-) -> list[float]:
-    """Projects AST structural tokens, signatures, and metrics into a normalized 3072D vector."""
-    dim = EMBEDDING_DIM
-    vec = [0.0] * dim
-
-    # 1. Structural semantic hash distributions
-    for token, weight in [
-        (symbol_name, 3.0),
-        (symbol_type, 2.0),
-        (language, 2.5),
-        (signature, 2.0),
-        (docstring, 1.5),
-        (code_body[:500], 1.0),
-    ]:
-        if not token:
-            continue
-        h = hashlib.sha256(token.encode("utf-8")).digest()
-        for i in range(0, len(h), 2):
-            idx = int.from_bytes(h[i : i + 2], "big") % dim
-            val = ((h[i] / 255.0) * 2.0 - 1.0) * weight
-            vec[idx] += val
-
-    # 2. Syntactic and lexical complexity metrics (first 64 dimensions)
-    vec[0] += math.log1p(max(0, complexity))
-    vec[1] += math.log1p(max(0, param_count))
-    vec[2] += math.log1p(len(code_body.splitlines()))
-    vec[3] += 1.0 if "async" in symbol_type else 0.0
-    vec[4] += 1.0 if symbol_type == "class" else 0.0
-    vec[5] += 1.0 if symbol_type in ("function", "method") else 0.0
-    vec[6] += 1.0 if symbol_type == "endpoint" else 0.0
-    vec[7] += 1.0 if symbol_type == "schema" else 0.0
-
-    # 3. Frequency profile of code keywords (64..256 dimensions)
-    keywords = [
-        "return",
-        "if",
-        "else",
-        "for",
-        "while",
-        "try",
-        "except",
-        "catch",
-        "class",
-        "def",
-        "func",
-        "fn",
-        "import",
-        "export",
-        "public",
-        "private",
-        "async",
-        "await",
-        "yield",
-        "const",
-        "let",
-        "var",
-        "struct",
-        "interface",
-        "type",
-        "match",
-        "case",
-        "throw",
-        "raise",
-        "lambda",
-        "get",
-        "post",
-        "put",
-        "delete",
-    ]
-    code_lower = code_body.lower()
-    for k_idx, kw in enumerate(keywords):
-        target_idx = 64 + k_idx
-        count = code_lower.count(kw)
-        vec[target_idx] += math.log1p(count)
-
-    # 4. Harmonize remaining dimensions via deterministic seed
-    seed_str = f"{language}:{symbol_name}:{signature}:{len(code_body)}"
-    seed_hash = hashlib.sha512(seed_str.encode("utf-8")).digest()
-    for i in range(256, dim):
-        byte_val = seed_hash[(i * 7) % len(seed_hash)]
-        vec[i] += ((byte_val / 255.0) * 2.0 - 1.0) * 0.1
-
-    return _compute_l2_norm(vec)
 
 
 def _format_py_arg(arg: ast.arg) -> str:
@@ -279,16 +168,6 @@ def process_python_source(
             f"[Code AST: {file_name} | Snippet (Unparsed) | Lines: 1-{total_lines}]\n"
             f"Error: {e}\n{code_text[:500]}"
         )
-        vec = project_code_vector(
-            symbol_name=file_name,
-            symbol_type="snippet",
-            language="python",
-            signature="",
-            docstring="",
-            code_body=code_text,
-            complexity=1,
-            param_count=0,
-        )
         c = CodeChunk(
             chunk_id=f"{file_name}_snippet",
             symbol_name=file_name,
@@ -301,7 +180,6 @@ def process_python_source(
             docstring="",
             body_text=code_text,
             narrative_text=narrative,
-            embedding=vec,
         )
         meta = CodeMetadata(
             file_name=file_name,
@@ -381,16 +259,6 @@ def process_python_source(
             narrative += f'"""{doc}"""\n'
         narrative += body
 
-        vec = project_code_vector(
-            symbol_name=fn_name,
-            symbol_type=sym_type,
-            language="python",
-            signature=sig,
-            docstring=doc,
-            code_body=body,
-            complexity=complexity,
-            param_count=len(params),
-        )
 
         chunks.append(
             CodeChunk(
@@ -411,7 +279,6 @@ def process_python_source(
                     "parameters": params,
                     "parent_class": parent_class,
                 },
-                embedding=vec,
             )
         )
 
@@ -459,16 +326,6 @@ def process_python_source(
             if method_names:
                 cls_narrative += f"Methods: {', '.join(method_names)}\n"
 
-            cls_vec = project_code_vector(
-                symbol_name=cls_name,
-                symbol_type="class",
-                language="python",
-                signature=cls_sig,
-                docstring=cls_doc,
-                code_body=cls_body[:1000],
-                complexity=len(node.body),
-                param_count=len(bases),
-            )
 
             chunks.append(
                 CodeChunk(
@@ -484,7 +341,6 @@ def process_python_source(
                     body_text=cls_body[:2000],
                     narrative_text=cls_narrative,
                     metadata={"bases": bases, "methods": method_names},
-                    embedding=cls_vec,
                 )
             )
 
@@ -504,16 +360,6 @@ def process_python_source(
             narrative += f'"""{doc}"""\n'
         narrative += code_text[:2000]
 
-        vec = project_code_vector(
-            symbol_name=file_name,
-            symbol_type="module",
-            language="python",
-            signature=f"module {file_name}",
-            docstring=doc,
-            code_body=code_text,
-            complexity=len(imports),
-            param_count=0,
-        )
         chunks.append(
             CodeChunk(
                 chunk_id=f"{file_name}_module_1",
@@ -528,7 +374,6 @@ def process_python_source(
                 body_text=code_text,
                 narrative_text=narrative,
                 metadata={"imports": imports},
-                embedding=vec,
             )
         )
 
@@ -564,6 +409,19 @@ POLYGLOT_EXTENSIONS = {
     ".swift": "swift",
     ".kt": "kotlin",
 }
+
+
+def _strip_strings_and_comments(line: str) -> str:
+    """Remove string literals and single-line comments for accurate brace counting."""
+    # Remove single-line comments (// style)
+    line = re.sub(r'//.*$', '', line)
+    # Remove double-quoted string contents
+    line = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
+    # Remove single-quoted string contents
+    line = re.sub(r"'(?:[^'\\]|\\.)*'", "''", line)
+    # Remove backtick template literal contents
+    line = re.sub(r'`(?:[^`\\]|\\.)*`', '``', line)
+    return line
 
 
 def process_polyglot_source(
@@ -632,11 +490,13 @@ def process_polyglot_source(
         if matched_name and matched_sig:
             start_line = i + 1
             # Find closing brace by tracking balance
-            brace_count = line.count("{") - line.count("}")
+            stripped_line = _strip_strings_and_comments(line)
+            brace_count = stripped_line.count("{") - stripped_line.count("}")
             end_line = start_line
             j = i + 1
             while j < total_lines and brace_count > 0:
-                brace_count += lines[j].count("{") - lines[j].count("}")
+                stripped_j = _strip_strings_and_comments(lines[j])
+                brace_count += stripped_j.count("{") - stripped_j.count("}")
                 end_line = j + 1
                 j += 1
                 if brace_count <= 0:
@@ -676,16 +536,6 @@ def process_polyglot_source(
                 narrative += f"{docstring}\n"
             narrative += body_slice
 
-            vec = project_code_vector(
-                symbol_name=matched_name,
-                symbol_type=matched_type,
-                language=lang,
-                signature=matched_sig,
-                docstring=docstring,
-                code_body=body_slice,
-                complexity=max(1, end_line - start_line),
-                param_count=matched_sig.count(","),
-            )
 
             chunks.append(
                 CodeChunk(
@@ -701,7 +551,6 @@ def process_polyglot_source(
                     body_text=body_slice,
                     narrative_text=narrative,
                     metadata={"language": lang},
-                    embedding=vec,
                 )
             )
             i = end_line
@@ -718,16 +567,6 @@ def process_polyglot_source(
                 f"[Code AST: {file_name} | Snippet | Lines: {w_start + 1}-{w_end}]\n"
                 f"Language: {lang}\n{snippet}"
             )
-            vec = project_code_vector(
-                symbol_name=f"{file_name}_L{w_start + 1}",
-                symbol_type="snippet",
-                language=lang,
-                signature=f"lines {w_start + 1}-{w_end}",
-                docstring="",
-                code_body=snippet,
-                complexity=1,
-                param_count=0,
-            )
             chunks.append(
                 CodeChunk(
                     chunk_id=f"{file_name}_window_{w_start + 1}",
@@ -742,7 +581,6 @@ def process_polyglot_source(
                     body_text=snippet,
                     narrative_text=narrative,
                     metadata={"language": lang},
-                    embedding=vec,
                 )
             )
 
@@ -767,8 +605,17 @@ def process_openapi_spec(
         try:
             doc = json.loads(spec_data)
         except json.JSONDecodeError:
-            # Simple line fallback for YAML/invalid JSON
-            doc = {"info": {"title": file_name}, "paths": {}}
+            # Try YAML parsing if pyyaml is available
+            try:
+                import yaml
+                doc = yaml.safe_load(spec_data)
+                if not isinstance(doc, dict):
+                    doc = {"info": {"title": file_name}, "paths": {}}
+            except ImportError:
+                # Fallback: try to detect YAML structure via basic parsing
+                doc = {"info": {"title": file_name}, "paths": {}}
+            except Exception:
+                doc = {"info": {"title": file_name}, "paths": {}}
     elif isinstance(spec_data, dict):
         doc = spec_data
     else:
@@ -857,16 +704,6 @@ def process_openapi_spec(
             )
             symbols.append(sym)
 
-            vec = project_code_vector(
-                symbol_name=op_id,
-                symbol_type="endpoint",
-                language="openapi",
-                signature=sig,
-                docstring=summary + " " + description,
-                code_body=narrative,
-                complexity=len(param_labels) + len(resp_labels),
-                param_count=len(param_labels),
-            )
 
             chunks.append(
                 CodeChunk(
@@ -887,7 +724,6 @@ def process_openapi_spec(
                         "tags": tags,
                         "operation_id": op_id,
                     },
-                    embedding=vec,
                 )
             )
 
@@ -929,16 +765,6 @@ def process_openapi_spec(
             )
             symbols.append(sym)
 
-            vec = project_code_vector(
-                symbol_name=s_name,
-                symbol_type="schema",
-                language="openapi",
-                signature=s_sig,
-                docstring=s_desc,
-                code_body=narrative,
-                complexity=len(prop_summaries),
-                param_count=len(req_fields),
-            )
 
             chunks.append(
                 CodeChunk(
@@ -954,7 +780,6 @@ def process_openapi_spec(
                     body_text=json.dumps(s_def, indent=2),
                     narrative_text=narrative,
                     metadata={"model_name": s_name, "required": req_fields},
-                    embedding=vec,
                 )
             )
 

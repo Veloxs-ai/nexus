@@ -5,7 +5,41 @@ All notable changes to Nexus are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.1] — 2026-09-27
+
+**Breaking for integrators of 3.0.0** — processing no longer produces vectors, and the legacy 3072D hashing projection with every API kept for it is removed. Embed chunk text at storage time with `embed_texts()` / `embed_query()`. See "Upgrading from 3.0.0" in the README. This release consolidates the unpublished 3.2.1–4.0.0 development versions.
+
+### Added
+- **Semantic embeddings** — `NexusClient.embed_texts()` (batched passages), `embed_query()` (asymmetric query encoding) and `embedding_info()`, backed by FastEmbed/ONNX (`BAAI/bge-small-en-v1.5`, 384D). Configure with `NEXUS_EMBEDDING_PROVIDER` (`fastembed` | `openai`), `NEXUS_EMBEDDING_MODEL`, `NEXUS_EMBEDDING_DIMENSIONS`, `NEXUS_MODEL_CACHE_DIR`. The OpenAI provider batches 256 inputs per request.
+- **Cross-encoder re-ranking** — `NexusClient.rerank(query, passages)` returns (0, 1) relevance scores (`Xenova/ms-marco-MiniLM-L-6-v2`).
+- **CDC / webhook normalization** (`nexus.processing.cdc`) — `normalize_change_event(s)` auto-detects Debezium (envelope + Kafka key), Maxwell, MongoDB change streams (partial updates flagged for merge) and generic webhooks; single events, lists, `{"events": [...]}` or NDJSON (max 1,000 per batch). `change_event_text` renders one record chunk.
+- **Webhook signing** — `sign_webhook_payload` / `verify_webhook_signature`: HMAC-SHA256 with optional timestamp binding (5-minute replay window), constant-time comparison.
+- **Slack** — `NexusClient.process_slack_export()` parses workspace export `.zip` files or one channel's `.json` (threads grouped with replies, top-level messages windowed per channel/day, mentions resolved, join/leave noise dropped, PII masked). For live workspaces: `verify_slack_signature` (Events API v0 signing), `slack_event_message` (new / edited / deleted message mapping) and the public `messages_to_chunks`, shared by export and live paths.
+- **Pluggable ML extraction** — optional OCR (EasyOCR, `[ocr]`), transcription (faster-whisper, `[audio-ml]`) and video demuxing (PyAV, `[video]`); embedded images in PPTX, DOCX, XLSX, PDF and email are OCR'd through one `process_image_binary()` path.
+- **`release_idle_models(max_idle_seconds)`** — unloads shared OCR / Whisper models that have been idle, so long-running services only hold that memory while processing media.
+- **Chunking** — heading-aware Markdown chunks with a `Section: A > B` breadcrumb; CSV row packing (~1.5k-char chunks with a repeated header); section-sized Word chunks (`group_word_sections`).
+- Layer package versions and `configs/nexus.json` aligned to 3.0.1.
+- DDL builders `pgvector_ddl(dim)` (HNSW + generated `tsvector` with GIN), `mysql_ddl(dim)`, `mongo_atlas_vector_index(dim)`; `get_pgvector_column_type(dim)` returns `halfvec` above 2000 dimensions.
+
+### Changed
+- `fastembed` is a core dependency; the retrieval engine, indexer and hybrid search use the semantic embedder.
+- Processing stages end with "… Chunk Assembly" (no vector projection).
+- OCR and Whisper models are loaded lazily, shared process-wide, run on CUDA or Apple MPS when available (`NEXUS_ML_DEVICE`), and oversized images are downscaled to 2560 px before OCR.
+- Ingestion PII masking also covers API keys (OpenAI/AWS/Google/GitHub/Slack/Stripe), JWTs and international phone numbers; detectors apply in a fixed specific-to-generic order.
+- Format fidelity: PDF image XObjects, ASCII85/ASCIIHex filters and `/Info` metadata; 32-bit float WAV; full JPEG SOF range; Word headers/footers/footnotes; PPTX SmartArt; nested RFC822 emails and iCalendar invites; MongoDB extended JSON types; MySQL composite primary keys.
+
+### Removed
+- `NexusClient.embed()`, `chunk_embeddings=`, `ProcessedChunk.embedding`, `embed_image` / `embed_audio` / `embed_video_scene`.
+- `HashingEmbedder`, `ImageEmbedder`, `AudioEmbedder`, `VideoEmbedder`, the `local_hashing` provider and all hashing / lexical fallbacks; the `semantic` extra.
+- `normalize_mysql_cdc_event`, `normalize_mongo_change_event` (use `normalize_change_event`).
+- `project_code_vector`, `EMBEDDING_DIM`; DDL constants `PGVECTOR_DDL_SCHEMA`, `MYSQL_DDL_SCHEMA`, `MONGO_ATLAS_VECTOR_SEARCH_INDEX`.
+
+### Fixed
+- `process_document` raised `OSError: File name too long` for raw text payloads with long lines (the text was probed as a file path).
+- SQL injection in SQLite table introspection; MP3 ID3v2 UTF-16 decoding; truncated MP4 crash; BMP unsigned dimensions; PPTX slide ordering; polyglot brace counting.
+- Sliding-window overlap starts on a word boundary.
+
+## [3.0.0] — 2026-08-27
 
 ### Changed
 

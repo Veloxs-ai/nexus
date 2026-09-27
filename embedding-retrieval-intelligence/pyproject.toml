@@ -1,6 +1,6 @@
 [project]
 name = "embedding-retrieval-intelligence"
-version = "2.4.0"
+version = "3.0.1"
 description = "Nexus Enterprise Intelligence Framework — Knowledge & Retrieval layer: vector, lexical, hybrid, and graph search."
 requires-python = ">=3.11"
 readme = "README.md"

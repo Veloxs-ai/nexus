@@ -20,9 +20,11 @@ import json
 import math
 
 from nexus import (
-    MONGO_ATLAS_VECTOR_SEARCH_INDEX,
-    MYSQL_DDL_SCHEMA,
     NexusClient,
+    get_pgvector_column_type,
+    mongo_atlas_vector_index,
+    mysql_ddl,
+    pgvector_ddl,
 )
 
 
@@ -76,10 +78,6 @@ def test_nexus_client_process_mysql_table():
     assert chunk_0.metadata["database_type"] == "mysql"
     assert chunk_0.metadata["environment"] == "production"
 
-    # Check 3072D vector normalization
-    assert len(chunk_0.embedding) == 3072
-    norm = math.sqrt(sum(x * x for x in chunk_0.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Check 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
@@ -92,7 +90,7 @@ def test_nexus_client_process_mysql_table():
     assert doc.execution_trace[1].stage_name == "Relational Row Serialization & Typing"
     assert doc.execution_trace[2].stage_name == "Format-Aware Tabular Chunking"
     assert doc.execution_trace[3].stage_name == "Safety Guardrails & PII Sanitization"
-    assert doc.execution_trace[4].stage_name == "3072D Multi-Gram Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="database_records")
@@ -164,10 +162,6 @@ def test_nexus_client_process_mongo_collection():
     assert chunk_0.metadata["database_type"] == "mongodb"
     assert chunk_0.metadata["system"] == "crm"
 
-    # Check 3072D vector normalization
-    assert len(chunk_0.embedding) == 3072
-    norm = math.sqrt(sum(x * x for x in chunk_0.embedding))
-    assert abs(norm - 1.0) < 1e-7
 
     # Check 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
@@ -180,7 +174,7 @@ def test_nexus_client_process_mongo_collection():
     assert doc.execution_trace[1].stage_name == "Hierarchical Keypath Flattening (Dot-Notation)"
     assert doc.execution_trace[2].stage_name == "Document Record Serialization & Chunking"
     assert doc.execution_trace[3].stage_name == "Safety Guardrails & PII Sanitization"
-    assert doc.execution_trace[4].stage_name == "3072D Multi-Gram Vector Projection"
+    assert doc.execution_trace[4].stage_name == "Chunk Assembly"
 
     # Verify indexing and retrieval
     client.index_document(doc, collection="mongodb_crm")
@@ -225,12 +219,12 @@ def test_nexus_client_process_document_db_routing():
 
 
 def test_database_schemas_and_indexes():
-    assert "CREATE TABLE IF NOT EXISTS knowledge_documents" in MYSQL_DDL_SCHEMA
-    assert "CREATE TABLE IF NOT EXISTS knowledge_chunks" in MYSQL_DDL_SCHEMA
-    assert "fields" in MONGO_ATLAS_VECTOR_SEARCH_INDEX
-    dims = next(
-        f["numDimensions"]
-        for f in MONGO_ATLAS_VECTOR_SEARCH_INDEX["fields"]
-        if f.get("type") == "vector"
-    )
-    assert dims == 3072
+    """Storage DDL builders follow the embedding model's dimension."""
+    assert get_pgvector_column_type(384) is not None
+    pg = pgvector_ddl(384)
+    assert "vector(384)" in pg and "USING hnsw" in pg and "USING gin (text_search)" in pg
+    assert "halfvec(3072)" in pgvector_ddl(3072) and "halfvec_cosine_ops" in pgvector_ddl(3072)
+    my = mysql_ddl(384)
+    assert "CREATE TABLE IF NOT EXISTS knowledge_chunks" in my and "384-dim" in my
+    dims = next(f["numDimensions"] for f in mongo_atlas_vector_index(384)["fields"] if f.get("type") == "vector")
+    assert dims == 384

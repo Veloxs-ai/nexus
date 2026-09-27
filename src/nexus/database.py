@@ -16,30 +16,40 @@
 
 from __future__ import annotations
 
+"""Reference storage schemas for Nexus chunks (PostgreSQL/pgvector, MySQL, MongoDB Atlas).
+
+All builders take the embedding dimension of the configured model, e.g.
+``NexusClient().embedding_info()["dimensions"]`` (384 for bge-small, 1536/3072 for
+OpenAI text-embedding-3-*). pgvector's HNSW index supports up to 2000 dimensions for
+``vector``; larger models are stored as ``halfvec`` automatically.
+"""
+
 from typing import Any
 
 
-def get_pgvector_column_type(dimensions: int = 3072) -> Any:
-    """Returns the native pgvector SQLAlchemy Column type.
-
-    Raises an explicit, actionable ImportError if pgvector is missing,
-    rather than silently falling back to a string descriptor.
-    """
+def get_pgvector_column_type(dimensions: int) -> Any:
+    """Native pgvector SQLAlchemy column type (``vector`` <= 2000 dims, else ``halfvec``)."""
     try:
-        from pgvector.sqlalchemy import Vector
+        if dimensions <= 2000:
+            from pgvector.sqlalchemy import Vector
 
-        return Vector(dimensions)
+            return Vector(dimensions)
+        from pgvector.sqlalchemy import HALFVEC
+
+        return HALFVEC(dimensions)
     except ImportError as exc:
         raise ImportError(
-            f"The 'pgvector' package is required to compile a native vector({dimensions}) column. "
-            "Install it with: pip install nexus-enterprise-ai[postgres] or pip install pgvector"
+            f"The 'pgvector' package is required for a vector({dimensions}) column. "
+            "Install it with: pip install 'veloxs-nexus[postgres]'"
         ) from exc
 
 
-PGVECTOR_DDL_SCHEMA = """
--- PostgreSQL + pgvector 3072D Document & Embedding Schema
+def pgvector_ddl(dimensions: int) -> str:
+    """PostgreSQL DDL: documents + chunks with HNSW vector index and full-text search."""
+    vec = f"vector({dimensions})" if dimensions <= 2000 else f"halfvec({dimensions})"
+    ops = "vector_cosine_ops" if dimensions <= 2000 else "halfvec_cosine_ops"
+    return f"""
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS knowledge_documents (
     document_id         VARCHAR(128) PRIMARY KEY,
@@ -48,32 +58,33 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
     file_size_bytes     BIGINT NOT NULL,
     content_hash        VARCHAR(64) NOT NULL,
     classification      VARCHAR(64) DEFAULT 'general',
-    created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    embedding_model     VARCHAR(128),
+    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
     chunk_id            VARCHAR(128) PRIMARY KEY,
     document_id         VARCHAR(128) NOT NULL REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
-    source_job          VARCHAR(64) NOT NULL,
     chunk_index         INTEGER NOT NULL,
     chunk_text          TEXT NOT NULL,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    embedding           VECTOR(3072) NOT NULL,
-    created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    metadata            JSONB DEFAULT '{{}}'::jsonb,
+    embedding           {vec},
+    embedding_model     VARCHAR(128),
+    text_search         TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', coalesce(chunk_text, ''))) STORED,
+    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding_hnsw 
-ON knowledge_chunks 
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
-
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc_id ON knowledge_chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_metadata ON knowledge_chunks USING gin(metadata);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding_hnsw
+    ON knowledge_chunks USING hnsw (embedding {ops}) WITH (m = 16, ef_construction = 64);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_text_search ON knowledge_chunks USING gin (text_search);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc ON knowledge_chunks (document_id, chunk_index);
 """
 
-MYSQL_DDL_SCHEMA = """
--- MySQL 8.0+ Knowledge Documents & Vector Storage Schema
+
+def mysql_ddl(dimensions: int) -> str:
+    """MySQL 8 DDL (vectors stored as JSON arrays; use an external ANN index for search)."""
+    return f"""
 CREATE TABLE IF NOT EXISTS knowledge_documents (
     document_id         VARCHAR(128) NOT NULL PRIMARY KEY,
     name                VARCHAR(255) NOT NULL,
@@ -81,6 +92,7 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
     file_size_bytes     BIGINT NOT NULL,
     content_hash        VARCHAR(64) NOT NULL,
     classification      VARCHAR(64) DEFAULT 'database',
+    embedding_model     VARCHAR(128) NULL,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_doc_hash (content_hash)
@@ -93,29 +105,22 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     chunk_index         INT NOT NULL,
     chunk_text          TEXT NOT NULL,
     metadata            JSON NULL,
-    embedding           JSON NOT NULL COMMENT '3072D IEEE 754 float array',
+    embedding           JSON NULL COMMENT '{dimensions}-dim float array',
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
     INDEX idx_chunks_doc (document_id),
-    INDEX idx_chunks_table (source_table)
+    INDEX idx_chunks_table (source_table),
+    FULLTEXT INDEX ft_chunks_text (chunk_text)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
-MONGO_ATLAS_VECTOR_SEARCH_INDEX = {
-    "fields": [
-        {
-            "type": "vector",
-            "path": "embedding",
-            "numDimensions": 3072,
-            "similarity": "cosine",
-        },
-        {
-            "type": "filter",
-            "path": "collection_name",
-        },
-        {
-            "type": "filter",
-            "path": "document_id",
-        },
-    ]
-}
+
+def mongo_atlas_vector_index(dimensions: int) -> dict[str, Any]:
+    """MongoDB Atlas Vector Search index definition for chunk documents."""
+    return {
+        "fields": [
+            {"type": "vector", "path": "embedding", "numDimensions": dimensions, "similarity": "cosine"},
+            {"type": "filter", "path": "collection_name"},
+            {"type": "filter", "path": "document_id"},
+        ]
+    }

@@ -44,7 +44,8 @@ class PromptSecurityConfig(BaseModel):
 class PiiConfig(BaseModel):
     enabled: bool = True
     mask: bool = True
-    detectors: list[str] = Field(default_factory=lambda: ["email", "ssn", "phone", "credit_card"])
+    # Available: email, ssn, phone, credit_card, api_key, jwt, ip_address
+    detectors: list[str] = Field(default_factory=lambda: ["api_key", "jwt", "email", "ssn", "credit_card", "phone"])
 
 
 class PolicyRuleConfig(BaseModel):

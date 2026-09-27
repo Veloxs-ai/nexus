@@ -17,7 +17,7 @@
 """Zero-dependency MongoDB document processor, BSON flattener, and Atlas index generator.
 
 Processes semi-structured and hierarchical BSON/Extended-JSON documents, flattens
-nested paths into dot-notation, normalizes Change Streams, and defines Atlas Vector Search indexes.
+nested paths into dot-notation (change streams: see nexus_processing.cdc).
 """
 
 from __future__ import annotations
@@ -25,24 +25,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-MONGO_ATLAS_VECTOR_SEARCH_INDEX = {
-    "fields": [
-        {
-            "type": "vector",
-            "path": "embedding",
-            "numDimensions": 3072,
-            "similarity": "cosine",
-        },
-        {
-            "type": "filter",
-            "path": "collection_name",
-        },
-        {
-            "type": "filter",
-            "path": "document_id",
-        },
-    ]
-}
 
 
 def serialize_bson_value(val: Any) -> Any:
@@ -56,11 +38,42 @@ def serialize_bson_value(val: Any) -> Any:
                 return str(date_val["$numberLong"])
             return str(date_val)
         if "$numberDecimal" in val:
-            return float(val["$numberDecimal"])
+            return str(val["$numberDecimal"])
         if "$numberLong" in val:
             return int(val["$numberLong"])
+        if "$numberInt" in val:
+            return int(val["$numberInt"])
+        if "$numberDouble" in val:
+            return float(val["$numberDouble"])
         if "$binary" in val:
-            return f"<Binary:{val.get('subType', '00')}>"
+            bin_data = val["$binary"]
+            if isinstance(bin_data, dict):
+                sub = bin_data.get("subType", "00")
+                b64 = bin_data.get("base64", "")
+            else:
+                sub = val.get("subType", "00")
+                b64 = ""
+            if sub == "04" and b64:  # UUID
+                import base64
+                import uuid as _uuid
+                try:
+                    raw = base64.b64decode(b64)
+                    if len(raw) == 16:
+                        return str(_uuid.UUID(bytes=raw))
+                except Exception:
+                    pass
+            return f"<Binary:{sub}>"
+        if "$regex" in val:
+            return f"/{val['$regex']}/{val.get('$options', '')}"
+        if "$timestamp" in val:
+            ts = val["$timestamp"]
+            return f"Timestamp({ts.get('t', 0)}, {ts.get('i', 0)})"
+        if "$code" in val:
+            return str(val["$code"])
+        if "$minKey" in val:
+            return "MinKey"
+        if "$maxKey" in val:
+            return "MaxKey"
         return {k: serialize_bson_value(v) for k, v in val.items()}
     if isinstance(val, list):
         return [serialize_bson_value(item) for item in val]
@@ -69,23 +82,33 @@ def serialize_bson_value(val: Any) -> Any:
     return val
 
 
-def flatten_mongo_document(doc: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+def flatten_mongo_document(
+    doc: dict[str, Any], prefix: str = "", _pre_cleaned: bool = False
+) -> dict[str, Any]:
     """Flattens deeply nested MongoDB documents into dot-notation paths."""
     items: dict[str, Any] = {}
-    cleaned_doc = serialize_bson_value(doc)
+    cleaned_doc = doc if _pre_cleaned else serialize_bson_value(doc)
 
     for k, v in cleaned_doc.items():
         new_key = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict) and v:
-            items.update(flatten_mongo_document(v, prefix=new_key))
+            items.update(flatten_mongo_document(v, prefix=new_key, _pre_cleaned=_pre_cleaned))
         elif isinstance(v, list):
             # If list of simple scalar elements, preserve as string array
             if v and all(isinstance(elem, str | int | float | bool) for elem in v):
                 items[new_key] = json.dumps(v)
             elif v and all(isinstance(elem, dict) for elem in v):
-                # Array of subdocuments: flatten first 5 elements
-                for idx, subdoc in enumerate(v[:5]):
-                    items.update(flatten_mongo_document(subdoc, prefix=f"{new_key}[{idx}]"))
+                # Array of subdocuments: flatten first 10 elements
+                for idx, subdoc in enumerate(v[:10]):
+                    items.update(
+                        flatten_mongo_document(
+                            subdoc,
+                            prefix=f"{new_key}[{idx}]",
+                            _pre_cleaned=_pre_cleaned,
+                        )
+                    )
+                if len(v) > 10:
+                    items[f"{new_key}._truncated"] = f"{len(v) - 10} more items"
             else:
                 items[new_key] = json.dumps(v)
         else:
@@ -104,7 +127,7 @@ def serialize_mongo_document(
     header = f"[Collection: {collection_name} | ID: {doc_id}] "
 
     if flatten:
-        flattened = flatten_mongo_document(cleaned)
+        flattened = flatten_mongo_document(cleaned, _pre_cleaned=True)
         # Exclude redundant _id in body if present in header
         parts: list[str] = []
         for k, v in flattened.items():
@@ -131,26 +154,3 @@ def chunk_mongo_collection(
     ]
 
 
-def normalize_mongo_change_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Normalizes MongoDB Change Stream events (insert, update, replace, delete)."""
-    op_type = event.get("operationType", event.get("op", "unknown")).lower()
-    ns = event.get("ns", {})
-    db_name = ns.get("db", event.get("db", "unknown_db"))
-    coll_name = ns.get("coll", event.get("collection", "unknown_coll"))
-
-    doc_key = event.get("documentKey", {})
-    doc_id = serialize_bson_value(doc_key.get("_id", event.get("_id", "")))
-
-    full_doc = serialize_bson_value(event.get("fullDocument", {}))
-    update_desc = event.get("updateDescription", {})
-
-    return {
-        "operation": op_type.upper(),
-        "database": db_name,
-        "collection": coll_name,
-        "document_id": str(doc_id),
-        "document": full_doc,
-        "updated_fields": update_desc.get("updatedFields", {}),
-        "removed_fields": update_desc.get("removedFields", []),
-        "timestamp_cluster": str(event.get("clusterTime", "")),
-    }

@@ -83,19 +83,14 @@ def test_nexus_client_process_email():
         "Multipart Body & Attachment Graph Extraction",
         "Thread Reference & Chronological Reconstruction",
         "Safety Guardrails & PII Sanitization",
-        "Email-Grounded 3072D Vector Projection",
+        "Email-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
         assert t.duration_ms >= 0.0
 
-    # 3072D vector norm verification
     chunk = doc.chunks[0]
     assert chunk.metadata["subject"] == "Project Confidential Briefing"
-    assert chunk.embedding is not None
-    assert len(chunk.embedding) == 3072
-    l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
-    assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
 
     # PII sanitization (email masked)
     assert "contact.lawyer@example.com" not in chunk.text
@@ -129,17 +124,13 @@ def test_nexus_client_process_chat():
         "Thread Graph & Reply Corroboration",
         "Chronological Dialogue Window Framing",
         "Safety Guardrails & PII Sanitization",
-        "Dialogue-Grounded 3072D Vector Projection",
+        "Dialogue-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
 
     chunk = doc.chunks[0]
     assert chunk.metadata["thread_id"] == "1726000000"
-    assert chunk.embedding is not None
-    assert len(chunk.embedding) == 3072
-    l2_norm = math.sqrt(sum(x * x for x in chunk.embedding))
-    assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
 
     # PII sanitization check
     assert "dave.ops@example.com" not in chunk.text

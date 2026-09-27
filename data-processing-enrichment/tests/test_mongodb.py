@@ -14,11 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from nexus_processing.cdc import normalize_change_event
 from nexus_processing.mongodb import (
-    MONGO_ATLAS_VECTOR_SEARCH_INDEX,
     chunk_mongo_collection,
     flatten_mongo_document,
-    normalize_mongo_change_event,
     serialize_bson_value,
     serialize_mongo_document,
 )
@@ -35,7 +34,7 @@ def test_serialize_bson_value():
     cleaned = serialize_bson_value(bson_dict)
     assert cleaned["_id"] == "507f1f77bcf86cd799439011"
     assert cleaned["created_at"] == "2026-09-19T18:00:00Z"
-    assert cleaned["balance"] == 999.95
+    assert cleaned["balance"] == "999.95"
     assert cleaned["large_id"] == 98765432109876
     assert cleaned["payload"] == "<Binary:00>"
 
@@ -94,7 +93,7 @@ def test_chunk_mongo_collection():
     assert "[Collection: metrics | ID: doc2]" in chunks[1]
 
 
-def test_normalize_mongo_change_event():
+def test_mongo_change_stream_insert():
     change_stream_event = {
         "operationType": "insert",
         "ns": {"db": "analytics", "coll": "events"},
@@ -106,19 +105,8 @@ def test_normalize_mongo_change_event():
         },
         "clusterTime": "Timestamp(1726765200, 1)",
     }
-    normalized = normalize_mongo_change_event(change_stream_event)
-    assert normalized["operation"] == "INSERT"
-    assert normalized["database"] == "analytics"
-    assert normalized["collection"] == "events"
-    assert normalized["document_id"] == "60a8b9f1e1f3a245d8b45678"
-    assert normalized["document"]["type"] == "pageview"
-
-
-def test_mongo_atlas_vector_search_index():
-    assert "fields" in MONGO_ATLAS_VECTOR_SEARCH_INDEX
-    vector_field = next(
-        f for f in MONGO_ATLAS_VECTOR_SEARCH_INDEX["fields"] if f["type"] == "vector"
-    )
-    assert vector_field["path"] == "embedding"
-    assert vector_field["numDimensions"] == 3072
-    assert vector_field["similarity"] == "cosine"
+    ev = normalize_change_event(change_stream_event)
+    assert ev.operation == "INSERT" and ev.source_format == "mongodb"
+    assert ev.database == "analytics" and ev.table == "events"
+    assert ev.key == "60a8b9f1e1f3a245d8b45678"
+    assert ev.record["type"] == "pageview"

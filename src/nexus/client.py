@@ -59,6 +59,7 @@ try:
     from nexus.processing.office import (
         process_presentation_binary,
         process_spreadsheet_binary,
+        group_word_sections,
         process_word_binary,
     )
     from nexus.processing.pdf import process_pdf_binary
@@ -67,7 +68,6 @@ try:
         process_sqlite_file,
     )
     from nexus.processing.video import process_video_binary
-    from nexus.retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus.retrieval.engine import RetrievalEngine
 except (ImportError, ModuleNotFoundError):
     from nexus_experience.config import AuthConfig, EngagementConfig
@@ -98,6 +98,7 @@ except (ImportError, ModuleNotFoundError):
     from nexus_processing.office import (
         process_presentation_binary,
         process_spreadsheet_binary,
+        group_word_sections,
         process_word_binary,
     )
     from nexus_processing.pdf import process_pdf_binary
@@ -106,16 +107,34 @@ except (ImportError, ModuleNotFoundError):
         process_sqlite_file,
     )
     from nexus_processing.video import process_video_binary
-    from nexus_retrieval.embeddings import AudioEmbedder, ImageEmbedder, VideoEmbedder
     from nexus_retrieval.engine import RetrievalEngine
+
+
+def _is_existing_file(value: str) -> bool:
+    """True only for a real file path; raw document text never raises here."""
+    if not value or len(value) > 4096 or "\n" in value or "\x00" in value:
+        return False
+    try:
+        return Path(value).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _semantic():
+    try:
+        from nexus.retrieval import semantic
+    except (ImportError, ModuleNotFoundError):
+        from nexus_retrieval import semantic
+    return semantic
 
 
 class NexusClient:
     """Unified in-memory Python library client for the Nexus Enterprise Intelligence Framework.
 
     Provides high-performance, thread-safe, single-process document processing,
-    format-aware chunking, configurable PII scrubbing, 3072D vector generation,
-    semantic retrieval, execution telemetry traces, and grounded guardrail Q&A
+    format-aware chunking, configurable PII scrubbing, semantic embeddings
+    (embed_texts / embed_query), cross-encoder re-ranking, execution telemetry
+    traces, and grounded guardrail Q&A
     with zero disk I/O.
     """
 
@@ -144,9 +163,6 @@ class NexusClient:
             base_dir=self.base_dir,
             retrieval_engine=self.retrieval,
         )
-        self.image_embedder = ImageEmbedder(dimensions=3072, normalize=True)
-        self.video_embedder = VideoEmbedder(dimensions=3072, normalize=True)
-        self.audio_embedder = AudioEmbedder(dimensions=3072, normalize=True)
 
         if experience_service is not None:
             self.experience = experience_service
@@ -162,28 +178,31 @@ class NexusClient:
         self,
         document_id: str,
         name: str,
-        text: str,
+        text: str | bytes,
         file_type: str | None = None,
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        **kwargs: Any,
     ) -> ProcessedDocumentPayload:
-        """Pipeline raw text through format-aware chunking, optional PII
-        masking, and 3072D vector projection.
+        """Pipeline raw text through format-aware chunking and optional PII masking.
+
+        Processing never computes vectors: embed chunk texts with :meth:`embed_texts`.
 
         Args:
             document_id: Unique identifier for the document record.
             name: Original filename or title.
-            text: Raw document text, or binary bytes for images/videos.
+            text: Raw document text, or binary bytes for images/videos/audio/spreadsheets.
             file_type: Optional file extension override.
             metadata: Custom metadata dictionary to attach to document and chunks.
             enable_guardrails: When True (default), applies PII detection and
                 regex masking (Luhn cards, emails, SSNs).
                                When False, preserves exact verbatim text without any masking.
             shallow_mode: Alias for bypassing PII masking for internal reviews.
+            **kwargs: Format-specific parameters (e.g. transcript, speaker, ocr_text, caption).
 
         Returns:
-            ProcessedDocumentPayload with chunks, embeddings, execution trace, and metadata.
+            ProcessedDocumentPayload with chunks, execution trace, and metadata.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -193,17 +212,39 @@ class NexusClient:
         # Step 1: Text Normalization & Hash Computation (0% - 20%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
+
+        # Resolve raw input bytes if present for content sniffing & binary routing
+        raw_input_bytes: bytes | None = None
+        if isinstance(text, bytes | bytearray):
+            raw_input_bytes = bytes(text)
+        elif isinstance(text, str):
+            p = Path(text)
+            if _is_existing_file(text):
+                try:
+                    raw_input_bytes = p.read_bytes()
+                except Exception:
+                    raw_input_bytes = None
+
         detected_format = (file_type or Path(name).suffix.removeprefix(".") or "text").lower()
+
+        # Header sniffing for resilience against mismatched or missing extensions
+        if raw_input_bytes:
+            if raw_input_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+                detected_format = "xls"
+            elif raw_input_bytes.startswith(b"\xff\xd8"):
+                detected_format = "jpg"
+            elif raw_input_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                detected_format = "png"
+            elif raw_input_bytes.startswith(b"BM"):
+                detected_format = "bmp"
+            elif raw_input_bytes.startswith(b"ID3") or raw_input_bytes.startswith(b"\xff\xfb"):
+                detected_format = "mp3"
+            elif len(raw_input_bytes) >= 8 and raw_input_bytes[4:8] in (b"ftyp", b"moov"):
+                detected_format = "mp4"
 
         # Automatic routing for image payloads
         if detected_format in ("png", "jpg", "jpeg", "bmp"):
-            raw_img_bytes = None
-            if isinstance(text, bytes | bytearray):
-                raw_img_bytes = bytes(text)
-            elif isinstance(text, str):
-                p = Path(text)
-                if p.is_file():
-                    raw_img_bytes = p.read_bytes()
+            raw_img_bytes = raw_input_bytes
             if raw_img_bytes is not None:
                 return self.process_image(
                     image_id=document_id,
@@ -211,23 +252,29 @@ class NexusClient:
                     image_bytes=raw_img_bytes,
                     format_hint=detected_format,
                     metadata=metadata,
+                    ocr_text=kwargs.get("ocr_text"),
+                    caption=kwargs.get("caption"),
+                    ocr_provider=kwargs.get("ocr_provider"),
+                    auto_extract=kwargs.get("auto_extract", False),
                 )
 
         # Automatic routing for video payloads
         if detected_format in ("mp4", "mov", "m4v", "webm", "mkv"):
-            raw_vid_bytes = None
-            if isinstance(text, bytes | bytearray):
-                raw_vid_bytes = bytes(text)
-            elif isinstance(text, str):
-                p = Path(text)
-                if p.is_file():
-                    raw_vid_bytes = p.read_bytes()
+            raw_vid_bytes = raw_input_bytes
             if raw_vid_bytes is not None:
                 return self.process_video(
                     video_id=document_id,
                     name=name,
                     video_bytes=raw_vid_bytes,
                     metadata=metadata,
+                    scene_interval_seconds=kwargs.get("scene_interval_seconds", 10.0),
+                    transcript_segments=kwargs.get("transcript_segments"),
+                    transcript=kwargs.get("transcript"),
+                    captions=kwargs.get("captions"),
+                    demuxer=kwargs.get("demuxer"),
+                    transcriber=kwargs.get("transcriber"),
+                    ocr_provider=kwargs.get("ocr_provider"),
+                    auto_extract=kwargs.get("auto_extract", False),
                 )
 
         # Automatic routing for PDF payloads
@@ -237,7 +284,7 @@ class NexusClient:
                 raw_pdf_bytes = bytes(text)
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     raw_pdf_bytes = p.read_bytes()
             if raw_pdf_bytes is not None:
                 return self.process_pdf(
@@ -256,7 +303,7 @@ class NexusClient:
                 raw_rows = text
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     try:
                         raw_rows = json.loads(p.read_text(encoding="utf-8"))
                     except Exception:
@@ -282,7 +329,7 @@ class NexusClient:
                 raw_docs = text
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     try:
                         raw_docs = json.loads(p.read_text(encoding="utf-8"))
                     except Exception:
@@ -303,36 +350,29 @@ class NexusClient:
 
         # Automatic routing for Audio payloads
         if detected_format in ("wav", "aiff", "aif", "mp3"):
-            raw_audio_bytes = None
-            if isinstance(text, bytes | bytearray):
-                raw_audio_bytes = bytes(text)
-            elif isinstance(text, str):
-                p = Path(text)
-                if p.is_file():
-                    raw_audio_bytes = p.read_bytes()
+            raw_audio_bytes = raw_input_bytes
             if raw_audio_bytes is not None:
                 return self.process_audio(
                     audio_id=document_id,
                     name=name,
                     audio_bytes=raw_audio_bytes,
+                    window_seconds=kwargs.get("window_seconds", 10.0),
+                    transcript=kwargs.get("transcript"),
+                    speaker=kwargs.get("speaker"),
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
                     shallow_mode=shallow_mode,
+                    transcriber=kwargs.get("transcriber"),
+                    auto_extract=kwargs.get("auto_extract", False),
                 )
 
-        # Automatic routing for Spreadsheet (.xlsx) payloads
-        if detected_format in ("xlsx", "excel"):
-            raw_xlsx_bytes = None
-            if isinstance(text, bytes | bytearray):
-                raw_xlsx_bytes = bytes(text)
-            elif isinstance(text, str):
-                p = Path(text)
-                if p.is_file():
-                    raw_xlsx_bytes = p.read_bytes()
+        # Automatic routing for Spreadsheet (.xlsx and legacy .xls) payloads
+        if detected_format in ("xlsx", "xls", "excel"):
+            raw_xlsx_bytes = raw_input_bytes
             if raw_xlsx_bytes is not None:
                 return self.process_spreadsheet(
                     spreadsheet_id=document_id,
-                    name=name or "workbook.xlsx",
+                    name=name or f"workbook.{detected_format}",
                     spreadsheet_bytes=raw_xlsx_bytes,
                     metadata=metadata,
                     enable_guardrails=enable_guardrails,
@@ -346,7 +386,7 @@ class NexusClient:
                 raw_pptx_bytes = bytes(text)
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     raw_pptx_bytes = p.read_bytes()
             if raw_pptx_bytes is not None:
                 return self.process_presentation(
@@ -369,7 +409,7 @@ class NexusClient:
                 raw_docx_bytes = bytes(text)
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     raw_docx_bytes = p.read_bytes()
             if raw_docx_bytes is not None:
                 return self.process_word_document(
@@ -388,7 +428,7 @@ class NexusClient:
                 raw_email_bytes = bytes(text)
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     raw_email_bytes = p.read_bytes()
                 elif text.startswith(("From:", "Received:", "Return-Path:", "MIME-Version:")):
                     raw_email_bytes = text.encode("utf-8")
@@ -423,7 +463,7 @@ class NexusClient:
                 raw_db_bytes = bytes(text)
             elif isinstance(text, str):
                 p = Path(text)
-                if p.is_file():
+                if _is_existing_file(text):
                     db_file_path = p
             if raw_db_bytes is not None or db_file_path is not None:
                 return self.process_sqlite(
@@ -605,7 +645,7 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: 3072-Dimensional Vector Projection (80% - 100%)
+        # Step 5: Dimensional Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
@@ -620,8 +660,6 @@ class NexusClient:
             chunk_meta["guardrails_enabled"] = apply_guardrails
             chunk_meta["content_hash"] = hashlib.md5(cleaned_chunk.encode("utf-8")).hexdigest()
 
-            # Generate pure 3072D normalized float array (L2 = 1.0)
-            embedding = self.retrieval.embed(cleaned_chunk)
 
             chunk_id = f"{document_id}:{idx}"
             processed_chunks.append(
@@ -631,7 +669,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=cleaned_chunk,
                     metadata=chunk_meta,
-                    embedding=embedding,
                 )
             )
         dt_step5 = (time.perf_counter() - t0) * 1000.0
@@ -639,21 +676,18 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="3072D Multi-Gram Vector Projection",
+                stage_name="Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
-                    f"vector embeddings (Unigrams, Bigrams, Trigrams, L2 Norm = 1.0)."
-                ),
-                details={"vector_dimensions": 3072, "total_vectors": len(processed_chunks)},
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Successfully processed '{name}' into {len(processed_chunks)} "
-            f"vector(3072) chunks in {total_ms:.1f}ms."
+            f"chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -683,7 +717,6 @@ class NexusClient:
                 text=chunk.text,
                 collection=collection,
                 metadata=chunk.metadata,
-                embedding=chunk.embedding,
             )
 
     def ask(
@@ -713,22 +746,31 @@ class NexusClient:
         """Performs hybrid retrieval over indexed documents."""
         return self.retrieval.search(query, limit=limit)
 
-    def embed(self, text: str) -> list[float]:
-        """Generates a pure 3072-dimensional normalized embedding vector."""
-        return self.retrieval.embed(text)
+    @property
+    def text_embedder(self):
+        """Process-wide semantic text embedder (FastEmbed; hashing fallback)."""
+        return _semantic().create_text_embedder()
 
-    def embed_image(self, image_bytes: bytes, format_hint: str | None = None) -> list[float]:
-        """Generates a pure 3072-dimensional normalized visual embedding vector."""
-        visual_payload = process_image_binary(image_bytes, format_hint=format_hint)
-        return self.image_embedder.embed_features(
-            spatial_grid=visual_payload.spatial_grid,
-            color_histogram=visual_payload.color_histogram,
-            luminance_histogram=visual_payload.luminance_histogram,
-            horizontal_gradients=visual_payload.horizontal_gradients,
-            vertical_gradients=visual_payload.vertical_gradients,
-            edge_signature=visual_payload.edge_signature,
-            aspect_ratio=visual_payload.metadata.aspect_ratio,
-        )
+    def embedding_info(self) -> dict[str, Any]:
+        """Provider, model id and vector dimensions of the semantic embedder.
+
+        Persist ``model`` next to stored vectors: vectors from different models
+        live in different spaces and must never be compared.
+        """
+        emb = self.text_embedder
+        return {"provider": emb.provider, "model": emb.model_name, "dimensions": emb.dimensions}
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Batch-embed passages/chunks for storage (normalized dense vectors)."""
+        return self.text_embedder.embed_batch(list(texts))
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a search query (asymmetric query encoding for retrieval models)."""
+        return self.text_embedder.embed_query(text)
+
+    def rerank(self, query: str, passages: list[str]) -> list[float]:
+        """Cross-encoder relevance scores in (0, 1), aligned with ``passages``."""
+        return _semantic().create_reranker().score(query, list(passages))
 
     def process_image(
         self,
@@ -738,9 +780,13 @@ class NexusClient:
         file_path: str | Path | None = None,
         format_hint: str | None = None,
         metadata: dict[str, Any] | None = None,
+        ocr_text: str | None = None,
+        caption: str | None = None,
+        ocr_provider: Any | None = None,
+        auto_extract: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes an image through pure-Python decoding, spatial grid decomposition,
-        color and luminance distribution analysis, and 3072D vector projection.
+        color and luminance distribution analysis.
 
         Args:
             image_id: Unique identifier for the image document.
@@ -749,9 +795,13 @@ class NexusClient:
             file_path: Optional path to read image from disk if image_bytes not provided.
             format_hint: Optional format hint ('png', 'jpeg', 'bmp').
             metadata: Custom metadata dictionary to attach to image document and chunk.
+            ocr_text: Optional pre-extracted or externally supplied OCR transcription.
+            caption: Optional semantic caption or description for multimodal grounding.
+            ocr_provider: Optional OCRProvider instance for automatic text extraction.
+            auto_extract: When True, auto-detects installed ML packages for content extraction.
 
         Returns:
-            ProcessedDocumentPayload with visual metadata, 3072D embedding, and 5-stage telemetry.
+            ProcessedDocumentPayload with visual metadata, and 5-stage telemetry.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -795,7 +845,15 @@ class NexusClient:
         # Step 2: Pixel Scanline & Binary Decompression (20% - 40%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        visual_payload = process_image_binary(raw_data, format_hint=detected_format)
+        visual_payload = process_image_binary(
+            raw_data,
+            format_hint=detected_format,
+            filename=name,
+            ocr_text=ocr_text,
+            caption=caption,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = visual_payload.metadata
         dt_step2 = (time.perf_counter() - t0) * 1000.0
 
@@ -877,34 +935,19 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: 3072D Multi-Gram Visual Vector Projection (80% - 100%)
+        # Step 5: Visual Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        visual_vector = self.image_embedder.embed_features(
-            spatial_grid=visual_payload.spatial_grid,
-            color_histogram=visual_payload.color_histogram,
-            luminance_histogram=visual_payload.luminance_histogram,
-            horizontal_gradients=visual_payload.horizontal_gradients,
-            vertical_gradients=visual_payload.vertical_gradients,
-            edge_signature=visual_payload.edge_signature,
-            aspect_ratio=meta.aspect_ratio,
-        )
         dt_step5 = (time.perf_counter() - t0) * 1000.0
 
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="3072D Multi-Gram Visual Vector Projection",
+                stage_name="Visual Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    "Projected spatial luminance, color distribution, and edge signatures into "
-                    "normalized 3072-dimensional vector space (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": len(visual_vector),
-                    "l2_norm": 1.0,
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -919,6 +962,12 @@ class NexusClient:
             "dhash": visual_payload.edge_signature,
             "is_image": True,
         }
+        if meta.caption:
+            doc_metadata["caption"] = meta.caption
+        if meta.ocr_text:
+            doc_metadata["ocr_text"] = meta.ocr_text
+        if meta.embedded_text:
+            doc_metadata["embedded_text"] = meta.embedded_text
         if metadata:
             doc_metadata.update(metadata)
 
@@ -928,13 +977,12 @@ class NexusClient:
             chunk_index=0,
             text=visual_payload.narrative_summary,
             metadata=doc_metadata,
-            embedding=visual_vector,
         )
 
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Successfully processed image '{name}' ({meta.format} {meta.width}x{meta.height}) "
-            f"into vector(3072) in {total_ms:.1f}ms."
+            f"into 1 chunk in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -950,25 +998,6 @@ class NexusClient:
             summary=summary_msg,
         )
 
-    def embed_video_scene(
-        self,
-        spatial_grid: list[float],
-        motion_score: float,
-        start_seconds: float,
-        end_seconds: float,
-        keyframe_dhash: str | None = None,
-        transcript_text: str | None = None,
-    ) -> list[float]:
-        """Generates a pure 3072-dimensional normalized spatio-temporal video embedding vector."""
-        return self.video_embedder.embed_scene(
-            spatial_grid=spatial_grid,
-            motion_score=motion_score,
-            start_seconds=start_seconds,
-            end_seconds=end_seconds,
-            keyframe_dhash=keyframe_dhash,
-            transcript_text=transcript_text,
-        )
-
     def process_video(
         self,
         video_id: str,
@@ -977,10 +1006,16 @@ class NexusClient:
         file_path: str | Path | None = None,
         scene_interval_seconds: float = 10.0,
         transcript_segments: list[dict[str, Any]] | None = None,
+        transcript: str | None = None,
+        captions: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        demuxer: Any | None = None,
+        transcriber: Any | None = None,
+        ocr_provider: Any | None = None,
+        auto_extract: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes a video through pure-Python ISO container demuxing,
-        temporal scene chunking, motion delta analysis, and 3072D vector projection.
+        temporal scene chunking, motion delta analysis.
 
         Args:
             video_id: Unique identifier for the video document.
@@ -989,11 +1024,16 @@ class NexusClient:
             file_path: Optional path to read video from disk if video_bytes not provided.
             scene_interval_seconds: Temporal window size in seconds (default: 10.0s).
             transcript_segments: Optional list of speech-to-text dicts with 'start', 'end', 'text'.
+            transcript: Optional full speech transcript text distributed across scenes.
+            captions: Optional list of scene-level captions or dialogue strings.
             metadata: Custom metadata dictionary to attach to video document and chunks.
+            demuxer: Optional VideoDemuxer instance for audio/keyframe extraction.
+            transcriber: Optional AudioTranscriber instance for speech-to-text.
+            ocr_provider: Optional OCRProvider instance for on-screen text extraction.
+            auto_extract: When True, auto-detects installed ML packages for content extraction.
 
         Returns:
-            ProcessedDocumentPayload with temporal scene chunks, 3072D vectors,
-            and 5-stage telemetry.
+            ProcessedDocumentPayload with temporal scene chunks, and 5-stage telemetry.
         """
 
         t_start_total = time.perf_counter()
@@ -1017,6 +1057,13 @@ class NexusClient:
             data=raw_data,
             scene_interval_seconds=scene_interval_seconds,
             transcript_segments=transcript_segments,
+            transcript=transcript,
+            captions=captions,
+            filename=name,
+            demuxer=demuxer,
+            transcriber=transcriber,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
         )
         meta = video_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
@@ -1118,20 +1165,12 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: 3072D Spatio-Temporal Vector Projection (80% - 100%)
+        # Step 5: Spatio-Temporal Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for scene in video_payload.scenes:
-            vec = self.video_embedder.embed_scene(
-                spatial_grid=scene.spatial_grid,
-                motion_score=scene.motion_score,
-                start_seconds=scene.start_seconds,
-                end_seconds=scene.end_seconds,
-                keyframe_dhash=scene.keyframe_dhash,
-                transcript_text=scene.transcript_segment,
-            )
 
             chunk_meta: dict[str, Any] = {
                 "format": meta.format,
@@ -1142,8 +1181,13 @@ class NexusClient:
                 "motion_score": scene.motion_score,
                 "motion_intensity": scene.motion_intensity,
                 "keyframe_dhash": scene.keyframe_dhash,
+                "has_audio": meta.has_audio,
+                "audio_tracks": meta.audio_tracks,
+                "has_subtitles": meta.has_subtitles,
                 "is_video": True,
             }
+            if scene.transcript_segment:
+                chunk_meta["transcript"] = scene.transcript_segment
             if metadata:
                 chunk_meta.update(metadata)
 
@@ -1154,7 +1198,6 @@ class NexusClient:
                     chunk_index=scene.scene_index,
                     text=scene.narrative_summary,
                     metadata=chunk_meta,
-                    embedding=vec,
                 )
             )
 
@@ -1162,17 +1205,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="3072D Spatio-Temporal Vector Projection",
+                stage_name="Spatio-Temporal Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
-                    f"spatio-temporal vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -1193,7 +1230,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Successfully processed video '{name}' ({meta.duration_seconds}s, {meta.format}) "
-            f"into {len(processed_chunks)} temporal vector(3072) scenes in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} temporal scenes in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -1218,10 +1255,12 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        ocr_provider: Any = None,
+        auto_extract: bool = True,
     ) -> ProcessedDocumentPayload:
         """Processes a PDF through pure-Python ISO 32000-1 binary parsing,
         FlateDecode stream decompression, PostScript text operator decoding,
-        PII sanitization, and page-grounded 3072D vector projection.
+        PII sanitization.
 
         Args:
             pdf_id: Unique identifier for the PDF document.
@@ -1231,10 +1270,11 @@ class NexusClient:
             metadata: Custom metadata dictionary to attach to PDF document and page chunks.
             enable_guardrails: When True (default), applies PII detection and regex masking.
             shallow_mode: Alias for bypassing PII masking for internal reviews.
+            ocr_provider: Optional OCRProvider for extracting text from embedded images.
+            auto_extract: When True (default), attempts OCR on image-only pages.
 
         Returns:
-            ProcessedDocumentPayload with page-grounded chunks, 3072D vectors,
-            and 5-stage telemetry.
+            ProcessedDocumentPayload with page-grounded chunks, and 5-stage telemetry.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -1254,7 +1294,11 @@ class NexusClient:
         # Step 1: PDF Header & Object Graph Parsing (0% - 20%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        pdf_payload = process_pdf_binary(raw_data)
+        pdf_payload = process_pdf_binary(
+            raw_data,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = pdf_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -1362,14 +1406,13 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: Page-Grounded 3072D Vector Projection (80% - 100%)
+        # Step 5: Page-Grounded Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for page, scrubbed_text in sanitized_pages:
             display_text = f"{page.page_label} {scrubbed_text}".strip()
-            embedding_vector = self.retrieval.embed(display_text or page.page_label)
 
             chunk_meta: dict[str, Any] = {
                 "page_number": page.page_number,
@@ -1390,7 +1433,6 @@ class NexusClient:
                     chunk_index=page.page_number - 1,
                     text=display_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -1398,17 +1440,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Page-Grounded 3072D Vector Projection",
+                stage_name="Page-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} page-grounded 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -1427,7 +1463,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Successfully processed PDF '{name}' ({meta.page_count} pages, {total_words} words) "
-            f"into {len(processed_chunks)} page-grounded vector(3072) chunks in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} page-grounded chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -1454,7 +1490,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes relational MySQL rows into structured tabular narratives,
-        applies safety guardrails & PII sanitization, and projects 3072D vector embeddings.
+        applies safety guardrails & PII sanitization.
 
         Args:
             table_name: Name of the relational MySQL table (e.g. 'customers', 'orders').
@@ -1466,7 +1502,7 @@ class NexusClient:
             shallow_mode: Alias for bypassing PII sanitization for internal analysis.
 
         Returns:
-            ProcessedDocumentPayload with table-grounded chunks, 3072D vectors, and telemetry.
+            ProcessedDocumentPayload with table-grounded chunks, and telemetry.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -1603,14 +1639,13 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: 3072D Multi-Gram Vector Projection (80% - 100%)
+        # Step 5: Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
         doc_id = f"mysql:{table_name}"
 
         for idx, chunk_text in enumerate(cleaned_chunks):
-            embedding = self.retrieval.embed(chunk_text)
             chunk_meta: dict[str, Any] = {
                 "source_table": table_name,
                 "primary_key": detected_pk,
@@ -1628,7 +1663,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=chunk_text,
                     metadata=chunk_meta,
-                    embedding=embedding,
                 )
             )
 
@@ -1636,17 +1670,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="3072D Multi-Gram Vector Projection",
+                stage_name="Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0) for MySQL table '{table_name}'."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -1665,7 +1693,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed MySQL table '{table_name}' ({len(rows)} rows, {len(col_list)} cols) "
-            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -1691,8 +1719,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes semi-structured MongoDB BSON/Extended-JSON collections into
-        flattened dot-notation semantic narratives, scrubs sensitive PII,
-        and projects 3072D vector embeddings.
+        flattened dot-notation semantic narratives, scrubs sensitive PII.
 
         Args:
             collection_name: Name of the MongoDB collection (e.g. 'users', 'transactions').
@@ -1703,7 +1730,7 @@ class NexusClient:
             shallow_mode: Alias for bypassing PII sanitization.
 
         Returns:
-            ProcessedDocumentPayload with collection-grounded chunks, 3072D vectors, and traces.
+            ProcessedDocumentPayload with collection-grounded chunks, and traces.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -1829,14 +1856,13 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: 3072D Multi-Gram Vector Projection (80% - 100%)
+        # Step 5: Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
         doc_id = f"mongodb:{collection_name}"
 
         for idx, chunk_text in enumerate(cleaned_chunks):
-            embedding = self.retrieval.embed(chunk_text)
             chunk_meta: dict[str, Any] = {
                 "collection_name": collection_name,
                 "chunk_index": idx,
@@ -1853,7 +1879,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=chunk_text,
                     metadata=chunk_meta,
-                    embedding=embedding,
                 )
             )
 
@@ -1861,17 +1886,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="3072D Multi-Gram Vector Projection",
+                stage_name="Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} normalized 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0) for collection '{collection_name}'."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -1889,7 +1908,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed MongoDB collection '{collection_name}' ({len(documents)} docs) "
-            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -1905,23 +1924,6 @@ class NexusClient:
             summary=summary_msg,
         )
 
-    def embed_audio(
-        self,
-        audio_bytes: bytes,
-        window_seconds: float = 10.0,
-    ) -> list[float]:
-        """Generates a pure 3072-dimensional normalized spatio-acoustic embedding vector."""
-        payload = process_audio_binary(audio_bytes, window_seconds=window_seconds)
-        return self.audio_embedder.embed_features(
-            rms_envelope=payload.rms_envelope,
-            zcr_profile=payload.zcr_profile,
-            spectral_distribution=payload.spectral_distribution,
-            spectral_flux=payload.spectral_flux,
-            duration_seconds=payload.metadata.duration_seconds,
-            acoustic_signature=payload.acoustic_signature,
-            narrative_tokens=" ".join(s.narrative_text for s in payload.segments),
-        )
-
     def process_audio(
         self,
         audio_id: str,
@@ -1929,13 +1931,16 @@ class NexusClient:
         audio_bytes: bytes | None = None,
         file_path: str | Path | None = None,
         window_seconds: float = 10.0,
+        transcript: str | None = None,
+        speaker: str | None = None,
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        transcriber: Any | None = None,
+        auto_extract: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes an audio file through native pure-Python container decoding,
-        PCM extraction, VAD energy profiling, spectral decomposition, PII sanitization,
-        and temporal 3072D vector projection.
+        PCM extraction, VAD energy profiling, spectral decomposition, PII sanitization.
 
         Args:
             audio_id: Unique identifier for the audio resource.
@@ -1943,12 +1948,16 @@ class NexusClient:
             audio_bytes: Raw binary audio payload.
             file_path: Optional path to read audio file from disk if audio_bytes not provided.
             window_seconds: Temporal framing interval in seconds (default: 10.0).
+            transcript: Optional full speech transcript text.
+            speaker: Optional speaker name or persona description.
             metadata: Custom metadata dictionary to attach to audio document and segment chunks.
             enable_guardrails: When True (default), scrubs sensitive PII in ID3 tags.
             shallow_mode: Alias for bypassing PII sanitization.
+            transcriber: Optional AudioTranscriber instance for speech-to-text.
+            auto_extract: When True, auto-detects installed ML packages for transcription.
 
         Returns:
-            ProcessedDocumentPayload with temporal chunks, 3072D vectors, and traces.
+            ProcessedDocumentPayload with temporal chunks, and traces.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -1968,7 +1977,15 @@ class NexusClient:
         # Step 1: Audio Container & Codec Parsing (0% - 20%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        audio_payload = process_audio_binary(raw_data, window_seconds=window_seconds)
+        audio_payload = process_audio_binary(
+            raw_data,
+            window_seconds=window_seconds,
+            transcript=transcript,
+            speaker=speaker,
+            filename=name,
+            transcriber=transcriber,
+            auto_extract=auto_extract,
+        )
         meta = audio_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -2072,7 +2089,7 @@ class NexusClient:
         )
 
         # -------------------------------------------------------------------------
-        # Step 5: Spatio-Acoustic 3072D Vector Projection (80% - 100%)
+        # Step 5: Spatio-Acoustic Chunk Assembly (80% - 100%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
@@ -2082,15 +2099,6 @@ class NexusClient:
             if apply_guardrails:
                 seg_text = self.guardrails.mask_pii(seg_text)
 
-            embedding = self.audio_embedder.embed_features(
-                rms_envelope=[seg.rms_energy] * 64,
-                zcr_profile=[seg.zero_crossing_rate] * 64,
-                spectral_distribution=(seg.sub_band_energies * 10)[:64],
-                spectral_flux=audio_payload.spectral_flux,
-                duration_seconds=seg.end_seconds - seg.start_seconds,
-                acoustic_signature=audio_payload.acoustic_signature,
-                narrative_tokens=seg_text,
-            )
 
             chunk_meta: dict[str, Any] = {
                 "segment_index": seg.segment_index,
@@ -2106,6 +2114,14 @@ class NexusClient:
             }
             if meta.id3_tags:
                 chunk_meta["id3_tags"] = meta.id3_tags
+            if meta.speaker:
+                chunk_meta["speaker"] = meta.speaker
+            if seg.transcript:
+                chunk_meta["transcript"] = seg.transcript
+            elif meta.transcript:
+                chunk_meta["transcript"] = meta.transcript
+            if meta.voice_metadata:
+                chunk_meta["voice_metadata"] = meta.voice_metadata
             if metadata:
                 chunk_meta.update(metadata)
 
@@ -2116,7 +2132,6 @@ class NexusClient:
                     chunk_index=seg.segment_index,
                     text=seg_text,
                     metadata=chunk_meta,
-                    embedding=embedding,
                 )
             )
 
@@ -2124,17 +2139,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Spatio-Acoustic 3072D Vector Projection",
+                stage_name="Spatio-Acoustic Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} spatio-acoustic 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -2150,13 +2159,19 @@ class NexusClient:
         }
         if meta.id3_tags:
             doc_meta["id3_tags"] = meta.id3_tags
+        if meta.speaker:
+            doc_meta["speaker"] = meta.speaker
+        if meta.transcript:
+            doc_meta["transcript"] = meta.transcript
+        if meta.voice_metadata:
+            doc_meta["voice_metadata"] = meta.voice_metadata
         if metadata:
             doc_meta.update(metadata)
 
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.format} audio '{name}' ({meta.duration_seconds}s) "
-            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -2181,10 +2196,11 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        ocr_provider: Any = None,
+        auto_extract: bool = True,
     ) -> ProcessedDocumentPayload:
         """Processes an Excel spreadsheet (.xlsx) through native pure-Python container
-        decompression, shared string resolution, worksheet tabular framing, PII sanitization,
-        and sheet-grounded 3072D vector projection.
+        decompression, shared string resolution, worksheet tabular framing, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -2204,7 +2220,12 @@ class NexusClient:
 
         # Step 1: OPC Archive Decompression & Workbook Discovery
         t0 = time.perf_counter()
-        spreadsheet_payload = process_spreadsheet_binary(raw_data, filename=name)
+        spreadsheet_payload = process_spreadsheet_binary(
+            raw_data,
+            filename=name,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = spreadsheet_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -2311,12 +2332,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Sheet-Grounded 3072D Vector Projection
+        # Step 5: Sheet-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (chunk, scrubbed_text) in enumerate(sanitized_chunks):
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "sheet_name": chunk.sheet_name,
                 "row_index": chunk.row_index,
@@ -2333,7 +2353,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -2341,17 +2360,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Sheet-Grounded 3072D Vector Projection",
+                stage_name="Sheet-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} sheet-grounded 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -2369,7 +2382,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.format} workbook '{name}' ({meta.total_sheets} sheets, "
-            f"{meta.total_rows} rows) into {len(processed_chunks)} vector(3072) chunks "
+            f"{meta.total_rows} rows) into {len(processed_chunks)} chunks "
             f"in {total_ms:.1f}ms."
         )
 
@@ -2395,10 +2408,11 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        ocr_provider: Any = None,
+        auto_extract: bool = True,
     ) -> ProcessedDocumentPayload:
         """Processes a PowerPoint presentation (.pptx) through native pure-Python container
-        decompression, slide shape extraction, speaker notes resolution, PII sanitization,
-        and slide-grounded 3072D vector projection.
+        decompression, slide shape extraction, speaker notes resolution, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -2418,7 +2432,12 @@ class NexusClient:
 
         # Step 1: OPC Archive Decompression & Slide Graph Discovery
         t0 = time.perf_counter()
-        pres_payload = process_presentation_binary(raw_data, filename=name)
+        pres_payload = process_presentation_binary(
+            raw_data,
+            filename=name,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = pres_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -2517,12 +2536,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Slide-Grounded 3072D Vector Projection
+        # Step 5: Slide-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (s, scrubbed_text) in enumerate(sanitized_slides):
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "slide_number": s.slide_number,
                 "title": s.title,
@@ -2541,7 +2559,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -2549,17 +2566,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Slide-Grounded 3072D Vector Projection",
+                stage_name="Slide-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} slide-grounded 3072-dimensional "
-                    f"vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -2576,7 +2587,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.format} presentation '{name}' ({meta.total_slides} slides, "
-            f"{meta.total_words} words) into {len(processed_chunks)} vector(3072) chunks "
+            f"{meta.total_words} words) into {len(processed_chunks)} chunks "
             f"in {total_ms:.1f}ms."
         )
 
@@ -2602,13 +2613,14 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        ocr_provider: Any = None,
+        auto_extract: bool = True,
         *,
         word_id: str | None = None,
         word_bytes: bytes | None = None,
     ) -> ProcessedDocumentPayload:
         """Processes a Word document (.docx) through native pure-Python container decompression,
-        heading hierarchy extraction, paragraph/table framing, PII sanitization,
-        and section-grounded 3072D vector projection.
+        heading hierarchy extraction, paragraph/table framing, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -2631,7 +2643,12 @@ class NexusClient:
 
         # Step 1: OPC Archive Decompression & Document Discovery
         t0 = time.perf_counter()
-        word_payload = process_word_binary(raw_data, filename=doc_name)
+        word_payload = process_word_binary(
+            raw_data,
+            filename=doc_name,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = word_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -2680,7 +2697,8 @@ class NexusClient:
 
         # Step 3: Section & Tabular Structure Framing
         t0 = time.perf_counter()
-        framed_chunks = word_payload.chunks
+        # Section-sized chunks (heading + its paragraphs/list items); tables stay separate.
+        framed_chunks = group_word_sections(word_payload.chunks, name)
         dt_step3 = (time.perf_counter() - t0) * 1000.0
 
         traces.append(
@@ -2730,12 +2748,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Document-Grounded 3072D Vector Projection
+        # Step 5: Document-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "section_title": chk.section_title,
                 "heading_level": chk.heading_level,
@@ -2755,7 +2772,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -2763,17 +2779,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Document-Grounded 3072D Vector Projection",
+                stage_name="Document-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} document-grounded "
-                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -2795,7 +2805,7 @@ class NexusClient:
         summary_msg = (
             f"Processed Word document '{doc_name}' ({meta.total_paragraphs} paragraphs, "
             f"{meta.total_tables} tables, {meta.total_words} words) into "
-            f"{len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+            f"{len(processed_chunks)} chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -2828,10 +2838,11 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         enable_guardrails: bool = True,
         shallow_mode: bool = False,
+        ocr_provider: Any = None,
+        auto_extract: bool = True,
     ) -> ProcessedDocumentPayload:
         """Processes an RFC 5322 MIME email message (.eml) through header extraction,
-        multipart attachment resolution, chronological reconstruction, PII sanitization,
-        and email-grounded 3072D vector projection.
+        multipart attachment resolution, chronological reconstruction, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -2849,7 +2860,12 @@ class NexusClient:
 
         # Step 1: MIME Container & Header Graph Parsing
         t0 = time.perf_counter()
-        email_payload = process_email_binary(raw_data, filename=name)
+        email_payload = process_email_binary(
+            raw_data,
+            filename=name,
+            ocr_provider=ocr_provider,
+            auto_extract=auto_extract,
+        )
         meta = email_payload.metadata
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
@@ -2955,12 +2971,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Email-Grounded 3072D Vector Projection
+        # Step 5: Email-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for chk, scrubbed_text in sanitized_chunks:
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "chunk_index": chk.chunk_index,
                 "sender": meta.sender,
@@ -2980,7 +2995,6 @@ class NexusClient:
                     chunk_index=chk.chunk_index,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -2988,17 +3002,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Email-Grounded 3072D Vector Projection",
+                stage_name="Email-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} email-grounded "
-                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -3025,7 +3033,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.format} email '{name}' ({len(processed_chunks)} chunks) "
-            f"into 3072D vectors in {total_ms:.1f}ms."
+            f"into chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -3053,8 +3061,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes a multi-turn chat conversation (Slack, Teams, JSON export)
-        through schema discovery, thread graph reconstruction, PII sanitization,
-        and dialogue-grounded 3072D vector projection.
+        through schema discovery, thread graph reconstruction, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -3176,12 +3183,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Dialogue-Grounded 3072D Vector Projection
+        # Step 5: Dialogue-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (th, scrubbed_text) in enumerate(sanitized_threads):
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "thread_id": th.thread_id,
                 "total_messages": th.total_messages,
@@ -3198,7 +3204,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -3206,17 +3211,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Dialogue-Grounded 3072D Vector Projection",
+                stage_name="Dialogue-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} dialogue-grounded "
-                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -3235,7 +3234,7 @@ class NexusClient:
         summary_msg = (
             f"Processed {meta.format} channel '{conversation_name}' "
             f"({meta.total_messages} messages, {meta.total_threads} threads) "
-            f"into {len(processed_chunks)} vector(3072) chunks in {total_ms:.1f}ms."
+            f"into {len(processed_chunks)} chunks in {total_ms:.1f}ms."
         )
 
         return ProcessedDocumentPayload(
@@ -3251,6 +3250,84 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    def process_slack_export(
+        self,
+        export_id: str,
+        name: str,
+        export_bytes: bytes,
+        metadata: dict[str, Any] | None = None,
+        enable_guardrails: bool = True,
+        shallow_mode: bool = False,
+    ) -> ProcessedDocumentPayload:
+        """Process a Slack export (.zip workspace export or a channel's .json).
+
+        Threads become one chunk each; top-level messages are windowed per
+        channel/day; user IDs and mentions are resolved to names.
+        """
+        try:
+            from nexus.processing.slack_export import parse_slack_export
+        except (ImportError, ModuleNotFoundError):
+            from nexus_processing.slack_export import parse_slack_export
+
+        t0 = time.perf_counter()
+        apply_guardrails = enable_guardrails and not shallow_mode
+        slack_chunks, info = parse_slack_export(export_bytes, name)
+        t_parse = (time.perf_counter() - t0) * 1000.0
+        processed: list[ProcessedChunk] = []
+        masked = 0
+        for idx, sc in enumerate(slack_chunks):
+            text = sc.text
+            if apply_guardrails:
+                cleaned = self.guardrails.mask_pii(text)
+                masked += int(cleaned != text)
+                text = cleaned
+            processed.append(
+                ProcessedChunk(
+                    chunk_id=f"{export_id}:{idx}",
+                    document_id=export_id,
+                    chunk_index=idx,
+                    text=text,
+                    metadata={
+                        **(metadata or {}),
+                        "source_format": "slack",
+                        "channel": sc.channel,
+                        "kind": sc.kind,
+                        "date": sc.date,
+                        "thread_ts": sc.thread_ts,
+                        "participants": sc.participants,
+                        "message_count": sc.message_count,
+                        "guardrails_enabled": apply_guardrails,
+                    },
+                )
+            )
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        return ProcessedDocumentPayload(
+            document_id=export_id,
+            name=name,
+            file_type="slack",
+            file_size_bytes=len(export_bytes),
+            content_hash=hashlib.md5(export_bytes).hexdigest(),
+            classification="communication",
+            chunks=processed,
+            metadata={**(metadata or {}), **info},
+            execution_trace=[
+                ProcessingStageTrace(
+                    step_number=1, stage_name="Slack Export Parsing", duration_ms=t_parse,
+                    summary=f"Parsed {info['messages']} message(s) in {len(info['channels'])} channel(s) into "
+                    f"{len(slack_chunks)} thread/day chunk(s).",
+                    details=info,
+                ),
+                ProcessingStageTrace(
+                    step_number=2, stage_name="Safety Guardrails & PII Sanitization",
+                    duration_ms=total_ms - t_parse,
+                    summary=f"PII masking {'applied' if apply_guardrails else 'skipped (shallow)'}; "
+                    f"{masked} chunk(s) redacted.",
+                    details={"guardrails_enabled": apply_guardrails, "chunks_with_pii": masked},
+                ),
+            ],
+            summary=f"Processed Slack export '{name}' into {len(processed)} chunks in {total_ms:.1f}ms.",
+        )
+
     def process_sqlite(
         self,
         db_id: str,
@@ -3263,8 +3340,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes an Embedded SQLite database (.sqlite, .db) through binary header validation,
-        schema DDL introspection, foreign-key relationship graph extraction, PII sanitization,
-        and relational-grounded 3072D vector projection.
+        schema DDL introspection, foreign-key relationship graph extraction, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -3394,12 +3470,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: Relational-Grounded 3072D Vector Projection
+        # Step 5: Relational-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
-            embedding_vector = self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "table_name": chk.table_name,
                 "row_pk": chk.row_pk,
@@ -3416,7 +3491,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -3424,17 +3498,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="Relational-Grounded 3072D Vector Projection",
+                stage_name="Relational-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} relational-grounded "
-                    "3072-dimensional vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -3453,7 +3521,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.format} database '{name}' ({meta.total_tables} tables, "
-            f"{meta.total_rows} rows) into {len(processed_chunks)} vector(3072) chunks "
+            f"{meta.total_rows} rows) into {len(processed_chunks)} chunks "
             f"in {total_ms:.1f}ms."
         )
 
@@ -3481,7 +3549,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes source code (.py, .ts, .js, .go, .rs, etc.) through AST/grammar parsing,
-        symbol & scope extraction, PII sanitization, and AST-grounded 3072D vector projection.
+        symbol & scope extraction, PII sanitization.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -3595,12 +3663,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: AST-Grounded 3072D Vector Projection
+        # Step 5: AST-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
-            embedding_vector = chk.embedding or self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "symbol_name": chk.symbol_name,
                 "symbol_type": chk.symbol_type,
@@ -3622,7 +3689,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -3630,17 +3696,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="AST-Grounded 3072D Vector Projection",
+                stage_name="AST-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} AST-grounded 3072-dimensional "
-                    "vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -3660,7 +3720,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed {meta.language} code '{name}' ({meta.total_symbols} symbols, "
-            f"{meta.total_lines} lines) into {len(processed_chunks)} vector(3072) chunks "
+            f"{meta.total_lines} lines) into {len(processed_chunks)} chunks "
             f"in {total_ms:.1f}ms."
         )
 
@@ -3687,7 +3747,7 @@ class NexusClient:
         shallow_mode: bool = False,
     ) -> ProcessedDocumentPayload:
         """Processes OpenAPI 3.0/3.1 or Swagger 2.0 specs through endpoint & schema decomposition,
-        parameter extraction, safety guardrails, and API-grounded 3072D vector projection.
+        parameter extraction, safety guardrails.
         """
         t_start_total = time.perf_counter()
         traces: list[ProcessingStageTrace] = []
@@ -3799,12 +3859,11 @@ class NexusClient:
             )
         )
 
-        # Step 5: API-Grounded 3072D Vector Projection
+        # Step 5: API-Grounded Chunk Assembly
         t0 = time.perf_counter()
         processed_chunks: list[ProcessedChunk] = []
 
         for idx, (chk, scrubbed_text) in enumerate(sanitized_chunks):
-            embedding_vector = chk.embedding or self.retrieval.embed(scrubbed_text)
             chunk_meta: dict[str, Any] = {
                 "symbol_name": chk.symbol_name,
                 "symbol_type": chk.symbol_type,
@@ -3823,7 +3882,6 @@ class NexusClient:
                     chunk_index=idx,
                     text=scrubbed_text,
                     metadata=chunk_meta,
-                    embedding=embedding_vector,
                 )
             )
 
@@ -3831,17 +3889,11 @@ class NexusClient:
         traces.append(
             ProcessingStageTrace(
                 step_number=5,
-                stage_name="API-Grounded 3072D Vector Projection",
+                stage_name="API-Grounded Chunk Assembly",
                 status="completed",
                 duration_ms=round(dt_step5, 2),
-                summary=(
-                    f"Projected {len(processed_chunks)} API-grounded 3072-dimensional "
-                    "vector embeddings (L2 Norm = 1.0)."
-                ),
-                details={
-                    "vector_dimensions": 3072,
-                    "total_vectors": len(processed_chunks),
-                },
+                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
+                details={},
             )
         )
 
@@ -3858,7 +3910,7 @@ class NexusClient:
         total_ms = (time.perf_counter() - t_start_total) * 1000.0
         summary_msg = (
             f"Processed OpenAPI specification '{name}' ({meta.total_endpoints} endpoints, "
-            f"{meta.total_classes} schemas) into {len(processed_chunks)} vector(3072) chunks "
+            f"{meta.total_classes} schemas) into {len(processed_chunks)} chunks "
             f"in {total_ms:.1f}ms."
         )
 

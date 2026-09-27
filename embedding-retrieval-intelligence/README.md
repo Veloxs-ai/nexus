@@ -4,17 +4,14 @@
 > This layer provides the **Knowledge & Retrieval** capability.
 
 
-Transforms processed enterprise data into high-dimensional semantic vector representations and enables intelligent retrieval through 3072D vector similarity search, knowledge graph relationships, and hybrid Reciprocal Rank Fusion (RRF).
+Transforms processed enterprise data into high-dimensional semantic vector representations and enables intelligent retrieval through semantic vector similarity search, cross-encoder re-ranking, knowledge graph relationships, and hybrid Reciprocal Rank Fusion (RRF).
 
 ---
 
 ## 🛠️ Capabilities
 
-- **3072-Dimensional Multi-Gram Vector Projection**:
-  - **Unigram Projection (1.5x)**: Base vocabulary tokens.
-  - **Bigram Projection (2.0x)**: Preserves multi-word phrase semantics (e.g. `"cloud infrastructure"`).
-  - **Trigram Projection (2.5x)**: Preserves compound entity relationships.
-  - **L2 Unit Normalization**: Enforces $\|\hat{V}\|_2 = 1.0$ for exact Cosine Similarity.
+- **Semantic Embeddings** (`semantic.py`): FastEmbed `BAAI/bge-small-en-v1.5` (384D, local ONNX) or OpenAI; asymmetric `embed_query` / `embed_documents`; configured by `EmbeddingConfig(provider, model, dimensions)`.
+- **Cross-Encoder Re-ranking**: `create_reranker()` scores (query, passage) pairs in (0, 1).
 - **Knowledge Graph Indexing**: Models relationships between documents, entities, categories, and tags.
 - **Lexical Inverted Indexing**: Inverted term index for high-precision exact keyword search.
 - **Hybrid Retrieval (RRF)**: Combines semantic vector similarity, lexical scoring, and graph traversal.

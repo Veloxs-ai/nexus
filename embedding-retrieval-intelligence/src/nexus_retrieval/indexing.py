@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CollectionConfig, RetrievalConfig
-from .embeddings import HashingEmbedder
+from .semantic import embedder_for
 from .graph import KnowledgeGraph
 from .io import get_path, read_jsonl
 from .lexical import LexicalIndex
@@ -29,7 +29,7 @@ from .vector_store import LocalVectorStore
 
 
 def build_indexes(config: RetrievalConfig, base_dir: Path) -> int:
-    embedder = HashingEmbedder(config.embedding.dimensions, config.embedding.normalize)
+    embedder = embedder_for(config.embedding)
     # These stores are the file-backed build path: persistence is the whole
     # point of `build-index`, so opt out of the in-memory default that makes
     # save()/load() no-ops.

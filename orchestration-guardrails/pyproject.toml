@@ -1,6 +1,6 @@
 [project]
 name = "orchestration-guardrails"
-version = "2.4.0"
+version = "3.0.1"
 description = "Nexus Enterprise Intelligence Framework — Intelligent RAG and AI Orchestration layer: grounded answers, PII masking, and policy guardrails."
 requires-python = ">=3.11"
 readme = "README.md"

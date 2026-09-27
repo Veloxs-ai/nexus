@@ -117,6 +117,11 @@ def _validate_sqlite_binary(raw_bytes: bytes) -> int:
     return 65536 if page_size_val == 1 else page_size_val
 
 
+def _escape_identifier(name: str) -> str:
+    """Escapes a SQL identifier by doubling internal double-quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _introspect_connection(
     con: sqlite3.Connection,
     db_name: str,
@@ -148,7 +153,7 @@ def _introspect_connection(
 
         # Introspect columns via PRAGMA table_info
         # Columns: (cid, name, type, notnull, dflt_value, pk)
-        cursor.execute(f'PRAGMA table_info("{name}");')
+        cursor.execute(f'PRAGMA table_info({_escape_identifier(name)});')
         col_rows = cursor.fetchall()
 
         columns: list[ColumnSchema] = []
@@ -170,20 +175,29 @@ def _introspect_connection(
 
         # Introspect foreign keys
         # Columns: (id, seq, table, from, to, on_update, on_delete, match)
-        cursor.execute(f'PRAGMA foreign_key_list("{name}");')
+        cursor.execute(f'PRAGMA foreign_key_list({_escape_identifier(name)});')
         fk_rows = cursor.fetchall()
         fks: list[ForeignKeyInfo] = [
             ForeignKeyInfo(
                 target_table=fk[2],
                 from_column=fk[3],
-                to_column=fk[4],
+                to_column=fk[4] or "PK",
             )
             for fk in fk_rows
         ]
 
+        # Introspect indexes
+        cursor.execute(f'PRAGMA index_list({_escape_identifier(name)});')
+        index_rows = cursor.fetchall()
+        index_info: list[str] = []
+        for idx_row in index_rows:
+            idx_name = idx_row[1]
+            idx_unique = "UNIQUE" if idx_row[2] else ""
+            index_info.append(f"{idx_name}{' ' + idx_unique if idx_unique else ''}")
+
         # Count rows
         try:
-            cursor.execute(f'SELECT COUNT(*) FROM "{name}";')
+            cursor.execute(f'SELECT COUNT(*) FROM {_escape_identifier(name)};')
             t_count = cursor.fetchone()[0]
         except sqlite3.OperationalError:
             t_count = 0
@@ -201,6 +215,8 @@ def _introspect_connection(
                 schema_narrative += "\nForeign Keys: " + ", ".join(
                     f"{fk.from_column} -> {fk.target_table}({fk.to_column})" for fk in fks
                 )
+            if index_info:
+                schema_narrative += "\nIndexes: " + ", ".join(index_info)
             all_chunks.append(
                 SQLiteRowChunk(
                     table_name=name,
@@ -215,8 +231,14 @@ def _introspect_connection(
         if ent_type == "table":
             col_names = [c.name for c in columns]
             if col_names:
-                col_list_str = ", ".join(f'"{c}"' for c in col_names)
-                cursor.execute(f'SELECT {col_list_str} FROM "{name}" LIMIT {max_rows_per_table};')
+                col_list_str = ", ".join(
+                    _escape_identifier(c) for c in col_names
+                )
+                escaped_tbl = _escape_identifier(name)
+                cursor.execute(
+                    f"SELECT {col_list_str} FROM {escaped_tbl}"
+                    f" LIMIT {max_rows_per_table};"
+                )
                 fetched_rows = cursor.fetchall()
 
                 for row_idx, r_values in enumerate(fetched_rows, 1):

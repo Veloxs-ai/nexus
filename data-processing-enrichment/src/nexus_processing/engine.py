@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from .chunking import chunk_csv, chunk_json, chunk_smart_text, chunk_text
+from .chunking import chunk_csv, chunk_json, chunk_markdown, chunk_text
 from .config import MetadataConfig, ProcessingConfig
 from .enrichment import extract_metadata
 
@@ -59,7 +59,7 @@ class ProcessingEngine:
         if fmt in {"json", "jsonl"}:
             return chunk_json(cleaned)
         if fmt in {"md", "markdown", "txt", "text"}:
-            return chunk_smart_text(cleaned, chunk_size=max_tokens, chunk_overlap=overlap_tokens)
+            return chunk_markdown(cleaned, chunk_size=max_tokens, chunk_overlap=min(overlap_tokens, 150))
 
         # Auto-detect using universal router
         return chunk_text(cleaned, max_tokens=max_tokens, overlap_tokens=overlap_tokens)

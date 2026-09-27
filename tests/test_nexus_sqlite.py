@@ -65,7 +65,7 @@ def test_nexus_client_process_sqlite():
         "Table Graph & Foreign Key Relationship Discovery",
         "Tabular Row Extraction & Record Framing",
         "Safety Guardrails & PII Sanitization",
-        "Relational-Grounded 3072D Vector Projection",
+        "Relational-Grounded Chunk Assembly",
     ]
     for t in doc.execution_trace:
         assert t.status == "completed"
@@ -83,10 +83,6 @@ def test_nexus_client_process_sqlite():
     assert "alice.smith@example.com" not in row_chunk.text
     assert "[EMAIL]" in row_chunk.text
 
-    # 3072D vector norm verification
-    assert len(row_chunk.embedding) == 3072
-    l2_norm = math.sqrt(sum(x * x for x in row_chunk.embedding))
-    assert math.isclose(l2_norm, 1.0, rel_tol=1e-5)
 
 
 def test_nexus_client_process_document_sqlite_routing(tmp_path):

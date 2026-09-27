@@ -71,3 +71,16 @@ def test_detect_pii_sees_through_fullwidth_obfuscation():
     findings = detect_pii("ssn １２３-４５-６７８９", config)
 
     assert findings and findings[0].message == "Detected ssn"
+
+
+def test_secrets_and_international_phone_masked_by_default():
+    from nexus_guardrails.config import PiiConfig as _Cfg
+    from nexus_guardrails.pii import mask_pii as _mask
+
+    text = (
+        "key sk-proj-abcdefghijklmnop1234 token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM "
+        "call +91 98765 43210, card 4111 1111 1111 1111, on 2026-05-06"
+    )
+    out = _mask(text, _Cfg())
+    assert "[API_KEY]" in out and "[JWT_TOKEN]" in out and "[PHONE]" in out and "[CREDIT_CARD]" in out
+    assert "2026-05-06" in out

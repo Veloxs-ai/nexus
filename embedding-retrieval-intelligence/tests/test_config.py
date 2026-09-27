@@ -24,7 +24,7 @@ def test_load_config_parses_collections_and_integration():
 
     assert config.integration.processing_project == "../data-processing-enrichment"
     assert set(config.collections) == {"customer_profiles", "policy_documents"}
-    assert config.embedding.dimensions == 3072
+    assert config.embedding.provider == "fastembed"
 
 
 def test_collection_requires_text_source():

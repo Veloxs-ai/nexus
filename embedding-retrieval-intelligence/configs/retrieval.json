@@ -5,9 +5,8 @@
     "ingestion_project": "../enterprise-data-pipeline"
   },
   "embedding": {
-    "provider": "local_hashing",
-    "dimensions": 3072,
-    "normalize": true
+    "provider": "fastembed",
+    "model": "BAAI/bge-small-en-v1.5"
   },
   "stores": {
     "vector_index_uri": "data/indexes/vector_index.json",

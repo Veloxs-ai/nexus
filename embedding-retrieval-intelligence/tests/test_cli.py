@@ -46,7 +46,7 @@ def test_build_index_and_search_commands(tmp_path, monkeypatch, capsys):
     config_path.write_text(
         json.dumps(
             {
-                "embedding": {"provider": "local_hashing", "dimensions": 16, "normalize": True},
+                "embedding": {"provider": "fastembed"},
                 "stores": {
                     "vector_index_uri": "data/indexes/vector.json",
                     "lexical_index_uri": "data/indexes/lexical.json",

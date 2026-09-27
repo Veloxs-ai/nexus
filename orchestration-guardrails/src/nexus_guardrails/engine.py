@@ -62,7 +62,7 @@ class GuardrailsEngine:
                 leakage_terms=["api key", "password", "secret", "token"],
             ),
             pii=PiiConfig(
-                enabled=True, mask=True, detectors=["email", "ssn", "phone", "credit_card"]
+                enabled=True, mask=True, detectors=["api_key", "jwt", "email", "ssn", "credit_card", "phone"]
             ),
             policies=[],
             off_topic=OffTopicConfig(enabled=False),
