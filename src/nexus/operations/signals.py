@@ -118,8 +118,9 @@ class _Series:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "points": [[round(t, 3), v] for t, v in self.points],
-            "history": [[round(t, 3), v] for t, v in self.history],
+            # compact: whole seconds and 4 decimals keep a day of four signals to a few kB
+            "points": [[int(t), round(v, 4)] for t, v in self.points],
+            "history": [[int(t), round(v, 4)] for t, v in self.history],
             "fast": self.fast,
             "slow": self.slow,
             "slow_var": self.slow_var,

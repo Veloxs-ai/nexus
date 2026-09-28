@@ -189,14 +189,26 @@ class KafkaSource:
         self._meta: Any = None
         self.assigned: set[tuple[str, int]] = set()
         self._assignment_known = False  # before the first assignment callback, trust the batch
+        # Bumped on every assign / revoke: callers holding per-partition state in memory drop it.
+        self.assignment_version = 0
+        # Called with the partitions about to be revoked, while they are still owned: the place
+        # to flush buffered work and commit it ("drain, then commit, then let go").
+        self.before_revoke: Callable[[list[tuple[str, int]]], None] | None = None
 
     # -- rebalance callbacks (called by librdkafka inside consume) -------------------
     def _on_assign(self, consumer: Any, partitions: list[Any]) -> None:
         self._assignment_known = True
+        self.assignment_version += 1
         self.assigned |= {(p.topic, p.partition) for p in partitions}
         log.info("kafka: assigned %s", sorted(self.assigned))
 
     def _on_revoke(self, consumer: Any, partitions: list[Any]) -> None:
+        if self.before_revoke is not None:
+            try:
+                self.before_revoke([(p.topic, p.partition) for p in partitions])
+            except Exception:  # never break the rebalance protocol; uncommitted work is redelivered
+                log.exception("kafka: flush before revoke failed")
+        self.assignment_version += 1
         self.assigned -= {(p.topic, p.partition) for p in partitions}
         log.info("kafka: revoked %d partition(s)", len(partitions))
 

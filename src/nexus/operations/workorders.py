@@ -42,6 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from . import outbound
 from .messaging import _require_https
 
 
@@ -157,8 +158,12 @@ def _call(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # https enforced
+        with outbound.transport(request, timeout=timeout) as response:  # SSRF-checked, no redirects
             raw = response.read(1 << 20).decode("utf-8", "replace")
+    except outbound.OutboundBlocked as exc:
+        return WorkResult(
+            False, provider, error=f"destination not allowed: {exc}", retryable=False
+        ), None
     except urllib.error.HTTPError as exc:
         detail = exc.read(2048).decode("utf-8", "replace") if exc.fp else ""
         retryable = exc.code >= 500 or exc.code in (408, 425, 429)

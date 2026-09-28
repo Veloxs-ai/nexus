@@ -23,7 +23,7 @@ import urllib.request
 
 import pytest
 
-from nexus.operations import WorkItem, work_provider_from_config
+from nexus.operations import WorkItem, outbound, work_provider_from_config
 from nexus.operations.workorders import MaximoProvider, ServiceNowProvider, TeamsProvider
 
 ITEM = WorkItem(
@@ -69,7 +69,7 @@ def _patch(monkeypatch, responses):
             return False
 
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, timeout=None: Ctx(fake(req, timeout))
+        outbound, "transport", lambda req, timeout=None: Ctx(fake(req, timeout))
     )
     return fake
 

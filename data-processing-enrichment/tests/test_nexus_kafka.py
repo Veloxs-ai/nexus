@@ -302,3 +302,25 @@ def test_schema_registry_values_and_keys_use_the_decoder():
         KafkaRecord("bank.core.loans", 0, 1, b"\x00key", b"\x00value"), decoder=decoder
     )
     assert event.operation == "INSERT" and event.key == "LA9" and event.record["dpd"] == 0
+
+
+def test_buffered_work_is_flushed_while_partitions_are_still_owned():
+    holder, seen = {}, []
+
+    def factory(config):
+        holder["c"] = FakeConsumer(config, [[Msg("t", 0, 4, b"{}")]])
+        return holder["c"]
+
+    source = KafkaSource(_settings(topics=["t"]), factory)
+    records = next(source.batches())
+    holder["c"].callbacks["on_assign"](holder["c"], [TP("t", 0)])
+    version = source.assignment_version
+
+    def flush(partitions):
+        seen.append((partitions, set(source.assigned)))
+        source.commit(records)
+
+    source.before_revoke = flush
+    holder["c"].callbacks["on_revoke"](holder["c"], [TP("t", 0)])
+    assert seen == [([("t", 0)], {("t", 0)})] and holder["c"].commits == [[("t", 0, 5)]]
+    assert source.assignment_version > version and not source.assigned

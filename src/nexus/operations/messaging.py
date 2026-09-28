@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from email.message import EmailMessage
 from typing import Any, Protocol
 
+from . import outbound
+
 _TOKEN = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]{0,63})\}|[{}]")
 MAX_BODY_CHARS = 4096
 
@@ -160,8 +162,10 @@ def _http(
     """POST and parse JSON; returns (failure, {}) or (None, response)."""
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with outbound.transport(request, timeout=timeout) as response:  # SSRF-checked, no redirects
             raw = response.read(65536).decode("utf-8", "replace")
+    except outbound.OutboundBlocked as exc:
+        return _fail(provider, f"destination not allowed: {exc}", False), {}
     except urllib.error.HTTPError as exc:
         detail = exc.read(2048).decode("utf-8", "replace") if exc.fp else ""
         retryable = exc.code >= 500 or exc.code in (408, 425, 429)
@@ -179,6 +183,10 @@ def _require_https(url: str, allow_insecure: bool) -> None:
     local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
     if parsed.scheme != "https" and not (allow_insecure and local):
         raise ValueError("provider URLs must use https (plain http only for localhost testing)")
+    if parsed.scheme == "https":
+        outbound.check_url(
+            url
+        )  # literal link-local / metadata / loopback IPs fail at configuration
 
 
 class DryRunProvider:
@@ -279,6 +287,9 @@ class SmtpEmailProvider:
         email.set_content(message.body)
         context = ssl.create_default_context()
         try:
+            outbound.resolve_checked(
+                self.host, self.port
+            )  # no SMTP relay to internal-only addresses
             if self.security == "tls":
                 client: smtplib.SMTP = smtplib.SMTP_SSL(
                     self.host, self.port, timeout=self.timeout, context=context
@@ -293,6 +304,8 @@ class SmtpEmailProvider:
                 refused = client.send_message(email)
         except smtplib.SMTPRecipientsRefused as exc:
             return _fail(self.name, f"recipient refused: {exc}", False)
+        except outbound.OutboundBlocked as exc:
+            return _fail(self.name, f"destination not allowed: {exc}", False)
         except (smtplib.SMTPException, OSError) as exc:
             return _fail(self.name, f"smtp error: {exc}", True)
         if refused:
