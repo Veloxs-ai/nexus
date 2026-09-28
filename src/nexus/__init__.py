@@ -17,7 +17,7 @@
 """Nexus — Enterprise Intelligence Framework.
 
 An open-source framework for building secure, governed AI applications,
-retrieval systems, agents, and intelligent workflows.
+retrieval systems, and operational workflows on your own data.
 """
 
 from __future__ import annotations

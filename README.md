@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
-**Nexus is an open-source enterprise intelligence framework for building secure, governed AI applications, retrieval systems, agents, and intelligent workflows.**
+**Nexus is an open-source enterprise intelligence framework for building secure, governed AI applications, retrieval systems, and operational workflows on your own data.**
 
 It sits *upstream and around* large language models: turning fragmented enterprise data into clean, grounded chunks, semantic embeddings, contextual knowledge graphs, and grounded, policy-checked answers — without locking you into a particular model provider, vector database, or runtime.
 
