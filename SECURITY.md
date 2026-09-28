@@ -60,11 +60,11 @@ Only the **latest minor release** receives security fixes.
 
 | Version | Supported |
 |---|---|
-| `2.4.x` (current) | ✅ |
-| `2.3.x` | ⚠️ Critical fixes only, until 2026-12-31 |
-| `< 2.3` | ❌ |
+| `3.1.x` (current) | ✅ |
+| `3.0.x` | ❌ — upgrade to 3.1.x |
+| `< 3.0` | ❌ |
 
-Releases before `2.4.0` were distributed under the previous proprietary
+Releases before `3.0.0` were distributed under the previous proprietary
 license and are not maintained as open-source releases.
 
 As the project matures we intend to publish a longer support window,
@@ -265,4 +265,4 @@ Material changes to this policy will be announced in the repository
 release notes. The canonical version of this document always lives at
 [SECURITY.md](SECURITY.md) on the default branch.
 
-_Last updated: 2026-08-26_
+_Last updated: 2026-09-28_

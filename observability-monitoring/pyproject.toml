@@ -1,6 +1,6 @@
 [project]
 name = "observability-monitoring"
-version = "3.1.0"
+version = "3.1.1"
 description = "Nexus Enterprise Intelligence Framework — Observability layer: metrics, logs, traces, AI events, and alerts."
 requires-python = ">=3.11"
 readme = "README.md"

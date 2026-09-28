@@ -53,7 +53,7 @@ Here is the breakdown of what each of the seven layers is designed to do, and wh
   - **Change Data Capture (CDC)**: Normalizes incoming Debezium database operation streams (`INSERT`, `UPDATE`, `DELETE`) into standard events.
   - **Streaming Connector**: Simulates event streams by reading local files containing JSON records.
 * **What it does NOT do**: 
-  - Real database CDC captures or Kafka queue ingestion are not implemented in the base package; they raise a `NotImplementedError` and require custom production adapters.
+  - The pipeline layer's own streaming and CDC connectors are local (JSONL / inline events). For production sources use `nexus.processing.pgoutput.PostgresLogicalStream` (PostgreSQL logical replication, `[postgres]` extra) and `nexus.processing.kafka.KafkaSource` (Apache Kafka, `[kafka]` extra), both at-least-once.
   - Ingesting file drops from cloud object storage (like AWS S3) is simulated and requires a production object-store adapter.
 
 ### 2. Data Processing & Enrichment (`data-processing-enrichment`)

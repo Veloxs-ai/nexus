@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -23,6 +24,22 @@ from pathlib import Path
 from .embeddings import tokenize
 from .io import read_json, write_json
 from .models import IndexedDocument, SearchResult
+
+# Words that carry no meaning on their own: matching only these must not make a document relevant.
+_STOPWORD_TEXT = """
+a about above after again all also am an and any are as at be because been before being below
+between both but by can could did do does doing down during each few for from further had has
+have having he her here hers him his how i if in into is it its itself just me more most my no nor
+not now of off on once only or other our ours out over own same she should so some such than that
+the their theirs them then there these they this those through to too under until up very was we
+were what when where which while who whom why will with would you your yours
+"""
+STOPWORDS = frozenset(_STOPWORD_TEXT.split())
+
+
+def query_terms(text: str) -> list[str]:
+    """Distinct meaningful words of a query, in order (stopwords removed)."""
+    return list(dict.fromkeys(t for t in tokenize(text) if t not in STOPWORDS))
 
 
 class LexicalIndex:
@@ -47,28 +64,45 @@ class LexicalIndex:
                 self.postings[token][document.id] = count
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        tokens = tokenize(query)
-        scores: Counter[str] = Counter()
-        with self._lock:
-            for token in tokens:
-                for doc_id, count in self.postings.get(token, {}).items():
-                    scores[doc_id] += count
-            docs_snapshot = dict(self.documents)
+        """Keyword search scored by how much of the query matched.
 
-        max_score = max(scores.values(), default=1)
+        ``lexical_score`` is the IDF-weighted share of the query's meaningful words found in the
+        document (0..1): rare words count more than common ones, stopwords do not count, and
+        query words that appear in no document lower every score. Ties go to the document that
+        repeats the matched words more often.
+        """
+        terms = query_terms(query)
+        if not terms:
+            return []
+        with self._lock:
+            total_docs = len(self.documents)
+            postings = {term: dict(self.postings.get(term, {})) for term in terms}
+            docs_snapshot = dict(self.documents)
+        idf = {
+            term: math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
+            for term, docs in postings.items()
+        }
+        query_weight = sum(idf.values()) or 1.0
+        matched: dict[str, float] = defaultdict(float)
+        counts: Counter[str] = Counter()
+        for term, docs in postings.items():
+            for doc_id, count in docs.items():
+                matched[doc_id] += idf[term]
+                counts[doc_id] += count
         results = [
             SearchResult(
                 id=doc_id,
                 collection=docs_snapshot[doc_id].collection,
                 text=docs_snapshot[doc_id].text,
-                score=score / max_score,
-                lexical_score=score / max_score,
+                score=round(weight / query_weight, 6),
+                lexical_score=round(weight / query_weight, 6),
                 metadata=docs_snapshot[doc_id].metadata,
             )
-            for doc_id, score in scores.items()
+            for doc_id, weight in matched.items()
             if doc_id in docs_snapshot
         ]
-        return sorted(results, key=lambda result: result.score, reverse=True)[:limit]
+        results.sort(key=lambda result: (result.score, counts[result.id]), reverse=True)
+        return results[:limit]
 
     def save(self) -> None:
         if self.in_memory_only:

@@ -72,9 +72,10 @@ def evaluate(
         pii_was_masked=bool(pii_findings),
         policies=config.policies,
     )
-    # Re-screen the composed answer: retrieved context is untrusted and may carry
-    # injected instructions or leakage content (indirect prompt injection).
-    findings.extend(inspect_prompt(answer, config.prompt_security))
+    # Re-screen the composed answer: retrieved context is untrusted and may carry injected
+    # instructions (indirect prompt injection). Leakage terms apply to the question only: a
+    # document may legitimately mention "password", and PII was masked above.
+    findings.extend(inspect_prompt(answer, config.prompt_security, include_leakage=False))
     findings.extend(verification_findings)
     findings.extend(output_findings)
 

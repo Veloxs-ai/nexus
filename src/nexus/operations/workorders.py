@@ -248,7 +248,7 @@ class ServiceNowProvider:
             "short_description": item.title[:160],
             "description": item.description,
             "correlation_id": key,
-            "correlation_display": "Nexora Operations",
+            "correlation_display": "Nexus",
             "urgency": str(min(3, max(1, (item.priority + 1) // 2))),
             "impact": str(min(3, max(1, (item.priority + 1) // 2))),
             "category": item.category,

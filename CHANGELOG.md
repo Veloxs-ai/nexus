@@ -5,6 +5,24 @@ All notable changes to Nexus are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] — 2026-09-28
+
+Fixes found while writing the documentation at [nexus.veloxs.ai/docs](https://nexus.veloxs.ai/docs/). No public API is renamed or removed; three defaults behave differently, as described under **Changed**.
+
+### Added
+- `RagConfig.min_semantic_score` (default `None`, off): when set, retrieval-engine results whose semantic similarity to the question is below it are not used as context, so a question the indexed documents cannot answer is `blocked` instead of answered from loosely related chunks.
+- `inspect_prompt(..., include_leakage=True)`: pass `False` to check blocked patterns only.
+
+### Changed
+- **Keyword search scoring** (`LexicalIndex.search`, and therefore `lexical_score` and the blended `score` of `NexusClient.search()`): a document's score is now the IDF-weighted share of the query's meaningful words it contains (0–1). Stopwords (`the`, `of`, `is`, …) no longer count, rare words count more than common ones, and query words found in no document lower the score. Previously the best keyword match always scored 1.0, even when it shared only a word like "the". Scores and, sometimes, the order of results change; the index file format is unchanged.
+- **Answer re-screening**: the composed answer is still checked for blocked patterns (instructions injected through retrieved documents), but no longer for leakage terms. Documents may legitimately mention "password" or "token"; previously any answer citing such a document was blocked. Questions are still checked for leakage terms exactly as before.
+- **Off-topic gate**: an enabled gate with an empty `allowed_keywords` list no longer blocks every question; with no keywords there is no topic restriction. With keywords configured, behaviour is unchanged.
+
+### Fixed
+- ServiceNow incidents created by `ServiceNowProvider` showed "Nexora Operations" as the correlation display; it is now "Nexus". Duplicate detection (by `correlation_id`) is unaffected.
+- Documentation: README examples now pass the required IDs to `process_*`, use `scene_interval_seconds` for video and no longer pass a non-existent `collection` argument to `search()`; `PROCESSING_REFERENCE.md` shows the real chunk record and inserts into the columns `pgvector_ddl()` creates; `ARCHITECTURE_OVERVIEW.md` and `USING_NEXUS.md` point to the Kafka and PostgreSQL CDC sources added in 3.0.1–3.1.0 and describe the semantic embeddings; `SECURITY.md` lists 3.1.x as the supported line.
+- The package's Documentation URL points to nexus.veloxs.ai/docs.
+
 ## [3.1.0] — 2026-09-28
 
 ### Added

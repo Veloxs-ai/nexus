@@ -345,7 +345,7 @@ they should never be committed to YAML.
 
 - Production object-store reader for `FileDropConnector` (S3/MinIO/Azure
   Blob).
-- Production Kafka consumer with offset commits.
+- Production Kafka consumer with offset commits — available as `nexus.processing.kafka.KafkaSource` (`[kafka]` extra).
 - Destination writers for the target platform.
 - Dead-letter persistence for invalid records.
 
@@ -405,7 +405,7 @@ Chunks:
 
 | Feature | What it does |
 |---|---|
-| **Deterministic local embeddings** | Built-in token-hash embedding for reproducible local dev (no network calls, no model downloads). |
+| **Semantic embeddings** | FastEmbed / ONNX (`BAAI/bge-small-en-v1.5`, 384 dimensions) on CPU, downloaded once into the model cache; OpenAI as an alternative provider. |
 | **Vector index** | File-backed JSON store with cosine-similarity search. |
 | **Lexical index** | Inverted index for keyword search. |
 | **Hybrid search** | Combines lexical + semantic scores with config-driven weights. |
@@ -770,8 +770,9 @@ extension points, not bugs:
   production.
 - PII patterns are intentionally small; integrate Presidio or Comprehend
   for breadth (IBAN, passport, JWTs, API keys, etc.).
-- The Kafka, S3, and live-CDC adapters are documented contracts; the local
-  implementations read JSONL files for dev.
+- The pipeline layer's Kafka, S3 and live-CDC connectors read JSONL files for dev.
+  Production Kafka and PostgreSQL CDC sources ship in `nexus.processing.kafka` and
+  `nexus.processing.pgoutput`.
 
 ---
 
@@ -933,10 +934,10 @@ A consolidated list of "ships as local impl; swap in production":
 | Extension point | Layer | What ships today | What to swap in |
 |---|---|---|---|
 | Object-store reader | pipeline | local FS | S3, MinIO, Azure Blob |
-| Kafka consumer | pipeline | inline events / JSONL file | librdkafka / aiokafka consumer with offset commit |
-| Live CDC | pipeline | Debezium-message normalizer | Kafka CDC consumer |
+| Kafka consumer | pipeline | inline events / JSONL file | `nexus.processing.kafka.KafkaSource` (confluent-kafka, commit after apply) |
+| Live CDC | pipeline | Debezium-message normalizer | `nexus.processing.pgoutput.PostgresLogicalStream` or Debezium through `KafkaSource` |
 | Dead-letter | pipeline | not persisted | DLQ topic / table |
-| Embedding provider | retrieval | deterministic local | OpenAI / Bedrock / Azure / local ST |
+| Embedding provider | retrieval | FastEmbed (local ONNX) | OpenAI (built in) or your own `TextEmbedder` |
 | Vector DB | retrieval | JSON file | pgvector / OpenSearch / Pinecone / Weaviate / Qdrant |
 | Graph DB | retrieval | JSON file | Neo4j / Neptune |
 | Reranker | retrieval | score combination | cross-encoder / LLM-based reranker |

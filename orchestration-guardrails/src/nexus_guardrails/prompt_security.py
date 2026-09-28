@@ -21,7 +21,15 @@ from .models import Finding
 from .normalization import normalize_text
 
 
-def inspect_prompt(prompt: str, config: PromptSecurityConfig) -> list[Finding]:
+def inspect_prompt(
+    prompt: str, config: PromptSecurityConfig, *, include_leakage: bool = True
+) -> list[Finding]:
+    """Blocked prompt patterns and, unless ``include_leakage`` is False, leakage terms.
+
+    Leakage terms describe what a *user* must not ask for ("password", "api key"). Retrieved
+    documents may legitimately mention them (a password policy), so the re-screen of composed
+    answers checks only the blocked patterns (injected instructions).
+    """
     normalized = normalize_text(prompt).lower()
     findings: list[Finding] = []
     for pattern in config.blocked_patterns:
@@ -33,7 +41,7 @@ def inspect_prompt(prompt: str, config: PromptSecurityConfig) -> list[Finding]:
                     severity="block",
                 )
             )
-    for term in config.leakage_terms:
+    for term in config.leakage_terms if include_leakage else ():
         if term.lower() in normalized:
             findings.append(
                 Finding(

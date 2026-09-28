@@ -1,6 +1,6 @@
 [project]
 name = "data-processing-enrichment"
-version = "3.1.0"
+version = "3.1.1"
 description = "Nexus Enterprise Intelligence Framework — Processing & Enrichment layer: format-aware chunking, enrichment, and tokenization."
 requires-python = ">=3.11"
 readme = "README.md"

@@ -30,7 +30,12 @@ def tokenize(text: str) -> set[str]:
 
 
 def detect_off_topic(text: str, config: OffTopicConfig) -> list[Finding]:
-    if not config.enabled:
+    """Block queries that share too few words with ``allowed_keywords``.
+
+    An empty keyword list means no topic restriction: there is nothing to compare against,
+    so nothing is blocked (instead of every query).
+    """
+    if not config.enabled or not config.allowed_keywords:
         return []
     terms = tokenize(text)
     allowed = {keyword.lower() for keyword in config.allowed_keywords}

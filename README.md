@@ -180,30 +180,35 @@ client = nexus.NexusClient(in_memory_only=True)
 
 # 1. Spreadsheets (.xlsx) — sheets, rows, and cell matrices
 doc_excel = client.process_document(
+    document_id="fin-model",
     name="financial_model.xlsx",
     text=excel_bytes,  # or filepath "path/to/financial_model.xlsx"
 )
 
 # 2. Word Documents (.docx) — headings, sections, and markdown tables
 doc_word = client.process_document(
+    document_id="msa-2026",
     name="master_agreement.docx",
     text=docx_bytes,
 )
 
 # 3. Audio Streams (.wav, .mp3, .aiff) — metadata, VAD windows, Whisper transcript when installed
 doc_audio = client.process_document(
+    document_id="earnings-q3",
     name="earnings_call.wav",
     text=wav_bytes,
 )
 
 # 4. Video Files (.mp4, .mov) — scene windows, transcript and keyframe OCR when installed
 doc_video = client.process_document(
+    document_id="walkthrough",
     name="product_walkthrough.mp4",
     text=mp4_bytes,
 )
 
 # 5. Images (.png, .jpg) — metadata and OCR text when installed
 doc_image = client.process_document(
+    document_id="topology",
     name="system_topology.png",
     text=png_bytes,
 )
@@ -215,31 +220,31 @@ When you need granular control over windowing, sample rates, or format-specific 
 
 ```python
 # Word (.docx) with heading hierarchy
-doc = client.process_word(name="contract.docx", docx_bytes=raw_bytes)
+doc = client.process_word(document_id="contract-7", name="contract.docx", docx_bytes=raw_bytes)
 
 # Spreadsheets (.xlsx) with sheet & row-level narrative framing
-doc = client.process_spreadsheet(name="budget.xlsx", spreadsheet_bytes=raw_bytes)
+doc = client.process_spreadsheet("budget-2026", "budget.xlsx", spreadsheet_bytes=raw_bytes)
 
 # Presentations (.pptx) with slide text and speaker notes
-doc = client.process_presentation(name="strategy.pptx", presentation_bytes=raw_bytes)
+doc = client.process_presentation("strategy", "strategy.pptx", presentation_bytes=raw_bytes)
 
 # Audio (.wav, .mp3, .aiff) with configurable temporal windowing
-doc = client.process_audio(name="speech.wav", audio_bytes=raw_bytes, window_seconds=10.0)
+doc = client.process_audio("speech-1", "speech.wav", audio_bytes=raw_bytes, window_seconds=10.0)
 
 # Video (.mp4, .mov) with temporal scene framing
-doc = client.process_video(name="demo.mp4", video_bytes=raw_bytes, window_seconds=10.0)
+doc = client.process_video("demo", "demo.mp4", video_bytes=raw_bytes, scene_interval_seconds=10.0)
 
 # Images (.png, .jpeg, .bmp) with OCR text
-doc = client.process_image(name="chart.png", image_bytes=raw_bytes)
+doc = client.process_image("chart", "chart.png", image_bytes=raw_bytes)
 
 # SQLite binary databases (.sqlite, .db)
-doc = client.process_sqlite(name="app.db", db_bytes=sqlite_bytes)
+doc = client.process_sqlite("app-db", "app.db", db_bytes=sqlite_bytes)
 
 # Source code AST (Python, TypeScript, Go, Rust, Java, C++)
-doc = client.process_code(name="pipeline.py", code_input=source_code)
+doc = client.process_code("pipeline-py", "pipeline.py", code_input=source_code)
 
 # OpenAPI 3.0 / 3.1 & Swagger 2.0 specs
-doc = client.process_openapi(name="openapi.json", spec_data=spec_content)
+doc = client.process_openapi("orders-api", "openapi.json", spec_data=spec_content)
 ```
 
 ### 3. Unified Cross-Modal Search
@@ -253,7 +258,7 @@ client.index_document(doc_word, collection="enterprise_assets")
 client.index_document(doc_audio, collection="enterprise_assets")
 
 # Query with natural language across all modalities
-results = client.search("quarterly revenue and SLA commitments", collection="enterprise_assets")
+results = client.search("quarterly revenue and SLA commitments", limit=10)  # searches every collection
 for r in results:
     print(f"[{r.score:.3f}] {r.text[:120]}")
 ```
@@ -629,6 +634,8 @@ Stored 3072D vectors are not compatible with the new model: re-embed stored chun
 ---
 
 ## Documentation
+
+Full documentation — tutorials, how-to guides, API reference and release notes — is at **[nexus.veloxs.ai/docs](https://nexus.veloxs.ai/docs/)**. The repository guides:
 
 | Guide | What it covers |
 |---|---|

@@ -38,3 +38,48 @@ def test_lexical_index_persists(tmp_path):
     loaded.load()
 
     assert loaded.search("security")[0].id == "a"
+
+
+def test_lexical_index_ignores_stopword_only_matches(tmp_path):
+    index = LexicalIndex("lexical.json", tmp_path)
+    index.add(
+        IndexedDocument(
+            id="leave", collection="docs", text="The annual leave is 24 days of the year"
+        )
+    )
+    index.add(
+        IndexedDocument(id="laptops", collection="docs", text="Laptops must use disk encryption")
+    )
+
+    assert index.search("What is the capital of France?") == []
+    assert index.search("the of is") == []
+
+
+def test_lexical_score_is_share_of_query_matched(tmp_path):
+    index = LexicalIndex("lexical.json", tmp_path)
+    index.add(
+        IndexedDocument(id="leave", collection="docs", text="Employees get 24 days of annual leave")
+    )
+    index.add(
+        IndexedDocument(id="sick", collection="docs", text="Sick leave needs a medical certificate")
+    )
+
+    full = index.search("annual leave")[0]
+    assert full.id == "leave" and full.lexical_score == 1.0
+
+    partial = index.search("annual leave in France")[0]
+    assert partial.id == "leave"
+    assert 0.0 < partial.lexical_score < 1.0  # 'france' is unknown, so only part matched
+
+
+def test_lexical_rare_words_outweigh_common_ones(tmp_path):
+    index = LexicalIndex("lexical.json", tmp_path)
+    for i in range(5):
+        index.add(IndexedDocument(id=f"policy-{i}", collection="docs", text=f"policy section {i}"))
+    index.add(
+        IndexedDocument(id="vpn", collection="docs", text="vpn access requires a hardware token")
+    )
+
+    results = index.search("policy vpn")
+    assert results[0].id == "vpn"
+    assert results[0].lexical_score > results[1].lexical_score

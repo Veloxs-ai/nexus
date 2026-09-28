@@ -45,7 +45,9 @@ class PiiConfig(BaseModel):
     enabled: bool = True
     mask: bool = True
     # Available: email, ssn, phone, credit_card, api_key, jwt, ip_address
-    detectors: list[str] = Field(default_factory=lambda: ["api_key", "jwt", "email", "ssn", "credit_card", "phone"])
+    detectors: list[str] = Field(
+        default_factory=lambda: ["api_key", "jwt", "email", "ssn", "credit_card", "phone"]
+    )
 
 
 class PolicyRuleConfig(BaseModel):
@@ -67,6 +69,9 @@ class RagConfig(BaseModel):
     top_k: int = 3
     min_context_score: float = 0.05
     require_citations: bool = True
+    # Optional relevance gate for retrieval-engine results: chunks whose semantic (cosine)
+    # similarity to the query is below this are not used as context. None = off.
+    min_semantic_score: float | None = None
 
 
 class VerificationConfig(BaseModel):

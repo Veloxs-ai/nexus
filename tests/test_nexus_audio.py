@@ -153,20 +153,20 @@ def test_nexus_client_audio_voice_and_transcript():
         document_id="el_speech_1",
         name=fname,
         text=mp3_bytes,
-        transcript="Deploying Nexora intelligence across autonomous workflows.",
+        transcript="Deploying Nexus intelligence across autonomous workflows.",
     )
     assert doc.document_id == "el_speech_1"
     assert doc.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
     assert (
-        doc.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+        doc.metadata["transcript"] == "Deploying Nexus intelligence across autonomous workflows."
     )
     assert doc.metadata["voice_metadata"]["provider"] == "ElevenLabs"
     assert doc.metadata["voice_metadata"]["stability"] == "67%"
     assert len(doc.chunks) >= 1
     chunk = doc.chunks[0]
     assert "Russ – Deep, Smooth and Articulate" in chunk.text
-    assert "Deploying Nexora intelligence" in chunk.text
+    assert "Deploying Nexus intelligence" in chunk.text
     assert chunk.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
     assert (
-        chunk.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+        chunk.metadata["transcript"] == "Deploying Nexus intelligence across autonomous workflows."
     )

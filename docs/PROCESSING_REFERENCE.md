@@ -3,7 +3,7 @@
 > **Platform:** Nexus (7-Layer Enterprise AI Data & Retrieval Engine)  
 > **Embedding Standard:** Semantic embeddings at storage time — FastEmbed `BAAI/bge-small-en-v1.5` (`vector(384)`) by default  
 > **Processing Standard:** Format-Aware Tabular & Structural Document Chunking + PII Redaction  
-> **Version:** 3.1.0  
+> **Version:** 3.1.1  
 
 ---
 
@@ -218,22 +218,29 @@ Each processed document chunk produces a structured record containing its text a
 
 ```json
 {
-  "chunk_id": "policy_documents:doc-001:0",
+  "chunk_id": "doc-001:0",
   "document_id": "doc-001",
-  "source_job": "policy_documents",
   "chunk_index": 0,
-  "text": "All employees must use MFA for sensitive systems. Access reviews are required quarterly.",
+  "text": "Section: Security Access Policy\n# Security Access Policy\n\nAll employees must use MFA for sensitive systems. Access reviews are required quarterly. Questions: [EMAIL]",
   "metadata": {
-    "document_title": "Security Access Policy",
+    "tags": ["security"],
+    "entities": ["Access", "Questions", "Section", "Security Access Policy"],
+    "emails": [],
+    "dates": [],
+    "money": [],
     "classification": "security",
-    "tags": ["access", "encryption", "mfa", "security"],
-    "entities": ["Access", "Mfa", "Security Access Policy"],
-    "emails": ["[REDACTED_EMAIL]"],
-    "content_hash": "e4d909c290d0fb1ca068ffaddf22cbd0"
-  },
-  "embedding": "[384 floats from client.embed_texts(), added at storage time]"
+    "document_id": "doc-001",
+    "document_name": "security-policy.md",
+    "file_type": "md",
+    "source_format": "md",
+    "is_tabular": false,
+    "guardrails_enabled": true,
+    "content_hash": "3955e02bd7c15b3f14b59e3b34c1b508"
+  }
 }
 ```
+
+The chunk carries no vector: embed `text` with `client.embed_texts()` when you store it.
 
 ---
 
@@ -273,11 +280,11 @@ with conn, conn.cursor() as cur:
     for i, (text, vec) in enumerate(zip(texts, vectors)):
         cur.execute(
             """
-            INSERT INTO knowledge_chunks (chunk_id, document_id, source_job, chunk_index, chunk_text, embedding)
+            INSERT INTO knowledge_chunks (chunk_id, document_id, chunk_index, chunk_text, embedding, embedding_model)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (chunk_id) DO UPDATE SET chunk_text = EXCLUDED.chunk_text, embedding = EXCLUDED.embedding
             """,
-            (f"doc-001:{i}", "doc-001", "policy_documents", i, text, vec),
+            (f"doc-001:{i}", "doc-001", i, text, vec, client.embedding_info()["model"]),
         )
 ```
 

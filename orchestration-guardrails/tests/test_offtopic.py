@@ -34,3 +34,9 @@ def test_detect_off_topic_allows_relevant_query():
 
 def test_tokenize_normalizes_terms():
     assert tokenize("MFA, Security!") == {"mfa", "security"}
+
+
+def test_detect_off_topic_without_keywords_restricts_nothing():
+    config = OffTopicConfig(enabled=True, allowed_keywords=[])
+
+    assert detect_off_topic("How long must passwords be?", config) == []

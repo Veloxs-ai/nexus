@@ -42,7 +42,10 @@ def retrieve_context(
     if retrieval_engine and hasattr(retrieval_engine, "search"):
         results = retrieval_engine.search(query, limit=config.rag.top_k)
         citations: list[Citation] = []
+        min_semantic = config.rag.min_semantic_score
         for res in results:
+            if min_semantic is not None and getattr(res, "semantic_score", 0.0) < min_semantic:
+                continue
             if res.score >= config.rag.min_context_score:
                 citations.append(
                     Citation(
