@@ -78,7 +78,6 @@ def test_nexus_client_process_mysql_table():
     assert chunk_0.metadata["database_type"] == "mysql"
     assert chunk_0.metadata["environment"] == "production"
 
-
     # Check 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
     for idx, trace in enumerate(doc.execution_trace, start=1):
@@ -162,7 +161,6 @@ def test_nexus_client_process_mongo_collection():
     assert chunk_0.metadata["database_type"] == "mongodb"
     assert chunk_0.metadata["system"] == "crm"
 
-
     # Check 5-stage telemetry trace
     assert len(doc.execution_trace) == 5
     for idx, trace in enumerate(doc.execution_trace, start=1):
@@ -226,5 +224,9 @@ def test_database_schemas_and_indexes():
     assert "halfvec(3072)" in pgvector_ddl(3072) and "halfvec_cosine_ops" in pgvector_ddl(3072)
     my = mysql_ddl(384)
     assert "CREATE TABLE IF NOT EXISTS knowledge_chunks" in my and "384-dim" in my
-    dims = next(f["numDimensions"] for f in mongo_atlas_vector_index(384)["fields"] if f.get("type") == "vector")
+    dims = next(
+        f["numDimensions"]
+        for f in mongo_atlas_vector_index(384)["fields"]
+        if f.get("type") == "vector"
+    )
     assert dims == 384

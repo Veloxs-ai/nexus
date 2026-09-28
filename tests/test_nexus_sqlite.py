@@ -84,7 +84,6 @@ def test_nexus_client_process_sqlite():
     assert "[EMAIL]" in row_chunk.text
 
 
-
 def test_nexus_client_process_document_sqlite_routing(tmp_path):
     """Validates auto-routing in NexusClient.process_document for SQLite binaries and files."""
     client = NexusClient()

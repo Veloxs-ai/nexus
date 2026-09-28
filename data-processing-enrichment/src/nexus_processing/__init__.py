@@ -56,6 +56,7 @@ from .email_chat import (
 )
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
+from .kafka import KafkaRecord, KafkaSettings, KafkaSource, KafkaSourceError
 from .ml_providers import (
     AudioTranscriber,
     CaptionProvider,
@@ -158,6 +159,10 @@ __all__ = [
     "FasterWhisperTranscriber",
     "ForeignKeyInfo",
     "ImageMetadata",
+    "KafkaRecord",
+    "KafkaSettings",
+    "KafkaSource",
+    "KafkaSourceError",
     "OCRProvider",
     "PDFMetadata",
     "PDFPage",

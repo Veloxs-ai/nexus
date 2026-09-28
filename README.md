@@ -348,7 +348,98 @@ policy.check("sms", datetime(2026, 9, 27, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata")
 idempotency_key("PL0000123", "emi:2026-10", "T-3", "sms")   # send-once key for an outbox
 ```
 
-Rule expressions are parsed against an allow-list (comparisons, `and`/`or`, arithmetic, `in`, a few safe functions such as `days_until`), so rules can be stored as data and edited by business users without any risk of code execution.
+Rule expressions are parsed against an allow-list (comparisons, `and`/`or`, arithmetic, `in`, a few safe functions such as `days_until`, `add_days`, `today`), so rules can be stored as data and edited by business users without any risk of code execution.
+
+### A complete loop, without any platform
+
+The same modules run a whole operations loop in plain Python — score, decide, respect contact rules, keep a holdout, send once, read replies, measure:
+
+```python
+from datetime import UTC, datetime
+from nexus.operations import (ContactPolicy, DryRunProvider, IntentClassifier, Message,
+                              OperationsEngine, compare)
+
+strategy = {
+    "facts": {"days_to_due": "days_until(next_due_date)", "cycle": "str(next_due_date)"},
+    "scorecards": {"risk": {                       # points scorecard with reason codes
+        "base_points": 600, "base_odds": 50, "pdo": 20,
+        "bands": [{"band": "low", "min_score": 590}, {"band": "high", "min_score": 0}],
+        "outputs": {"band": "risk_band"},
+        "characteristics": [{"id": "BOUNCES", "field": "bounces_6m", "missing_points": 300,
+                             "bins": [{"when": "value == 0", "points": 320},
+                                      {"when": "value >= 1", "points": 260}]}]}},
+    "tables": {"treatment": {"hit_policy": "first", "rules": [
+        {"id": "DUE_SOON", "when": "0 <= days_to_due <= 3 and risk_band == 'high'",
+         "then": {"action": "reminder", "channel": "whatsapp", "stage": "T-3"}}],
+        "default": {"action": "monitor", "channel": "none"}}},
+    "steps": ["risk", "treatment"],
+    "actions": {"reminder": {"kind": "message", "fallback_channels": ["sms"]}},
+    "experiment": {"name": "q4", "arms": {"treatment": 90, "holdout": 10}},
+}
+sms = DryRunProvider()                                    # or WebhookProvider / SmtpEmailProvider / …
+engine = OperationsEngine(strategy, ContactPolicy.preset("IN_RBI"), {"sms": sms, "whatsapp": sms})
+now = datetime(2026, 10, 8, 6, 30, tzinfo=UTC)
+engine.upsert("LN-1", {"next_due_date": "2026-10-10", "bounces_6m": 2}, now)
+plans = engine.evaluate_due(now)          # decision, reason codes, next state, planned actions
+engine.dispatch(now, lambda ref, action, facts: Message(action.channel, to="+91 90000 00000",
+                                                       body="Your EMI is due on 10 Oct."))
+
+IntentClassifier().classify("Salary late hai, 12 tareekh tak pay kar dunga").intent  # 'promise_to_pay'
+compare((850, 1000), (80, 100)).as_dict()    # lift, p-value, Wilson intervals, conclusive?
+```
+
+| Module | What it gives you |
+|---|---|
+| `scorecard` | Points scorecards on a base-points / odds / PDO scale, probability per score, bands, adverse-action style reason codes |
+| `engine` | `plan_case` — facts to decision, next state and actions with permanent idempotency keys, contact rules, channel fallback, opt-outs, pauses and holdout; `OperationsEngine` in memory |
+| `intents` | Reply intent in English, Hinglish, Hindi and Marathi with confidence, promise dates, payment references, stop requests; optional LLM fallback that only sees redacted text |
+| `messaging` | `{field}`-only templates, recipient masking, providers: dry run, HMAC-signed webhook, SMTP, WhatsApp Cloud (approved templates), Twilio |
+| `experiments` | Wilson intervals, two-proportion z-test, lift with confidence interval and a minimum-sample guard |
+| `signals` | `AssetMonitor` — explainable anomaly scores from sensor readings (limits, robust z, drift, trend and time to limit, data quality, noisy-OR fusion); `diagnose` — likely failure mode with recommended checks |
+| `workorders` | ServiceNow incidents, IBM Maximo work orders, Teams cards and a dry run behind one `submit()`, idempotent per key |
+
+### Condition monitoring and work orders
+
+```python
+from datetime import UTC, datetime, timedelta
+from nexus.operations import AssetMonitor, ServiceNowProvider, WorkItem, diagnose, specs_from_dict
+
+monitor = AssetMonitor(specs_from_dict({
+    "vibration_mm_s": {"warn_high": 4.5, "alarm_high": 7.1, "valid_min": 0, "valid_max": 50},
+    "bearing_temp_c": {"warn_high": 80, "alarm_high": 95},
+}))
+start = datetime(2026, 10, 8, tzinfo=UTC)
+for minute in range(26 * 60):                                  # feed readings in time order
+    t = start + timedelta(minutes=minute)
+    wear = max(0, minute - 24 * 60) / 60
+    monitor.update(t, {"vibration_mm_s": 2.2 + 1.9 * wear, "bearing_temp_c": 61 + 7.5 * wear})
+verdict = monitor.assess(now=t)       # anomaly_score, failure_risk, data_quality, time_to_limit_hours, reasons
+diagnose(verdict).failure_mode        # 'bearing wear' (+ confidence, evidence, recommended checks)
+state = monitor.to_dict()             # persist per asset; AssetMonitor.from_dict(specs, state) to resume
+
+# ServiceNowProvider("https://acme.service-now.com", username="nexora", password=...).submit(
+#     WorkItem("P-101: bearing wear", "...", idempotency_key="P-101|incident-1|corrective", asset_ref="P-101"))
+```
+
+Rules decide what to do with the verdict (`plan_case` action kind `work_order`, optionally after approval).
+
+### Kafka
+
+```python
+from nexus.processing.kafka import KafkaSettings, KafkaSource, decode   # pip install 'veloxs-nexus[kafka]'
+
+source = KafkaSource(KafkaSettings(bootstrap_servers="broker:9093", topics=["plant.telemetry"],
+                                   group_id="my-app", username="app", password="..."))  # SASL_SSL + SCRAM
+for batch in source.batches(max_records=500):
+    documents = [doc for record in batch for doc in decode(record, "json")]
+    apply(documents)          # your durable write
+    source.commit(batch)      # then the offsets: a crash in between replays, never skips
+```
+
+`source.lag()` reports what the group has not processed yet without joining it. Mutual TLS: set
+`security_protocol="SSL"` with `ssl_certificate_location` / `ssl_key_location`. Avro through a Schema
+Registry: `decode(record, "debezium", avro_decoder("https://registry:8081", user, password))`
+(`pip install 'veloxs-nexus[kafka-avro]'`).
 
 ---
 

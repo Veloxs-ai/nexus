@@ -231,7 +231,6 @@ def test_nexus_client_process_presentation():
     assert "[EMAIL]" in chunk.text
 
 
-
 def test_nexus_client_process_document_office_routing():
     """Validates auto-routing in NexusClient.process_document for xlsx, pptx, and docx formats."""
     client = NexusClient()
@@ -395,4 +394,3 @@ def test_process_document_legacy_xls():
     assert "Workbook: crime.xls" in doc.chunks[0].text
     for c in doc.chunks:
         assert c.text
-

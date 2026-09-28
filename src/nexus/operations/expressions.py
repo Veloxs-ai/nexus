@@ -26,7 +26,8 @@ grammar, then checked against a strict allow-list of node types:
   * names resolve to fields of the facts mapping; ``a.b`` and ``a['b']`` read nested
     mappings; unknown fields are ``None`` (never an exception)
   * calls only to registered functions (``min``, ``max``, ``abs``, ``round``, ``len``,
-    ``lower``, ``upper``, ``coalesce``, ``days_until``, ``days_since``, ``date``)
+    ``lower``, ``upper``, ``coalesce``, ``days_until``, ``days_since``, ``date``, ``today``,
+    ``add_days``, ``str``)
 
 Attribute access on objects, imports, lambdas, comprehensions, dunder names and any
 unlisted call are rejected at compile time. Comparisons involving ``None`` or
@@ -41,7 +42,7 @@ import ast
 import operator
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -88,6 +89,19 @@ def _days_since(ctx: EvalContext, value: Any) -> int | None:
     return None if target is None else (ctx.today - target).days
 
 
+def _add_days(_ctx: EvalContext, value: Any, days: Any) -> date | None:
+    start = _to_date(value)
+    if start is None or not isinstance(days, int) or isinstance(days, bool) or abs(days) > 36_600:
+        return None
+    return start + timedelta(days=days)
+
+
+def _text(_ctx: EvalContext, value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if isinstance(value, date) else str(value)
+
+
 def _coalesce(_ctx: EvalContext, *values: Any) -> Any:
     return next((v for v in values if v is not None), None)
 
@@ -114,6 +128,9 @@ FUNCTIONS: dict[str, Callable[..., Any]] = {
     "coalesce": _coalesce,
     "days_until": _days_until,
     "days_since": _days_since,
+    "today": lambda ctx: ctx.today,
+    "add_days": _add_days,
+    "str": _text,
 }
 
 _BINOPS: dict[type, Callable[[Any, Any], Any]] = {

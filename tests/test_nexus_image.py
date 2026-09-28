@@ -135,4 +135,3 @@ def test_nexus_client_image_extension_mismatch_and_ocr():
     chunk = doc.chunks[0]
     assert "Balance sheet infograph" in chunk.text
     assert "Q4 Financial Report" in chunk.text
-

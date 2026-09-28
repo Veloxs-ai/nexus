@@ -144,7 +144,9 @@ def test_nexus_client_process_document_audio_routing():
 def test_nexus_client_audio_voice_and_transcript():
     """Validates ElevenLabs persona parsing and transcript grounding through process_document."""
     client = NexusClient(in_memory_only=True)
-    fname = "ElevenLabs_2026-02-13T12_30_00_Russ – Deep, Smooth and Articulate_sp67_s80_sb75_se20_m.mp3"
+    fname = (
+        "ElevenLabs_2026-02-13T12_30_00_Russ – Deep, Smooth and Articulate_sp67_s80_sb75_se20_m.mp3"
+    )
     mp3_bytes = make_test_mp3(title="AI Voice Synthesis")
 
     doc = client.process_document(
@@ -155,7 +157,9 @@ def test_nexus_client_audio_voice_and_transcript():
     )
     assert doc.document_id == "el_speech_1"
     assert doc.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
-    assert doc.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+    assert (
+        doc.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+    )
     assert doc.metadata["voice_metadata"]["provider"] == "ElevenLabs"
     assert doc.metadata["voice_metadata"]["stability"] == "67%"
     assert len(doc.chunks) >= 1
@@ -163,5 +167,6 @@ def test_nexus_client_audio_voice_and_transcript():
     assert "Russ – Deep, Smooth and Articulate" in chunk.text
     assert "Deploying Nexora intelligence" in chunk.text
     assert chunk.metadata["speaker"] == "Russ – Deep, Smooth and Articulate"
-    assert chunk.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
-
+    assert (
+        chunk.metadata["transcript"] == "Deploying Nexora intelligence across autonomous workflows."
+    )

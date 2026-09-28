@@ -42,7 +42,10 @@ def test_semantic_embedder_understands_paraphrase():
     client = NexusClient()
     q = client.embed_query("How many vacation days do employees get?")
     good, bad = client.embed_texts(
-        ["Full-time employees receive 20 days of paid time off per year.", "Kubernetes cluster auto-scaling."]
+        [
+            "Full-time employees receive 20 days of paid time off per year.",
+            "Kubernetes cluster auto-scaling.",
+        ]
     )
     dot = lambda a, b: sum(x * y for x, y in zip(a, b))  # noqa: E731
     assert dot(q, good) > dot(q, bad) + 0.15
@@ -50,8 +53,10 @@ def test_semantic_embedder_understands_paraphrase():
 
 def test_processing_returns_chunks_without_vectors():
     client = NexusClient()
-    doc = client.process_document("d1", "notes.md", "# Title\n\nSome body text. " * 20, file_type="md")
-    assert doc.chunks and all(not hasattr(c, 'embedding') for c in doc.chunks)
+    doc = client.process_document(
+        "d1", "notes.md", "# Title\n\nSome body text. " * 20, file_type="md"
+    )
+    assert doc.chunks and all(not hasattr(c, "embedding") for c in doc.chunks)
 
 
 def test_long_single_line_text_is_not_treated_as_path():
@@ -61,7 +66,11 @@ def test_long_single_line_text_is_not_treated_as_path():
 
 
 def test_markdown_chunks_carry_heading_breadcrumbs():
-    text = "# Handbook\n\nIntro.\n\n## PTO\n\n" + "Employees get 20 days. " * 80 + "\n\n## MFA\n\nMFA is mandatory."
+    text = (
+        "# Handbook\n\nIntro.\n\n## PTO\n\n"
+        + "Employees get 20 days. " * 80
+        + "\n\n## MFA\n\nMFA is mandatory."
+    )
     chunks = chunk_markdown(text, chunk_size=600)
     assert any(c.startswith("Section: Handbook > PTO") for c in chunks)
     assert any(c.startswith("Section: Handbook > MFA") for c in chunks)
@@ -105,7 +114,10 @@ def test_openai_embedder_batches_and_orders(monkeypatch):
     def fake_urlopen(req, timeout=0):
         body = json.loads(req.data)
         calls.append(body)
-        data = [{"index": i, "embedding": [float(i)] * body["dimensions"]} for i in range(len(body["input"]))]
+        data = [
+            {"index": i, "embedding": [float(i)] * body["dimensions"]}
+            for i in range(len(body["input"]))
+        ]
         return FakeResp({"data": list(reversed(data))})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)

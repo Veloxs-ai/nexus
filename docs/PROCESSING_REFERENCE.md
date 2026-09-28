@@ -3,7 +3,7 @@
 > **Platform:** Nexus (7-Layer Enterprise AI Data & Retrieval Engine)  
 > **Embedding Standard:** Semantic embeddings at storage time — FastEmbed `BAAI/bge-small-en-v1.5` (`vector(384)`) by default  
 > **Processing Standard:** Format-Aware Tabular & Structural Document Chunking + PII Redaction  
-> **Version:** 3.0.1  
+> **Version:** 3.1.0  
 
 ---
 

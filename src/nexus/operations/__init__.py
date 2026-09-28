@@ -23,11 +23,21 @@ and inside a customer's own infrastructure:
 
   * ``expressions`` — a safe expression language for business rules
   * ``decisions``   — versioned decision tables with hit policies and traces
+  * ``scorecard``   — points scorecards with probability scaling and reason codes
+  * ``strategy``    — derived facts plus an ordered chain of scorecards and tables
   * ``contact_policy`` — contact hours, frequency caps, consent and do-not-disturb,
     with jurisdiction presets (India RBI, US Regulation F)
-  * ``strategy``    — derived facts plus an ordered chain of decision tables
   * ``cases``       — case state machines, permanent action keys and deterministic
     test/control assignment
+  * ``engine``      — ``plan_case`` (facts → decision, next state, safe actions) and a
+    small in-memory ``OperationsEngine``
+  * ``intents``     — multilingual reply intent with confidence, entities and redaction
+  * ``messaging``   — safe templates and channel providers (dry run, signed webhook,
+    SMTP, WhatsApp Cloud, Twilio)
+  * ``experiments`` — holdout comparisons with Wilson intervals and significance
+  * ``signals``     — condition monitoring: explainable anomaly scores, data quality, time
+    to limit and failure-mode diagnosis from streaming sensor readings
+  * ``workorders``  — ServiceNow incidents, Maximo work orders, Teams notifications (idempotent)
 """
 
 from .cases import (
@@ -40,27 +50,112 @@ from .cases import (
 )
 from .contact_policy import ContactDecision, ContactPolicy, FrequencyCap
 from .decisions import DecisionError, DecisionResult, DecisionTable, Rule
+from .engine import CasePlan, OperationsEngine, PlannedAction, experiment_arm, plan_case
+from .experiments import Comparison, RateEstimate, compare, rate, summarize_arms
 from .expressions import ExpressionError, compile_expression, evaluate, referenced_fields
+from .intents import INTENTS, IntentClassifier, IntentModel, IntentResult, evaluate_model, redact
+from .messaging import (
+    ChannelProvider,
+    DryRunProvider,
+    Message,
+    SendResult,
+    TemplateError,
+    WebhookProvider,
+    mask_recipient,
+    provider_from_config,
+    render_template,
+    template_fields,
+)
+from .scorecard import Scorecard, ScorecardError, ScoreResult
+from .signals import (
+    Assessment,
+    AssetMonitor,
+    Diagnosis,
+    SignalSpec,
+    diagnose,
+    specs_from_dict,
+    window_stats,
+)
 from .strategy import StrategyResult, evaluate_strategy
+from .workorders import (
+    TICKET_STATES,
+    WORK_PROVIDERS,
+    DryRunWorkProvider,
+    MaximoProvider,
+    ServiceNowProvider,
+    TeamsProvider,
+    TicketStatus,
+    WorkItem,
+    WorkProvider,
+    WorkResult,
+    work_provider_from_config,
+)
 
 __all__ = [
     "DEFAULT_MACHINE",
+    "INTENTS",
+    "TICKET_STATES",
+    "WORK_PROVIDERS",
+    "Assessment",
+    "AssetMonitor",
     "CaseMachine",
+    "CasePlan",
+    "ChannelProvider",
+    "Comparison",
     "ContactDecision",
     "ContactPolicy",
     "DecisionError",
     "DecisionResult",
     "DecisionTable",
+    "Diagnosis",
+    "DryRunProvider",
+    "DryRunWorkProvider",
     "ExpressionError",
     "FrequencyCap",
+    "IntentClassifier",
+    "IntentModel",
+    "IntentResult",
+    "MaximoProvider",
+    "Message",
+    "OperationsEngine",
+    "PlannedAction",
+    "RateEstimate",
     "Rule",
+    "ScoreResult",
+    "Scorecard",
+    "ScorecardError",
+    "SendResult",
+    "ServiceNowProvider",
+    "SignalSpec",
     "StrategyResult",
+    "TeamsProvider",
+    "TemplateError",
+    "TicketStatus",
     "TransitionError",
+    "WebhookProvider",
+    "WorkItem",
+    "WorkProvider",
+    "WorkResult",
     "assign_arm",
+    "compare",
     "compile_expression",
+    "diagnose",
     "evaluate",
+    "evaluate_model",
     "evaluate_strategy",
+    "experiment_arm",
     "idempotency_key",
+    "mask_recipient",
+    "plan_case",
+    "provider_from_config",
+    "rate",
+    "redact",
     "referenced_fields",
+    "render_template",
+    "specs_from_dict",
     "stable_bucket",
+    "summarize_arms",
+    "template_fields",
+    "window_stats",
+    "work_provider_from_config",
 ]

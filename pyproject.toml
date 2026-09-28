@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veloxs-nexus"
-version = "3.1.0.dev0"
+version = "3.1.0"
 description = "Nexus — Enterprise Intelligence Framework. Build secure, governed AI applications, retrieval systems, agents, and intelligent workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,9 @@ keywords = [
   "ai-governance",
   "observability",
   "llm",
+  "decision-engine",
+  "kafka",
+  "condition-monitoring",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -56,6 +59,8 @@ dev = [
 ocr = ["easyocr>=1.7.2", "pillow>=10.4.0"]
 audio-ml = ["faster-whisper>=1.0.3"]
 video = ["av>=12.0.0"]
+kafka = ["confluent-kafka>=2.4.0"]
+kafka-avro = ["confluent-kafka[avro,schemaregistry]>=2.4.0"]
 all-ml = [
     "veloxs-nexus[ocr]",
     "veloxs-nexus[audio-ml]",

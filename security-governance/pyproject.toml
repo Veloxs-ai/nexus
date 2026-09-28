@@ -1,6 +1,6 @@
 [project]
 name = "security-governance"
-version = "3.0.1"
+version = "3.1.0"
 description = "Nexus Enterprise Intelligence Framework — Governance layer: RBAC, tenant isolation, encryption, and audit."
 requires-python = ">=3.11"
 readme = "README.md"

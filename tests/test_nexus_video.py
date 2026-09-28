@@ -148,4 +148,3 @@ def test_nexus_client_video_with_transcript_and_filename():
     assert "Introducing Nexus" in doc.chunks[0].text
     for chunk in doc.chunks:
         assert "has_audio" in chunk.metadata
-

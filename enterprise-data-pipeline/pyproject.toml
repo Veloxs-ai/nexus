@@ -1,6 +1,6 @@
 [project]
 name = "enterprise-data-pipeline"
-version = "3.0.1"
+version = "3.1.0"
 description = "Nexus Enterprise Intelligence Framework — Data Connectivity layer: API, streaming, batch, and CDC ingestion."
 requires-python = ">=3.11"
 readme = "README.md"

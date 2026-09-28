@@ -20,13 +20,15 @@ A strategy definition is plain data::
 
     {
       "facts":  {"days_to_due": "days_until(next_due_date)"},   # computed in order
-      "tables": {"risk": {...}, "treatment": {...}},             # DecisionTable specs
-      "steps":  ["risk", "treatment"]                            # evaluation order
+      "scorecards": {"early_risk": {...}},                       # Scorecard specs (optional)
+      "tables": {"treatment": {...}},                            # DecisionTable specs
+      "steps":  ["early_risk", "treatment"]                      # evaluation order
     }
 
-Each step's outputs become facts for the next step (``risk`` sets ``risk_band``;
-``treatment`` reads it). The result keeps every step's trace and a flat list of
-reason codes (``"risk:RECENT_BOUNCES"``) for the decision record.
+A step names a scorecard or a decision table. Each step's outputs become facts for
+the next step (the scorecard sets ``risk_band``; ``treatment`` reads it). The result
+keeps every step's trace, the scores, and a flat list of reason codes
+(``"treatment:OVERDUE"``, ``"early_risk:BOUNCES_6M"``) for the decision record.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from typing import Any
 
 from .decisions import DecisionResult, DecisionTable
 from .expressions import evaluate
+from .scorecard import Scorecard, ScoreResult
 
 
 @dataclass
@@ -47,18 +50,25 @@ class StrategyResult:
     outputs: dict[str, Any]
     steps: list[DecisionResult] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
+    scores: dict[str, ScoreResult] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "outputs": self.outputs,
             "reason_codes": self.reason_codes,
             "steps": [s.as_dict() for s in self.steps],
+            "scores": {name: r.as_dict() for name, r in self.scores.items()},
         }
 
 
 @lru_cache(maxsize=512)
 def _table(serialized: str) -> DecisionTable:
     return DecisionTable.from_dict(json.loads(serialized))
+
+
+@lru_cache(maxsize=128)
+def _scorecard(serialized: str) -> Scorecard:
+    return Scorecard.from_dict(json.loads(serialized))
 
 
 def evaluate_strategy(
@@ -70,10 +80,21 @@ def evaluate_strategy(
         facts[name] = evaluate(str(expression), facts, today)
 
     tables = definition.get("tables") or {}
+    scorecards = definition.get("scorecards") or {}
     outputs: dict[str, Any] = {}
     steps: list[DecisionResult] = []
     reasons: list[str] = []
-    for step in definition.get("steps") or list(tables):
+    scores: dict[str, ScoreResult] = {}
+    for step in definition.get("steps") or [*scorecards, *tables]:
+        if step in scorecards:
+            card = _scorecard(json.dumps({"name": step, **scorecards[step]}, sort_keys=True))
+            scored = card.score(facts, today)
+            scores[step] = scored
+            for key, value in card.outputs_for(scored).items():
+                facts[key] = value
+                outputs[key] = value
+            reasons.extend(f"{step}:{r['code']}" for r in scored.reasons)
+            continue
         spec = {"name": step, **tables[step]}
         result = _table(json.dumps(spec, sort_keys=True, default=str)).evaluate(facts, today)
         steps.append(result)
@@ -85,4 +106,6 @@ def evaluate_strategy(
                 outputs[key] = value
         matched = result.matched or (["default"] if result.used_default else [])
         reasons.extend(f"{step}:{rule}" for rule in matched)
-    return StrategyResult(facts=facts, outputs=outputs, steps=steps, reason_codes=reasons)
+    return StrategyResult(
+        facts=facts, outputs=outputs, steps=steps, reason_codes=reasons, scores=scores
+    )
