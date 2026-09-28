@@ -69,7 +69,7 @@ all-ml = [
 
 [project.urls]
 Homepage      = "https://github.com/Veloxs-ai/nexus"
-Documentation = "https://nexus.veloxs.ai/docs/"
+Documentation = "https://nexus.veloxs.ai/documentation.html"
 Repository    = "https://github.com/Veloxs-ai/nexus"
 Issues        = "https://github.com/Veloxs-ai/nexus/issues"
 Changelog     = "https://github.com/Veloxs-ai/nexus/blob/main/CHANGELOG.md"

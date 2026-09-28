@@ -635,7 +635,7 @@ Stored 3072D vectors are not compatible with the new model: re-embed stored chun
 
 ## Documentation
 
-Full documentation — tutorials, how-to guides, API reference and release notes — is at **[nexus.veloxs.ai/docs](https://nexus.veloxs.ai/docs/)**. The repository guides:
+Full documentation is on the website: the **[User & Integrator Guide](https://nexus.veloxs.ai/nexus-guide.html)** (install, tutorials, how-to) and the **[Documentation](https://nexus.veloxs.ai/documentation.html)** (architecture, API reference, release notes). The repository guides:
 
 | Guide | What it covers |
 |---|---|

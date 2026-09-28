@@ -5,6 +5,11 @@ All notable changes to Nexus are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- The package's Documentation link and the README point to nexus.veloxs.ai/documentation.html and the guide; the /docs/ address used in 3.1.1 is not served.
+
 ## [3.1.1] — 2026-09-28
 
 Fixes found while writing the documentation at [nexus.veloxs.ai/docs](https://nexus.veloxs.ai/docs/). No public API is renamed or removed; three defaults behave differently, as described under **Changed**.
