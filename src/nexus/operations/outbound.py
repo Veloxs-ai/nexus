@@ -206,5 +206,31 @@ def urlopen(request: urllib.request.Request, timeout: float = 10.0) -> _Response
     return _Response(body, status)
 
 
+def pinned_smtp(
+    host: str, port: int, *, implicit_tls: bool, timeout: float, context: ssl.SSLContext
+) -> Any:
+    """An SMTP client connected to the checked address of ``host``.
+
+    STARTTLS / implicit TLS still verify the certificate against the host name, so pinning the
+    address closes the DNS-rebinding gap without weakening TLS.
+    """
+    import smtplib
+
+    address = resolve_checked(host, port)
+    base = smtplib.SMTP_SSL if implicit_tls else smtplib.SMTP
+
+    class _Pinned(base):  # type: ignore[misc, valid-type]
+        def _get_socket(self, host_: str, port_: int, timeout_: float) -> socket.socket:
+            sock = socket.create_connection((address, port_), timeout_, self.source_address)
+            if implicit_tls:
+                return self.context.wrap_socket(sock, server_hostname=host)
+            return sock
+
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if implicit_tls:
+        kwargs["context"] = context
+    return _Pinned(host, port, **kwargs)
+
+
 # Tests replace this with a fake; production code calls ``transport(request, timeout)``.
 transport = urlopen

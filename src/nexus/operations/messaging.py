@@ -115,8 +115,9 @@ class Message:
     idempotency_key: str = ""
     template_name: str | None = None  # WhatsApp approved template
     template_params: list[str] = field(default_factory=list)
-    dlt_template_id: str | None = None  # India SMS (TRAI DLT)
-    sender_id: str | None = None
+    dlt_template_id: str | None = None  # India SMS (TRAI DLT): the registered content template id
+    sender_id: str | None = None  # the registered header (sender id)
+    dlt_entity_id: str | None = None  # India SMS: the principal entity id (PEID) of the sender
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -178,6 +179,23 @@ def _http(
         return None, {"raw": raw[:500]}
 
 
+def dlt_problems(message: Message) -> list[str]:
+    """What an Indian SMS still needs under TRAI's DLT rules (TCCCPR): the registered header,
+    principal entity id and content template id. Operators drop messages without them."""
+    if message.channel != "sms":
+        return []
+    missing = [
+        name
+        for name, value in (
+            ("DLT content template id", message.dlt_template_id),
+            ("DLT principal entity id", message.dlt_entity_id),
+            ("registered header (sender id)", message.sender_id),
+        )
+        if not value
+    ]
+    return [f"SMS in India needs the {m}" for m in missing]
+
+
 def _require_https(url: str, allow_insecure: bool) -> None:
     parsed = urllib.parse.urlparse(url)
     local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
@@ -235,6 +253,7 @@ class WebhookProvider:
             "template_name": message.template_name,
             "template_params": message.template_params,
             "dlt_template_id": message.dlt_template_id,
+            "dlt_entity_id": message.dlt_entity_id,
             "sender_id": message.sender_id,
             "idempotency_key": message.idempotency_key,
             "metadata": message.metadata,
@@ -287,15 +306,14 @@ class SmtpEmailProvider:
         email.set_content(message.body)
         context = ssl.create_default_context()
         try:
-            outbound.resolve_checked(
-                self.host, self.port
-            )  # no SMTP relay to internal-only addresses
-            if self.security == "tls":
-                client: smtplib.SMTP = smtplib.SMTP_SSL(
-                    self.host, self.port, timeout=self.timeout, context=context
-                )
-            else:
-                client = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+            # Resolved, checked and pinned to that address (no relay to internal-only hosts).
+            client: smtplib.SMTP = outbound.pinned_smtp(
+                self.host,
+                self.port,
+                implicit_tls=self.security == "tls",
+                timeout=self.timeout,
+                context=context,
+            )
             with client:
                 if self.security == "starttls":
                     client.starttls(context=context)

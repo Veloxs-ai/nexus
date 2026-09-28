@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expression functions `today()`, `add_days(date, n)` and `str(value)`.
 
 - **Outbound SSRF protection** (`nexus.operations.outbound`) for every provider call (webhook, WhatsApp Cloud, Twilio, SMTP, ServiceNow, Maximo, Teams): the host is resolved and every address checked — loopback, link-local / cloud metadata, unspecified, multicast and reserved ranges are refused, including IPv4 embedded in IPv6 (mapped, NAT64, 6to4); private ranges only with `NEXUS_OUTBOUND_ALLOW_PRIVATE=1` or for hosts in `NEXUS_OUTBOUND_ALLOWED_HOSTS`; the connection is pinned to the checked address (TLS still verified against the host name) and redirects are refused.
+- TRAI DLT: `Message.dlt_entity_id` (principal entity id) next to the header and content template id, sent to gateways; `dlt_problems(message)` lists what an Indian SMS still lacks. SMTP connections are pinned to the checked address as well (`outbound.pinned_smtp`; TLS still verified against the host name).
 - `KafkaSource.before_revoke` (flush and commit while partitions are still owned) and `assignment_version` (drop per-partition state after a rebalance); `AssetMonitor` state is serialized compactly (whole seconds, 4 decimals).
 
 ### Changed

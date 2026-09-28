@@ -132,3 +132,50 @@ def test_redirects_are_refused_and_responses_read(monkeypatch):
     monkeypatch.delenv("NEXUS_OUTBOUND_ALLOW_LOOPBACK")
     with pytest.raises(ValueError):
         outbound.urlopen(urllib.request.Request(base + "/ok", data=b"{}", method="POST"), timeout=5)
+
+
+def test_smtp_connects_to_the_checked_address(monkeypatch):
+    """The mail host is resolved once, checked, and the TCP connection goes to that address."""
+    import smtplib
+
+    connected = []
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, type=0: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+        ],
+    )
+
+    def fake_connection(address, timeout=None, source_address=None):
+        connected.append(address)
+        raise ConnectionRefusedError("stop here")
+
+    monkeypatch.setattr(socket, "create_connection", fake_connection)
+    import ssl
+
+    with pytest.raises(ConnectionRefusedError):
+        outbound.pinned_smtp(
+            "mail.example.com",
+            587,
+            implicit_tls=False,
+            timeout=5,
+            context=ssl.create_default_context(),
+        )
+    assert connected == [("93.184.216.34", 587)]
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, type=0: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))
+        ],
+    )
+    with pytest.raises(outbound.OutboundBlocked):
+        outbound.pinned_smtp(
+            "mail.example.com",
+            587,
+            implicit_tls=False,
+            timeout=5,
+            context=ssl.create_default_context(),
+        )
+    assert smtplib  # imported lazily by pinned_smtp
