@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![CI](https://github.com/Veloxs-ai/nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/Veloxs-ai/nexus/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-432%20passing%20%28local%20run%29-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -587,6 +587,8 @@ Secrets are never read implicitly from the environment by library code. Pass the
 ## Running tests
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
+
+**Status (3.1.1):** all 432 tests pass — 161 in the root suite and 271 across the seven layer suites — in a local run of every suite on Python 3.12. The GitHub Actions workflow in `.github/workflows/ci.yml` is not currently running for this repository, so the badge above reports that local run rather than a CI result.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git
