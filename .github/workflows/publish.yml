@@ -1,9 +1,8 @@
 name: PyPI Deploy
 
+# Manual only: pushing a v* tag no longer publishes. Publish with Actions -> Run workflow,
+# or locally with ./publish_local.sh.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 jobs:
