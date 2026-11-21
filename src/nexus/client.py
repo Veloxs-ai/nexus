@@ -23,12 +23,17 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from nexus.chunk_limits import ChunkLimiter, bounded_output, resolve_limiter
+from nexus.client_ingest import IngestMixin
+from nexus.client_pdf import PdfMixin
+from nexus.client_store import StoreMixin
 from nexus.models import (
     NexusConfig,
     ProcessedChunk,
     ProcessedDocumentPayload,
     ProcessingStageTrace,
 )
+from nexus.table_records import jsonable, mask_rows
 
 try:
     from nexus.experience.config import AuthConfig, EngagementConfig
@@ -42,6 +47,8 @@ try:
         process_code,
         process_openapi_spec,
     )
+    from nexus.processing.csv_table import group_rows, parse_csv_table
+    from nexus.processing.csv_table import row_text as csv_row_text
     from nexus.processing.email_chat import (
         process_chat_dialog,
         process_email_binary,
@@ -57,16 +64,17 @@ try:
         chunk_mysql_table,
     )
     from nexus.processing.office import (
+        group_word_sections,
         process_presentation_binary,
         process_spreadsheet_binary,
-        group_word_sections,
         process_word_binary,
+        spreadsheet_row_text,
     )
-    from nexus.processing.pdf import process_pdf_binary
     from nexus.processing.sqlite import (
         process_sqlite_binary,
         process_sqlite_file,
     )
+    from nexus.processing.text_decode import decode_text
     from nexus.processing.video import process_video_binary
     from nexus.retrieval.engine import RetrievalEngine
 except (ImportError, ModuleNotFoundError):
@@ -81,6 +89,8 @@ except (ImportError, ModuleNotFoundError):
         process_code,
         process_openapi_spec,
     )
+    from nexus_processing.csv_table import group_rows, parse_csv_table
+    from nexus_processing.csv_table import row_text as csv_row_text
     from nexus_processing.email_chat import (
         process_chat_dialog,
         process_email_binary,
@@ -96,18 +106,23 @@ except (ImportError, ModuleNotFoundError):
         chunk_mysql_table,
     )
     from nexus_processing.office import (
+        group_word_sections,
         process_presentation_binary,
         process_spreadsheet_binary,
-        group_word_sections,
         process_word_binary,
+        spreadsheet_row_text,
     )
-    from nexus_processing.pdf import process_pdf_binary
     from nexus_processing.sqlite import (
         process_sqlite_binary,
         process_sqlite_file,
     )
+    from nexus_processing.text_decode import decode_text
     from nexus_processing.video import process_video_binary
     from nexus_retrieval.engine import RetrievalEngine
+
+
+# Routed to process_audio; compressed formats are decoded with PyAV when installed.
+_AUDIO_FORMATS = ("wav", "aiff", "aif", "mp3", "m4a", "aac", "ogg", "oga", "opus", "flac")
 
 
 def _is_existing_file(value: str) -> bool:
@@ -128,7 +143,7 @@ def _semantic():
     return semantic
 
 
-class NexusClient:
+class NexusClient(IngestMixin, StoreMixin, PdfMixin):
     """Unified in-memory Python library client for the Nexus Enterprise Intelligence Framework.
 
     Provides high-performance, thread-safe, single-process document processing,
@@ -148,8 +163,13 @@ class NexusClient:
         retrieval_engine: RetrievalEngine | None = None,
         guardrails_engine: GuardrailsEngine | None = None,
         experience_service: ExperienceService | None = None,
+        chunk_max_tokens: int | None = None,
     ) -> None:
+        """``chunk_max_tokens`` caps every processed chunk (default: ``NEXUS_CHUNK_MAX_TOKENS``
+        or 450, never above the embedder's window); ``0`` turns the cap off."""
         self.config = config
+        self._chunk_max_tokens = chunk_max_tokens
+        self._chunk_limiter: ChunkLimiter | None = None
         self.base_dir = base_dir or Path.cwd()
         self.tenant_id = tenant_id
         self.in_memory_only = in_memory_only
@@ -174,6 +194,7 @@ class NexusClient:
             gateway = InMemoryGuardrailsGateway(self.guardrails)
             self.experience = ExperienceService(exp_config, gateway)
 
+    @bounded_output
     def process_document(
         self,
         document_id: str,
@@ -239,6 +260,14 @@ class NexusClient:
                 detected_format = "bmp"
             elif raw_input_bytes.startswith(b"ID3") or raw_input_bytes.startswith(b"\xff\xfb"):
                 detected_format = "mp3"
+            elif raw_input_bytes.startswith(b"OggS"):
+                detected_format = "ogg"
+            elif raw_input_bytes.startswith(b"fLaC"):
+                detected_format = "flac"
+            elif len(raw_input_bytes) >= 12 and raw_input_bytes[4:8] == b"ftyp" and (
+                raw_input_bytes[8:11] == b"M4A" or detected_format in _AUDIO_FORMATS
+            ):
+                detected_format = "m4a"
             elif len(raw_input_bytes) >= 8 and raw_input_bytes[4:8] in (b"ftyp", b"moov"):
                 detected_format = "mp4"
 
@@ -349,7 +378,7 @@ class NexusClient:
                 )
 
         # Automatic routing for Audio payloads
-        if detected_format in ("wav", "aiff", "aif", "mp3"):
+        if detected_format in _AUDIO_FORMATS:
             raw_audio_bytes = raw_input_bytes
             if raw_audio_bytes is not None:
                 return self.process_audio(
@@ -524,10 +553,15 @@ class NexusClient:
                 shallow_mode=shallow_mode,
             )
 
+        encoding = "str"
+        if isinstance(text, bytes | bytearray):
+            decoded = decode_text(bytes(text))  # BOM / UTF-8 / UTF-16 / cp1252: never a bytes repr
+            text, encoding = decoded.text, decoded.encoding
         clean_text = (
             text.replace("\r\n", "\n").replace("\r", "\n") if isinstance(text, str) else str(text)
         )
-        normalized_text = unicodedata.normalize("NFKC", clean_text)
+        # NFC keeps what the source wrote (x², ﬁ, ①); detection works on its own NFKC view.
+        normalized_text = unicodedata.normalize("NFC", clean_text)
         file_size_bytes = len(normalized_text.encode("utf-8"))
         content_hash = hashlib.md5(normalized_text.encode("utf-8")).hexdigest()
         dt_step1 = (time.perf_counter() - t0) * 1000.0
@@ -547,6 +581,7 @@ class NexusClient:
                     "detected_format": detected_format,
                     "size_bytes": file_size_bytes,
                     "content_hash": content_hash,
+                    "encoding": encoding,
                 },
             )
         )
@@ -555,7 +590,19 @@ class NexusClient:
         # Step 2: Format-Aware Structural Chunking (20% - 40%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        raw_chunks = self.processing.chunk_document(normalized_text, file_type=detected_format)
+        csv_records: list[tuple[list[dict[str, Any]], int, int]] | None = None
+        if detected_format == "csv":
+            csv_chunks = self._csv_record_chunks(normalized_text, apply_guardrails)
+            if csv_chunks:
+                raw_chunks = [text for text, _records, _first, _last in csv_chunks]
+                csv_records = [(records, first, last) for _text, records, first, last in csv_chunks]
+        if detected_format == "json":
+            json_chunks = self._json_record_chunks(normalized_text, apply_guardrails)
+            if json_chunks:
+                raw_chunks = [text for text, _records, _first, _last in json_chunks]
+                csv_records = [(records, first, last) for _text, records, first, last in json_chunks]
+        if csv_records is None:
+            raw_chunks = self.processing.chunk_document(normalized_text, file_type=detected_format)
         if not raw_chunks:
             raw_chunks = [normalized_text] if normalized_text.strip() else []
         dt_step2 = (time.perf_counter() - t0) * 1000.0
@@ -585,7 +632,7 @@ class NexusClient:
             doc_metadata.update(metadata)
         doc_metadata["file_type"] = detected_format
         doc_metadata["source_format"] = detected_format
-        doc_metadata["is_tabular"] = detected_format == "csv"
+        doc_metadata["is_tabular"] = detected_format == "csv" or csv_records is not None
         doc_metadata["guardrails_enabled"] = apply_guardrails
         classification = doc_metadata.get("classification", "general")
         dt_step3 = (time.perf_counter() - t0) * 1000.0
@@ -616,7 +663,7 @@ class NexusClient:
         cleaned_chunks_text: list[str] = []
         total_redacted = 0
         for chunk_txt in raw_chunks:
-            if not apply_guardrails:
+            if not apply_guardrails or csv_records is not None:  # CSV rows: masked by column
                 cleaned_chunks_text.append(chunk_txt)
             else:
                 masked = self.guardrails.mask_pii(chunk_txt)
@@ -656,10 +703,14 @@ class NexusClient:
             chunk_meta["classification"] = classification
             chunk_meta["file_type"] = detected_format
             chunk_meta["source_format"] = detected_format
-            chunk_meta["is_tabular"] = detected_format == "csv"
+            chunk_meta["is_tabular"] = detected_format == "csv" or csv_records is not None
             chunk_meta["guardrails_enabled"] = apply_guardrails
             chunk_meta["content_hash"] = hashlib.md5(cleaned_chunk.encode("utf-8")).hexdigest()
-
+            if csv_records is not None:
+                records, first, last = csv_records[idx]
+                if records:
+                    chunk_meta["records"] = records
+                    chunk_meta["row_range"] = [first, last]
 
             chunk_id = f"{document_id}:{idx}"
             processed_chunks.append(
@@ -702,6 +753,36 @@ class NexusClient:
             execution_trace=traces,
             summary=summary_msg,
         )
+
+    def _csv_record_chunks(
+        self, text: str, apply_guardrails: bool
+    ) -> list[tuple[str, list[dict[str, Any]], int, int]]:
+        """CSV -> row-group chunks with their typed, column-masked rows.
+
+        Returns ``(text, records, first row, last row)`` per chunk (1-based rows), or an
+        empty list when the text is not a usable table.
+        """
+        table = parse_csv_table(text)
+        if table is None:
+            return []
+        classify = getattr(self.guardrails, "classify_columns", None)
+        kinds = classify(table.typed_rows) if (apply_guardrails and classify) else None
+        typed, _ = mask_rows(self.guardrails, table.typed_rows, apply_guardrails, kinds)
+        shown, _ = mask_rows(self.guardrails, table.rows, apply_guardrails, kinds)
+        texts = [csv_row_text(n, row) for n, row in enumerate(shown, start=1)]
+        header = f"Columns: {', '.join(table.columns)}"
+        limiter = self.chunk_limiter
+        groups = group_rows(
+            texts,
+            header=header,
+            max_tokens=limiter.max_tokens if limiter else None,
+            token_costs=limiter.count_many(texts) if limiter else None,
+            header_tokens=limiter.count(header) + 1 if limiter else 0,
+        )
+        return [
+            (chunk_text, [jsonable(r) for r in typed[first : last + 1]], first + 1, last + 1)
+            for chunk_text, first, last in groups
+        ]
 
     def index_document(
         self,
@@ -752,13 +833,41 @@ class NexusClient:
         return _semantic().create_text_embedder()
 
     def embedding_info(self) -> dict[str, Any]:
-        """Provider, model id and vector dimensions of the semantic embedder.
+        """Provider, model id, vector dimensions and token limits of the semantic embedder.
 
         Persist ``model`` next to stored vectors: vectors from different models
-        live in different spaces and must never be compared.
+        live in different spaces and must never be compared. ``max_tokens`` is the
+        largest chunk the model embeds whole (``window`` minus headroom for special
+        tokens and a short name prefix); text past ``window`` is ignored by the model.
         """
         emb = self.text_embedder
-        return {"provider": emb.provider, "model": emb.model_name, "dimensions": emb.dimensions}
+        return {
+            "provider": emb.provider,
+            "model": emb.model_name,
+            "dimensions": emb.dimensions,
+            "max_tokens": getattr(emb, "max_tokens", None),
+            "window": getattr(emb, "window", None),
+        }
+
+    def count_tokens(self, text: str) -> int:
+        """Tokens ``text`` takes in the embedder's window (its own tokenizer when local)."""
+        return self.text_embedder.count_tokens(text)
+
+    @property
+    def chunk_limiter(self) -> ChunkLimiter | None:
+        """Token budget applied to every processed chunk (``None`` when turned off)."""
+        if self._chunk_max_tokens == 0:
+            return None
+        if self._chunk_limiter is None:
+            self._chunk_limiter = resolve_limiter(
+                lambda: _semantic().create_text_embedder(), self._chunk_max_tokens
+            )
+        return self._chunk_limiter
+
+    def fit_chunk_text(self, text: str) -> list[str]:
+        """Split ``text`` into header-led pieces that fit the chunk token budget."""
+        limiter = self.chunk_limiter
+        return limiter.fit(text) if limiter else [text]
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Batch-embed passages/chunks for storage (normalized dense vectors)."""
@@ -772,6 +881,7 @@ class NexusClient:
         """Cross-encoder relevance scores in (0, 1), aligned with ``passages``."""
         return _semantic().create_reranker().score(query, list(passages))
 
+    @bounded_output
     def process_image(
         self,
         image_id: str,
@@ -998,6 +1108,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_video(
         self,
         video_id: str,
@@ -1246,239 +1357,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
-    def process_pdf(
-        self,
-        pdf_id: str,
-        name: str,
-        pdf_bytes: bytes | None = None,
-        file_path: str | Path | None = None,
-        metadata: dict[str, Any] | None = None,
-        enable_guardrails: bool = True,
-        shallow_mode: bool = False,
-        ocr_provider: Any = None,
-        auto_extract: bool = True,
-    ) -> ProcessedDocumentPayload:
-        """Processes a PDF through pure-Python ISO 32000-1 binary parsing,
-        FlateDecode stream decompression, PostScript text operator decoding,
-        PII sanitization.
-
-        Args:
-            pdf_id: Unique identifier for the PDF document.
-            name: Filename or descriptor (e.g. 'annual_report.pdf').
-            pdf_bytes: Raw binary PDF payload.
-            file_path: Optional path to read PDF from disk if pdf_bytes not provided.
-            metadata: Custom metadata dictionary to attach to PDF document and page chunks.
-            enable_guardrails: When True (default), applies PII detection and regex masking.
-            shallow_mode: Alias for bypassing PII masking for internal reviews.
-            ocr_provider: Optional OCRProvider for extracting text from embedded images.
-            auto_extract: When True (default), attempts OCR on image-only pages.
-
-        Returns:
-            ProcessedDocumentPayload with page-grounded chunks, and 5-stage telemetry.
-        """
-        t_start_total = time.perf_counter()
-        traces: list[ProcessingStageTrace] = []
-        apply_guardrails = enable_guardrails and (not shallow_mode)
-
-        if pdf_bytes is not None:
-            raw_data = pdf_bytes
-        elif file_path is not None:
-            raw_data = Path(file_path).read_bytes()
-        else:
-            raise ValueError("Either pdf_bytes or file_path must be provided to process_pdf.")
-
-        file_size_bytes = len(raw_data)
-        content_hash = hashlib.md5(raw_data).hexdigest()
-
-        # -------------------------------------------------------------------------
-        # Step 1: PDF Header & Object Graph Parsing (0% - 20%)
-        # -------------------------------------------------------------------------
-        t0 = time.perf_counter()
-        pdf_payload = process_pdf_binary(
-            raw_data,
-            ocr_provider=ocr_provider,
-            auto_extract=auto_extract,
-        )
-        meta = pdf_payload.metadata
-        dt_step1 = (time.perf_counter() - t0) * 1000.0
-
-        traces.append(
-            ProcessingStageTrace(
-                step_number=1,
-                stage_name="PDF Header & Object Graph Parsing",
-                status="completed",
-                duration_ms=round(dt_step1, 2),
-                summary=(
-                    f"Parsed ISO 32000-1 PDF v{meta.version} object graph "
-                    f"({file_size_bytes} bytes, {meta.page_count} pages detected)."
-                ),
-                details={
-                    "version": meta.version,
-                    "page_count": meta.page_count,
-                    "file_size_bytes": file_size_bytes,
-                    "is_encrypted": meta.is_encrypted,
-                },
-            )
-        )
-
-        # -------------------------------------------------------------------------
-        # Step 2: FlateDecode Stream Decompression (20% - 40%)
-        # -------------------------------------------------------------------------
-        t0 = time.perf_counter()
-        decompressed_stream_count = meta.page_count
-        dt_step2 = (time.perf_counter() - t0) * 1000.0
-
-        traces.append(
-            ProcessingStageTrace(
-                step_number=2,
-                stage_name="FlateDecode Stream Decompression (zlib)",
-                status="completed",
-                duration_ms=round(dt_step2, 2),
-                summary=(
-                    f"Decompressed Deflate content streams across {decompressed_stream_count} "
-                    f"page objects using standard library zlib."
-                ),
-                details={
-                    "decompressed_pages": decompressed_stream_count,
-                },
-            )
-        )
-
-        # -------------------------------------------------------------------------
-        # Step 3: PostScript Text Operator Decoding (40% - 60%)
-        # -------------------------------------------------------------------------
-        t0 = time.perf_counter()
-        total_words = sum(p.word_count for p in pdf_payload.pages)
-        total_chars = sum(p.char_count for p in pdf_payload.pages)
-        dt_step3 = (time.perf_counter() - t0) * 1000.0
-
-        traces.append(
-            ProcessingStageTrace(
-                step_number=3,
-                stage_name="PostScript Text Operator Decoding (BT/ET/Tj/TJ)",
-                status="completed",
-                duration_ms=round(dt_step3, 2),
-                summary=(
-                    f"Decoded {total_words} words ({total_chars} characters) across "
-                    f"{len(pdf_payload.pages)} pages via PostScript BT/ET/Tj/TJ extraction."
-                ),
-                details={
-                    "total_words": total_words,
-                    "total_chars": total_chars,
-                    "pages_extracted": len(pdf_payload.pages),
-                },
-            )
-        )
-
-        # -------------------------------------------------------------------------
-        # Step 4: Safety Guardrails & PII Sanitization (60% - 80%)
-        # -------------------------------------------------------------------------
-        t0 = time.perf_counter()
-        sanitized_pages: list[tuple[Any, str]] = []
-        total_masked_items = 0
-
-        for page in pdf_payload.pages:
-            p_text = page.text
-            if apply_guardrails and p_text:
-                scrubbed_text = self.guardrails.mask_pii(p_text)
-                if scrubbed_text != p_text:
-                    total_masked_items += 1
-            else:
-                scrubbed_text = p_text
-            sanitized_pages.append((page, scrubbed_text))
-
-        dt_step4 = (time.perf_counter() - t0) * 1000.0
-        traces.append(
-            ProcessingStageTrace(
-                step_number=4,
-                stage_name="Safety Guardrails & PII Sanitization",
-                status="completed",
-                duration_ms=round(dt_step4, 2),
-                summary=(
-                    f"Applied PII detection across {len(sanitized_pages)} pages. "
-                    f"Masked {total_masked_items} sensitive items (Luhn cards, emails, SSNs)."
-                ),
-                details={
-                    "guardrails_enabled": apply_guardrails,
-                    "masked_items": total_masked_items,
-                },
-            )
-        )
-
-        # -------------------------------------------------------------------------
-        # Step 5: Page-Grounded Chunk Assembly (80% - 100%)
-        # -------------------------------------------------------------------------
-        t0 = time.perf_counter()
-        processed_chunks: list[ProcessedChunk] = []
-
-        for page, scrubbed_text in sanitized_pages:
-            display_text = f"{page.page_label} {scrubbed_text}".strip()
-
-            chunk_meta: dict[str, Any] = {
-                "page_number": page.page_number,
-                "page_label": page.page_label,
-                "width_pts": page.width_pts,
-                "height_pts": page.height_pts,
-                "word_count": page.word_count,
-                "char_count": page.char_count,
-                "is_pdf": True,
-            }
-            if metadata:
-                chunk_meta.update(metadata)
-
-            processed_chunks.append(
-                ProcessedChunk(
-                    chunk_id=f"{pdf_id}:{page.page_number - 1}",
-                    document_id=pdf_id,
-                    chunk_index=page.page_number - 1,
-                    text=display_text,
-                    metadata=chunk_meta,
-                )
-            )
-
-        dt_step5 = (time.perf_counter() - t0) * 1000.0
-        traces.append(
-            ProcessingStageTrace(
-                step_number=5,
-                stage_name="Page-Grounded Chunk Assembly",
-                status="completed",
-                duration_ms=round(dt_step5, 2),
-                summary="Assembled final chunks with grounded metadata (vectors are produced at storage time by embed_texts()).",
-                details={},
-            )
-        )
-
-        doc_meta: dict[str, Any] = {
-            "format": "PDF",
-            "version": meta.version,
-            "page_count": meta.page_count,
-            "total_words": total_words,
-            "total_chars": total_chars,
-            "is_encrypted": meta.is_encrypted,
-            "is_pdf": True,
-        }
-        if metadata:
-            doc_meta.update(metadata)
-
-        total_ms = (time.perf_counter() - t_start_total) * 1000.0
-        summary_msg = (
-            f"Successfully processed PDF '{name}' ({meta.page_count} pages, {total_words} words) "
-            f"into {len(processed_chunks)} page-grounded chunks in {total_ms:.1f}ms."
-        )
-
-        return ProcessedDocumentPayload(
-            document_id=pdf_id,
-            name=name,
-            file_type="pdf",
-            file_size_bytes=file_size_bytes,
-            content_hash=content_hash,
-            classification=doc_meta.get("classification", "document"),
-            chunks=processed_chunks,
-            metadata=doc_meta,
-            execution_trace=traces,
-            summary=summary_msg,
-        )
-
+    @bounded_output
     def process_mysql_table(
         self,
         table_name: str,
@@ -1576,8 +1455,10 @@ class NexusClient:
         # Step 3: Format-Aware Tabular Chunking (40% - 60%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
+        # Mask by column before serializing: ids, amounts and timestamps keep their values.
+        masked_rows, rows_masked = mask_rows(self.guardrails, rows, apply_guardrails)
         raw_chunks = chunk_mysql_table(
-            rows,
+            masked_rows,
             table_name=table_name,
             primary_key=detected_pk,
             rows_per_chunk=rows_per_chunk,
@@ -1605,21 +1486,13 @@ class NexusClient:
         # Step 4: Safety Guardrails & PII Sanitization (60% - 80%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        cleaned_chunks: list[str] = []
-        total_masked = 0
-        for chunk in raw_chunks:
-            if apply_guardrails:
-                masked = self.guardrails.mask_pii(chunk)
-                if masked != chunk:
-                    total_masked += 1
-                cleaned_chunks.append(masked)
-            else:
-                cleaned_chunks.append(chunk)
+        cleaned_chunks: list[str] = list(raw_chunks)  # masked by column in step 3
+        total_masked = rows_masked
 
         dt_step4 = (time.perf_counter() - t0) * 1000.0
         guardrails_summary = (
-            f"Evaluated {len(raw_chunks)} table chunks through PII scrubbers. "
-            f"Sanitized sensitive data in {total_masked} chunk(s)."
+            f"Evaluated {len(raw_chunks)} table chunks through column-aware PII masking. "
+            f"Sanitized sensitive data in {total_masked} row(s)."
             if apply_guardrails
             else "Safety guardrails bypassed: preserving raw tabular records."
         )
@@ -1645,6 +1518,7 @@ class NexusClient:
         processed_chunks: list[ProcessedChunk] = []
         doc_id = f"mysql:{table_name}"
 
+        group = max(1, rows_per_chunk)
         for idx, chunk_text in enumerate(cleaned_chunks):
             chunk_meta: dict[str, Any] = {
                 "source_table": table_name,
@@ -1653,6 +1527,11 @@ class NexusClient:
                 "is_database": True,
                 "database_type": "mysql",
             }
+            if group == 1:
+                chunk_meta["record"] = jsonable(masked_rows[idx])
+            else:
+                batch = masked_rows[idx * group : (idx + 1) * group]
+                chunk_meta["records"] = [jsonable(r) for r in batch]
             if metadata:
                 chunk_meta.update(metadata)
 
@@ -1709,6 +1588,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_mongo_collection(
         self,
         collection_name: str,
@@ -1796,8 +1676,9 @@ class NexusClient:
         # Step 3: Document Record Serialization & Chunking (40% - 60%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
+        masked_docs, docs_masked = mask_rows(self.guardrails, normalized_docs, apply_guardrails)
         raw_chunks = chunk_mongo_collection(
-            normalized_docs, collection_name=collection_name, flatten=flatten_nested
+            masked_docs, collection_name=collection_name, flatten=flatten_nested
         )
         dt_step3 = (time.perf_counter() - t0) * 1000.0
 
@@ -1822,21 +1703,14 @@ class NexusClient:
         # Step 4: Safety Guardrails & PII Sanitization (60% - 80%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        cleaned_chunks: list[str] = []
-        total_masked = 0
-        for chunk in raw_chunks:
-            if apply_guardrails:
-                masked = self.guardrails.mask_pii(chunk)
-                if masked != chunk:
-                    total_masked += 1
-                cleaned_chunks.append(masked)
-            else:
-                cleaned_chunks.append(chunk)
+        cleaned_chunks: list[str] = list(raw_chunks)  # masked by field in step 3
+        total_masked = docs_masked
 
         dt_step4 = (time.perf_counter() - t0) * 1000.0
         guardrails_summary = (
-            f"Evaluated {len(raw_chunks)} MongoDB document chunks through PII scrubbers. "
-            f"Sanitized sensitive data in {total_masked} chunk(s)."
+            f"Evaluated {len(raw_chunks)} MongoDB document chunks through column-aware "
+            "PII masking. "
+            f"Sanitized sensitive data in {total_masked} document(s)."
             if apply_guardrails
             else "Safety guardrails bypassed: preserving raw document records."
         )
@@ -1868,6 +1742,7 @@ class NexusClient:
                 "chunk_index": idx,
                 "is_database": True,
                 "database_type": "mongodb",
+                "record": jsonable(masked_docs[idx]),
             }
             if metadata:
                 chunk_meta.update(metadata)
@@ -1924,6 +1799,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_audio(
         self,
         audio_id: str,
@@ -2187,6 +2063,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_spreadsheet(
         self,
         spreadsheet_id: str,
@@ -2301,18 +2178,30 @@ class NexusClient:
 
         # Step 4: Safety Guardrails & PII Sanitization
         t0 = time.perf_counter()
-        sanitized_chunks: list[tuple[Any, str]] = []
+        # Rows are masked by column, one classification per sheet; the row text is
+        # rebuilt from the masked row so text and record always agree.
+        masked_data: dict[int, dict[str, Any]] = {}
         total_masked_items = 0
-
+        for sheet in spreadsheet_payload.sheets:
+            data = [r.data for r in sheet.rows]
+            masked, changed = mask_rows(self.guardrails, data, apply_guardrails)
+            total_masked_items += changed
+            for row_chunk, row in zip(sheet.rows, masked, strict=True):
+                masked_data[id(row_chunk)] = row
+        sanitized_chunks: list[tuple[Any, str]] = []
         for chunk in spreadsheet_payload.all_chunks:
             n_text = chunk.narrative_text
-            if apply_guardrails and n_text:
+            if id(chunk) in masked_data:
+                if apply_guardrails:
+                    n_text = spreadsheet_row_text(
+                        name, chunk.sheet_name, chunk.row_index, masked_data[id(chunk)]
+                    )
+            elif apply_guardrails and n_text:
                 scrubbed_text = self.guardrails.mask_pii(n_text)
-                if scrubbed_text != n_text:
-                    total_masked_items += 1
-            else:
-                scrubbed_text = n_text
-            sanitized_chunks.append((chunk, scrubbed_text))
+                total_masked_items += int(scrubbed_text != n_text)
+                n_text = scrubbed_text
+            sanitized_chunks.append((chunk, n_text))
+        data_sheets = [s for s in spreadsheet_payload.sheets if s.rows]
 
         dt_step4 = (time.perf_counter() - t0) * 1000.0
         traces.append(
@@ -2339,10 +2228,18 @@ class NexusClient:
         for idx, (chunk, scrubbed_text) in enumerate(sanitized_chunks):
             chunk_meta: dict[str, Any] = {
                 "sheet_name": chunk.sheet_name,
+                "sheet": chunk.sheet_name,
                 "row_index": chunk.row_index,
-                "data": chunk.data,
                 "is_spreadsheet": True,
             }
+            if id(chunk) in masked_data:
+                # Typed (numbers, ISO dates), masked row; with several data sheets the
+                # sheet is a field so one workbook can be queried per sheet.
+                record = jsonable(masked_data[id(chunk)])
+                if len(data_sheets) > 1 and "sheet" not in record:
+                    record["sheet"] = chunk.sheet_name
+                chunk_meta["record"] = record
+                chunk_meta["data"] = jsonable(masked_data[id(chunk)])
             if metadata:
                 chunk_meta.update(metadata)
 
@@ -2399,6 +2296,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_presentation(
         self,
         presentation_id: str,
@@ -2604,6 +2502,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_word_document(
         self,
         document_id: str | None = None,
@@ -2829,6 +2728,7 @@ class NexusClient:
         """Alias for process_word_document."""
         return self.process_word_document(*args, **kwargs)
 
+    @bounded_output
     def process_email(
         self,
         email_id: str,
@@ -3049,6 +2949,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_chat(
         self,
         chat_id: str,
@@ -3250,6 +3151,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_slack_export(
         self,
         export_id: str,
@@ -3328,6 +3230,7 @@ class NexusClient:
             summary=f"Processed Slack export '{name}' into {len(processed)} chunks in {total_ms:.1f}ms.",
         )
 
+    @bounded_output
     def process_sqlite(
         self,
         db_id: str,
@@ -3538,6 +3441,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_code(
         self,
         code_id: str,
@@ -3737,6 +3641,7 @@ class NexusClient:
             summary=summary_msg,
         )
 
+    @bounded_output
     def process_openapi(
         self,
         spec_id: str,

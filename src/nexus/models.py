@@ -103,3 +103,6 @@ class ProcessedDocumentPayload(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     execution_trace: list[ProcessingStageTrace] = Field(default_factory=list)
     summary: str = ""
+    # Parse quality of the output: chars, alnum/replacement ratios, empty chunks, language
+    # and flags such as "garbled_text" or "no_text" (nexus.processing.quality.assess_text).
+    quality: dict[str, Any] = Field(default_factory=dict)

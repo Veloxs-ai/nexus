@@ -26,12 +26,18 @@ from .audio import (
 )
 from .cdc import (
     ChangeEvent,
+    apply_change,
     change_event_text,
+    driver_jsonable,
+    is_newer,
+    mongo_change_event,
+    mysql_row_event,
     normalize_change_event,
     normalize_change_events,
     sign_webhook_payload,
     verify_webhook_signature,
 )
+from .chunk_store import document_digest, prepare_chunks, title_passages
 from .code import (
     CodeChunk,
     CodeMetadata,
@@ -56,7 +62,11 @@ from .email_chat import (
 )
 from .engine import ProcessingEngine
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
+from .json_table import JsonTable, compact_json, find_record_array, flatten_json, json_table
 from .kafka import KafkaRecord, KafkaSettings, KafkaSource, KafkaSourceError
+from .language import detect_language, detect_script
+from .markup_adf import adf_to_markdown
+from .markup_html import html_to_markdown
 from .ml_providers import (
     AudioTranscriber,
     CaptionProvider,
@@ -84,6 +94,12 @@ from .mysql import (
     chunk_mysql_table,
     serialize_mysql_row,
 )
+from .notion import (
+    notion_blocks_to_markdown,
+    notion_page_title,
+    notion_property_value,
+    notion_rich_text,
+)
 from .office import (
     PresentationMetadata,
     PresentationPayload,
@@ -100,7 +116,10 @@ from .office import (
     process_spreadsheet_binary,
     process_word_binary,
 )
+from .outline import Outline, OutlineSection, build_outline, plan_sections, section_text
+from .passages import join_adjacent, stitch
 from .pdf import PDFMetadata, PDFPage, PDFPayload, process_pdf_binary
+from .pdf_extract import PdfExtraction, PdfPageText, extract_pdf_pages
 from .pgoutput import (
     PgOutputDecoder,
     PgOutputError,
@@ -109,6 +128,7 @@ from .pgoutput import (
     PublishedTable,
     SlotInfo,
 )
+from .quality import assess_text
 from .slack_export import (
     SlackChunk,
     looks_like_slack_export,
@@ -127,6 +147,8 @@ from .sqlite import (
     process_sqlite_binary,
     process_sqlite_file,
 )
+from .text_decode import DecodedText, decode_text, looks_binary
+from .token_budget import estimate_tokens, fit_text, split_header
 from .video import (
     VideoMetadata,
     VideoPayload,
@@ -152,6 +174,7 @@ __all__ = [
     "CodeProcessingPayload",
     "CodeSymbol",
     "ColumnSchema",
+    "DecodedText",
     "EasyOCRProvider",
     "EmailChunk",
     "EmailMetadata",
@@ -159,14 +182,19 @@ __all__ = [
     "FasterWhisperTranscriber",
     "ForeignKeyInfo",
     "ImageMetadata",
+    "JsonTable",
     "KafkaRecord",
     "KafkaSettings",
     "KafkaSource",
     "KafkaSourceError",
     "OCRProvider",
+    "Outline",
+    "OutlineSection",
     "PDFMetadata",
     "PDFPage",
     "PDFPayload",
+    "PdfExtraction",
+    "PdfPageText",
     "PgOutputDecoder",
     "PgOutputError",
     "PgTransaction",
@@ -196,26 +224,54 @@ __all__ = [
     "WordPayload",
     "WordSectionChunk",
     "__version__",
+    "adf_to_markdown",
+    "apply_change",
+    "assess_text",
     "auto_detect_demuxer",
     "auto_detect_ocr_provider",
     "auto_detect_transcriber",
+    "build_outline",
     "change_event_text",
     "chunk_mongo_collection",
     "chunk_mysql_table",
+    "compact_json",
+    "decode_text",
+    "detect_language",
+    "detect_script",
+    "document_digest",
+    "driver_jsonable",
+    "estimate_tokens",
+    "extract_pdf_pages",
+    "find_record_array",
+    "fit_text",
+    "flatten_json",
     "flatten_mongo_document",
     "format_audio_timestamp",
     "format_timestamp",
     "group_word_sections",
+    "html_to_markdown",
     "is_easyocr_available",
     "is_faster_whisper_available",
+    "is_newer",
     "is_package_available",
     "is_pyav_available",
+    "join_adjacent",
+    "json_table",
+    "looks_binary",
     "looks_like_slack_export",
     "messages_to_chunks",
+    "mongo_change_event",
+    "mysql_row_event",
     "normalize_change_event",
     "normalize_change_events",
+    "notion_blocks_to_markdown",
+    "notion_page_title",
+    "notion_property_value",
+    "notion_rich_text",
     "parse_id3_metadata",
     "parse_slack_export",
+    "plan_sections",
+    "prepare_chunks",
     "process_audio_binary",
     "process_chat_dialog",
     "process_code",
@@ -232,11 +288,15 @@ __all__ = [
     "process_video_binary",
     "process_word_binary",
     "release_idle_models",
+    "section_text",
     "serialize_bson_value",
     "serialize_mongo_document",
     "serialize_mysql_row",
     "sign_webhook_payload",
     "slack_event_message",
+    "split_header",
+    "stitch",
+    "title_passages",
     "verify_slack_signature",
     "verify_webhook_signature",
 ]

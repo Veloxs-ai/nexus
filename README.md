@@ -247,7 +247,32 @@ doc = client.process_code("pipeline-py", "pipeline.py", code_input=source_code)
 doc = client.process_openapi("orders-api", "openapi.json", spec_data=spec_content)
 ```
 
-### 3. Unified Cross-Modal Search
+### 3. Files, storage-ready chunks and source formats
+
+Hand Nexus raw bytes and get back everything you store; an application built on Nexus does no parsing of its own:
+
+```python
+from nexus.processing import decode_text, html_to_markdown, adf_to_markdown, json_table
+
+doc = client.process_file("f-1", "report.pdf", raw_bytes)            # dispatch by extension + content
+doc = client.process_pdf("f-2", "scan.pdf", pdf_bytes=raw)            # stdlib reader, OCR of scans
+doc = client.process_pdf("f-3", "x.pdf", pdf_bytes=raw, page_texts=my_engine)  # your extractor, Nexus cleans
+text = client.extract_text("notes.docx", raw_bytes).text              # readable text, no chunking
+print(doc.quality["flags"])                                            # e.g. ["garbled_text"] for a bad parse
+
+chunks = client.prepare_chunks(stored_chunks, title="Handbook.pdf")   # token-bounded, rows packed
+vectors = client.embed_passages([c["text"] for c in chunks], titles="Handbook.pdf")
+summary = client.document_digest("Handbook.pdf", "pdf", chunks)
+
+decode_text(b"caf\xe9").text                    # 'café' (cp1252 detected; nothing dropped)
+html_to_markdown(page_html)                     # also dialect="confluence"
+adf_to_markdown(jira_description)               # Atlassian Document Format
+json_table(api_dump).rows                       # the largest record array, flattened
+```
+
+PDFs are read by a standard-library reader (xref streams, object streams, ToUnicode fonts); scanned pages are OCR'd with the `[ocr]` extra, running headers and footers are removed and font-size headings become the page's `heading_path`. JSON exports become row records like CSV. Database change events go through `client.process_change_events(events, state=..., column_kinds=...)`, which merges partial updates and masks each record by column with kinds that stay stable across batches.
+
+### 4. Unified Cross-Modal Search
 
 Every modality produces text chunks embedded by the same semantic model, so you can index and query across text, spreadsheets, audio transcripts, and diagrams at once:
 

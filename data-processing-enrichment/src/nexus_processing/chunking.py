@@ -21,6 +21,8 @@ import io
 import json
 import re
 
+from .json_table import compact_json
+
 
 def pack_rows(rows: list[str], header: str = "", max_chars: int = 1500) -> list[str]:
     """Pack consecutive row narratives into row-group chunks.
@@ -78,7 +80,8 @@ def chunk_csv(csv_str: str, max_chars: int = 1500) -> list[str]:
 
 
 def chunk_json(json_str: str) -> list[str]:
-    """Parses structural JSON payloads and extracts discrete, readable object/array records."""
+    """Parses structural JSON payloads and extracts discrete object/array records (compact
+    JSON). Record arrays inside a document are better read as rows: ``json_table``."""
     try:
         cleaned = json_str.strip()
         if cleaned.startswith("```"):
@@ -98,11 +101,12 @@ def chunk_json(json_str: str) -> list[str]:
 
         data = json.loads(json_payload)
         chunks: list[str] = []
+        # Compact: indent=2 spent ~40% of a chunk's characters (and tokens) on spaces.
         if isinstance(data, list):
             for item in data:
-                chunks.append(json.dumps(item, indent=2))
+                chunks.append(compact_json(item))
         elif isinstance(data, dict):
-            chunks.append(json.dumps(data, indent=2))
+            chunks.append(compact_json(data))
         return chunks if chunks else [json_str]
     except Exception:
         return chunk_smart_text(json_str)
@@ -111,50 +115,138 @@ def chunk_json(json_str: str) -> list[str]:
 def chunk_smart_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:
     """Slice text along paragraph (\n\n) and sentence (. ) boundaries,
     preserving semantic cohesion.
+
+    Linear time: the window advances over one string by index instead of re-slicing the
+    remaining text after every chunk (8 MB of text: ~0.1 s instead of ~4.4 s).
     """
     clean_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not clean_text:
         return []
 
     chunks: list[str] = []
-    remaining_text = clean_text
-
-    while len(remaining_text) > 0:
-        if len(remaining_text) <= chunk_size:
-            if remaining_text.strip():
-                chunks.append(remaining_text.strip())
+    n = len(clean_text)
+    pos = 0
+    floor = chunk_size * 0.4
+    while pos < n:
+        if n - pos <= chunk_size:
+            tail = clean_text[pos:].strip()
+            if tail:
+                chunks.append(tail)
             break
+        limit = pos + chunk_size
 
         # Priority 1: Double newline (paragraph boundary)
-        split_point = remaining_text.rfind("\n\n", 0, chunk_size)
+        split_point = clean_text.rfind("\n\n", pos, limit)
+        split_point = split_point - pos if split_point != -1 else -1
         # Priority 2: Sentence period followed by space
-        if split_point == -1 or split_point < chunk_size * 0.4:
-            split_point = remaining_text.rfind(". ", 0, chunk_size)
-            if split_point != -1:
-                split_point += 1
+        if split_point == -1 or split_point < floor:
+            found = clean_text.rfind(". ", pos, limit)
+            split_point = found - pos + 1 if found != -1 else -1
         # Priority 3: Word space
-        if split_point == -1 or split_point < chunk_size * 0.4:
-            split_point = remaining_text.rfind(" ", 0, chunk_size)
+        if split_point == -1 or split_point < floor:
+            found = clean_text.rfind(" ", pos, limit)
+            split_point = found - pos if found != -1 else -1
         # Fallback: Hard character cutoff
-        if split_point == -1 or split_point < chunk_size * 0.4:
+        if split_point == -1 or split_point < floor:
             split_point = chunk_size
 
-        chunk = remaining_text[:split_point].strip()
+        chunk = clean_text[pos : pos + split_point].strip()
         if chunk:
             chunks.append(chunk)
 
         next_start = max(0, split_point - chunk_overlap)
         if 0 < next_start < split_point:
             # Start the overlap window on a word boundary, never mid-word.
-            boundary = remaining_text.find(" ", next_start, split_point)
+            boundary = clean_text.find(" ", pos + next_start, pos + split_point)
             if boundary != -1:
-                next_start = boundary + 1
-        remaining_text = remaining_text[next_start:].strip()
+                next_start = boundary - pos + 1
+        if next_start <= 0:  # an overlap as long as the chunk would never advance
+            next_start = split_point
+        pos += next_start
+        while pos < n and clean_text[pos].isspace():
+            pos += 1
 
     return chunks
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+
+
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+
+
+def _blocks_with_tables(body: str) -> list[tuple[bool, list[str]]]:
+    """``body`` as consecutive ``(is_table, lines)`` blocks; a table is a pipe header row,
+    a ``|---|`` separator row and the pipe rows that follow."""
+    lines = body.split("\n")
+    blocks: list[tuple[bool, list[str]]] = []
+    text: list[str] = []
+    i = 0
+    while i < len(lines):
+        if (
+            i + 1 < len(lines)
+            and _TABLE_ROW_RE.match(lines[i])
+            and _TABLE_SEP_RE.match(lines[i + 1])
+        ):
+            end = i + 2
+            while end < len(lines) and _TABLE_ROW_RE.match(lines[end]):
+                end += 1
+            if text:
+                blocks.append((False, text))
+                text = []
+            blocks.append((True, lines[i:end]))
+            i = end
+            continue
+        text.append(lines[i])
+        i += 1
+    if text:
+        blocks.append((False, text))
+    return blocks
+
+
+def split_table(lines: list[str], max_chars: int) -> list[str]:
+    """A Markdown table as pieces of at most ``max_chars`` (when rows allow), split only
+    between rows; every piece repeats the header and separator rows."""
+    header = "\n".join(lines[:2])
+    pieces: list[str] = []
+    rows: list[str] = []
+    size = len(header)
+    for row in lines[2:]:
+        if rows and size + len(row) + 1 > max_chars:
+            pieces.append(header + "\n" + "\n".join(rows))
+            rows, size = [], len(header)
+        rows.append(row)
+        size += len(row) + 1
+    if rows or not pieces:
+        pieces.append(header + ("\n" + "\n".join(rows) if rows else ""))
+    return pieces
+
+
+def _section_pieces(body: str, budget: int, overlap: int) -> list[str]:
+    """Pieces of one Markdown section; a table that has to be split keeps its header on
+    every piece (sections without an oversized table are cut by ``chunk_smart_text``)."""
+    blocks = _blocks_with_tables(body) if len(body) > budget else []
+    if not any(is_table for is_table, _ in blocks):
+        return chunk_smart_text(body, chunk_size=budget, chunk_overlap=overlap)
+    pieces: list[str] = []
+    for is_table, lines in blocks:
+        block = "\n".join(lines).strip()
+        if not block:
+            continue
+        if not is_table:
+            pieces.extend(chunk_smart_text(block, chunk_size=budget, chunk_overlap=overlap))
+        elif len(block) <= budget:
+            pieces.append(block)
+        else:
+            pieces.extend(split_table([ln.strip() for ln in lines], budget))
+    merged: list[str] = []
+    for piece in pieces:  # keep short neighbours together (a caption with its table)
+        if merged and len(merged[-1]) + 2 + len(piece) <= budget:
+            merged[-1] = f"{merged[-1]}\n\n{piece}"
+        else:
+            merged.append(piece)
+    return merged
 
 
 def chunk_markdown(text: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> list[str]:
@@ -206,7 +298,7 @@ def chunk_markdown(text: str, chunk_size: int = 1000, chunk_overlap: int = 150) 
         # Heading-only sections are merged into the next chunk via the breadcrumb.
         if len(body.split("\n")) == 1 and _HEADING_RE.match(body):
             continue
-        for piece in chunk_smart_text(body, chunk_size=budget, chunk_overlap=chunk_overlap):
+        for piece in _section_pieces(body, budget, chunk_overlap):
             chunks.append(prefix + piece)
     return chunks or chunk_smart_text(clean_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 

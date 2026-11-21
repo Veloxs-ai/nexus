@@ -142,6 +142,40 @@ def best_torch_device() -> str:
 OCR_MAX_SIDE = 2560  # EasyOCR's own canvas limit; larger images only cost decode time
 
 
+MIN_OCR_CONFIDENCE = 0.3
+
+
+def order_ocr_boxes(results: list[Any]) -> list[tuple[str, float]]:
+    """EasyOCR ``detail=1`` results ``[(box, text, confidence)]`` as lines in reading order.
+
+    Boxes whose vertical centres fall inside the previous box's height join that line;
+    each line's confidence is the mean of its boxes.
+    """
+    boxes = []
+    for item in results or []:
+        try:
+            box, text, conf = item
+            ys = [float(p[1]) for p in box]
+            xs = [float(p[0]) for p in box]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if str(text).strip():
+            boxes.append((min(ys), max(ys), min(xs), str(text).strip(), float(conf)))
+    boxes.sort(key=lambda b: (b[0], b[2]))
+    lines: list[list[tuple[float, float, float, str, float]]] = []
+    for box in boxes:
+        centre = (box[0] + box[1]) / 2
+        if lines and lines[-1][0][0] <= centre <= lines[-1][0][1]:
+            lines[-1].append(box)
+        else:
+            lines.append([box])
+    out = []
+    for line in lines:
+        line.sort(key=lambda b: b[2])
+        out.append((" ".join(b[3] for b in line), round(sum(b[4] for b in line) / len(line), 3)))
+    return out
+
+
 class EasyOCRProvider:
     """OCR provider using EasyOCR (CRAFT text detector + CRNN recognizer, PyTorch).
 
@@ -193,13 +227,23 @@ class EasyOCRProvider:
         except Exception:
             return image_bytes
 
-    def extract_text(self, image_bytes: bytes) -> str:
-        """Extract text from image bytes using EasyOCR."""
+    def read_lines(self, image_bytes: bytes) -> list[tuple[str, float]]:
+        """OCR lines in reading order with their confidence: ``[(text, confidence 0..1)]``.
+
+        EasyOCR boxes (``detail=1``) are grouped into lines by vertical overlap, ordered
+        top to bottom and, within a line, left to right.
+        """
         image_bytes = self._downscale(image_bytes)
         with self._lock:  # one inference at a time per shared model
-            results = self._get_reader().readtext(image_bytes, detail=0)
+            results = self._get_reader().readtext(image_bytes, detail=1)
             self._last_used = _time.monotonic()
-        return " ".join(results).strip()
+        return order_ocr_boxes(results)
+
+    def extract_text(self, image_bytes: bytes) -> str:
+        """Extract text from image bytes using EasyOCR (lines in reading order; boxes below
+        ``MIN_OCR_CONFIDENCE`` are dropped)."""
+        lines = self.read_lines(image_bytes)
+        return "\n".join(t for t, c in lines if c >= MIN_OCR_CONFIDENCE).strip()
 
 
 class FasterWhisperTranscriber:

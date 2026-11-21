@@ -138,9 +138,25 @@ def messages_to_chunks(
     chunks: list[SlackChunk] = []
     for thread_ts, items in threads.items():
         items.sort(key=lambda m: float(m.get("ts", 0) or 0))
-        text = f"[Slack #{channel} | Thread started {_day(thread_ts)}]\n" + "\n".join(line(m) for m in items)
-        chunks.append(SlackChunk(channel, "thread", _day(thread_ts), text[: MAX_CHUNK_CHARS * 3],
-                                 sorted({_speaker(m, users) for m in items}), len(items), thread_ts))
+        header = f"[Slack #{channel} | Thread started {_day(thread_ts)}]"
+        # A long thread becomes several chunks, each led by the thread header: never truncated.
+        part: list[dict[str, Any]] = []
+        size = 0
+        groups: list[list[dict[str, Any]]] = []
+        for m in items:
+            rendered = len(line(m)) + 1
+            if part and size + rendered > MAX_CHUNK_CHARS * 3:
+                groups.append(part)
+                part, size = [], 0
+            part.append(m)
+            size += rendered
+        if part:
+            groups.append(part)
+        for number, group in enumerate(groups, start=1):
+            label = header if len(groups) == 1 else f"{header[:-1]} | Part {number}/{len(groups)}]"
+            text = label + "\n" + "\n".join(line(m) for m in group)
+            chunks.append(SlackChunk(channel, "thread", _day(thread_ts), text,
+                                     sorted({_speaker(m, users) for m in group}), len(group), thread_ts))
 
     window: list[dict[str, Any]] = []
     size = 0

@@ -48,6 +48,31 @@ def normalize_text(text: str) -> str:
     return "".join(cleaned_chars)
 
 
+# Characters removed from STORED text: invisible and able to hide or reorder what a reader
+# sees. ZWJ / ZWNJ (U+200D / U+200C) are kept: Indic scripts, Persian and emoji need them.
+_INVISIBLE_STORED = {
+    0x200B: None,  # zero-width space
+    0x2060: None,  # word joiner
+    0xFEFF: None,  # zero-width no-break space / BOM
+    0x00AD: None,  # soft hyphen
+    **{cp: None for cp in range(0x202A, 0x202F)},  # bidi embeddings and overrides
+    **{cp: None for cp in range(0x2066, 0x206A)},  # bidi isolates
+    0x200E: None,  # left-to-right mark
+    0x200F: None,  # right-to-left mark
+}
+
+
+def strip_invisible(text: str) -> str:
+    """Remove bidi controls and zero-width spaces from text that is stored or shown,
+    keeping zero-width joiners (one ``str.translate`` pass)."""
+    return text.translate(_INVISIBLE_STORED) if text and not text.isascii() else text
+
+
+def is_invisible(char: str) -> bool:
+    """True for characters the detectors ignore (zero-width and format/bidi controls)."""
+    return char in _ZERO_WIDTH_CODEPOINTS or unicodedata.category(char) == "Cf"
+
+
 def luhn_valid(digits: str) -> bool:
     """Verify a digit string passes the Luhn checksum."""
     stripped = [int(ch) for ch in digits if ch.isdigit()]

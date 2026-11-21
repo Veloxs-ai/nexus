@@ -25,6 +25,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from .spreadsheet_values import WorkbookStyles, xls_cell_value
+
 __all__ = [
     "PresentationMetadata",
     "PresentationPayload",
@@ -39,6 +41,7 @@ __all__ = [
     "process_presentation_binary",
     "process_spreadsheet_binary",
     "process_word_binary",
+    "spreadsheet_row_text",
 ]
 
 _COORD_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
@@ -209,6 +212,21 @@ class PresentationPayload:
     slides: list[SlideData] = field(default_factory=list)
 
 
+def _display(value: Any) -> str:
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return str(value)
+
+
+def spreadsheet_row_text(
+    filename: str, sheet_name: str, row_index: int, data: dict[str, Any]
+) -> str:
+    """Row narrative: ``[Workbook: f | Sheet: s | Row n] Col: value | ...``."""
+    return f"[Workbook: {filename} | Sheet: {sheet_name} | Row {row_index}] " + " | ".join(
+        f"{header}: {_display(value)}" for header, value in data.items()
+    )
+
+
 def _is_legacy_xls(raw_bytes: bytes, filename: str) -> bool:
     """Detects whether bytes or filename denote a legacy Microsoft Excel (.xls / BIFF) file."""
     if raw_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
@@ -322,30 +340,23 @@ def _process_legacy_xls(raw_bytes: bytes, filename: str) -> SpreadsheetPayload:
 
             headers: list[str] = []
             for c in range(num_cols):
-                val = sheet.cell_value(0, c)
+                val = xls_cell_value(xlrd, sheet, 0, c, wb.datemode)
                 headers.append(str(val).strip() if val != "" else f"col_{c}")
 
             sheet_row_chunks: list[SpreadsheetRowChunk] = []
             for r in range(1, num_rows):
                 row_dict: dict[str, Any] = {}
-                narrative_items: list[str] = []
                 for c in range(num_cols):
-                    val = sheet.cell_value(r, c)
+                    val = xls_cell_value(xlrd, sheet, r, c, wb.datemode)
                     if val != "" and val is not None:
                         total_populated_cells += 1
                         header = headers[c] if c < len(headers) else f"col_{c}"
-                        if isinstance(val, float) and val.is_integer():
-                            val = int(val)
                         row_dict[header] = val
-                        narrative_items.append(f"{header}: {val}")
 
-                if not narrative_items:
+                if not row_dict:
                     continue
 
-                row_narrative = (
-                    f"[Workbook: {filename} | Sheet: {sheet_name} | Row {r + 1}] "
-                    + " | ".join(narrative_items)
-                )
+                row_narrative = spreadsheet_row_text(filename, sheet_name, r + 1, row_dict)
                 chunk = SpreadsheetRowChunk(
                     sheet_name=sheet_name,
                     row_index=r + 1,
@@ -422,6 +433,7 @@ def process_spreadsheet_binary(
         raise ValueError(f"Corrupted or invalid XLSX archive: {exc}") from exc
 
     namelist = set(zf.namelist())
+    styles = WorkbookStyles.from_zip(zf)  # date number formats: serials become ISO dates
 
     # 1. Parse Shared Strings Table (xl/sharedStrings.xml)
     shared_strings: list[str] = []
@@ -546,9 +558,9 @@ def process_spreadsheet_binary(
                     val = "".join(parts)
                 elif v_elem is not None and v_elem.text is not None:
                     raw_v = v_elem.text.strip()
-                    try:
-                        val = float(raw_v) if "." in raw_v else int(raw_v)
-                    except ValueError:
+                    if cell_type in ("n", ""):
+                        val = styles.value(raw_v, cell_elem.attrib.get("s"))
+                    else:  # "str" (formula text), "e" (error), "d" (ISO date): keep the text
                         val = raw_v
 
                 if val != "":
@@ -590,19 +602,13 @@ def process_spreadsheet_binary(
         for r_num in data_row_indices:
             r_data = raw_rows[r_num]
             row_dict: dict[str, Any] = {}
-            narrative_items: list[str] = []
 
             for c_idx in range(num_cols):
                 h_name = headers[c_idx]
                 if c_idx in r_data:
-                    c_val = r_data[c_idx]
-                    row_dict[h_name] = c_val
-                    narrative_items.append(f"{h_name}: {c_val}")
+                    row_dict[h_name] = r_data[c_idx]
 
-            row_narrative = (
-                f"[Workbook: {filename} | Sheet: {sheet_name} | Row {r_num}] "
-                + " | ".join(narrative_items)
-            )
+            row_narrative = spreadsheet_row_text(filename, sheet_name, r_num, row_dict)
 
             chunk = SpreadsheetRowChunk(
                 sheet_name=sheet_name,
@@ -634,12 +640,11 @@ def process_spreadsheet_binary(
             SpreadsheetRowChunk(
                 sheet_name="[Embedded Images]",
                 row_index=0,
-                text=img_combined,
+                data={},
                 narrative_text=(
                     f"[Workbook: {filename} | Embedded Images]\n"
                     f"{img_combined}"
                 ),
-                word_count=len(img_combined.split()),
             )
         )
 
@@ -840,10 +845,12 @@ def process_presentation_binary(
                                     t.text for t in tc.iter()
                                     if _local_tag(t) == "t" and t.text
                                 ]
-                                cell_str = " ".join(cell_texts).strip()
+                                cell_str = " ".join(cell_texts).strip().replace("|", "\\|")
                                 row_cells.append(cell_str if cell_str else "-")
                         if any(c != "-" for c in row_cells):
-                            table_rows.append(" | ".join(row_cells))
+                            table_rows.append("| " + " | ".join(row_cells) + " |")
+                            if len(table_rows) == 1:  # first row is the header: a Markdown table
+                                table_rows.append("|" + " --- |" * len(row_cells))
                 if table_rows:
                     body_paragraphs.append("[Table]\n" + "\n".join(table_rows))
 
@@ -1079,6 +1086,18 @@ def group_word_sections(chunks: list[WordSectionChunk], filename: str, max_chars
     return grouped
 
 
+def _body_blocks(body: Any) -> Any:
+    """Paragraphs and tables of a document body in order, including those inside block-level
+    content controls (``w:sdt``/``w:sdtContent``), where Word templates often keep the text."""
+    for elem in body:
+        if _local_tag(elem) == "sdt":
+            for part in elem:
+                if _local_tag(part) == "sdtContent":
+                    yield from _body_blocks(part)
+        else:
+            yield elem
+
+
 def process_word_binary(
     raw_bytes: bytes,
     filename: str = "document.docx",
@@ -1143,12 +1162,13 @@ def process_word_binary(
     headings: list[str] = []
     current_section = doc_title or "Document Overview"
     current_heading_level = 0
+    heading_stack: list[tuple[int, str]] = []  # (level, text): "Section" is the full path
     total_paragraphs = 0
     total_tables = 0
     total_words = 0
     chunk_seq = 0
 
-    for elem in body:
+    for elem in _body_blocks(body):
         tag = _local_tag(elem)
 
         if tag == "p":
@@ -1191,7 +1211,9 @@ def process_word_binary(
                     h_level = 1 if style_lower == "title" else 2
 
             if is_heading:
-                current_section = p_text
+                heading_stack = [(lvl, txt) for lvl, txt in heading_stack if lvl < h_level]
+                heading_stack.append((h_level, p_text))
+                current_section = " > ".join(txt for _, txt in heading_stack)
                 current_heading_level = h_level
                 headings.append(p_text)
                 narrative = f"[Document: {filename} | Heading (Level {h_level}): {p_text}]"

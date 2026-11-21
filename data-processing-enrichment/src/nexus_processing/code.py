@@ -27,6 +27,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .code_coverage import uncovered_blocks
+
+
 @dataclass
 class CodeSymbol:
     """Represents a discovered symbol (function, method, class, interface, model)."""
@@ -85,6 +88,38 @@ class CodeProcessingPayload:
     metadata: CodeMetadata
     chunks: list[CodeChunk]
     symbols: list[CodeSymbol]
+
+
+def _first_line(node: ast.AST) -> int:
+    """First source line of a definition, decorators included."""
+    decorators = getattr(node, "decorator_list", None) or []
+    return min([node.lineno, *(d.lineno for d in decorators)])
+
+
+def _module_chunks(
+    lines: list[str], spans: list[tuple[int, int]], file_name: str, language: str
+) -> list[CodeChunk]:
+    chunks: list[CodeChunk] = []
+    for start, end, text in uncovered_blocks(lines, spans):
+        chunks.append(
+            CodeChunk(
+                chunk_id=f"{file_name}_module_{start}",
+                symbol_name=file_name,
+                symbol_type="module",
+                language=language,
+                file_name=file_name,
+                start_line=start,
+                end_line=end,
+                signature=f"module {file_name}",
+                docstring="",
+                body_text=text,
+                narrative_text=(
+                    f"[Code AST: {file_name} | Module-level code | Lines: {start}-{end}]\n{text}"
+                ),
+                metadata={"language": language},
+            )
+        )
+    return chunks
 
 
 def _format_py_arg(arg: ast.arg) -> str:
@@ -166,7 +201,7 @@ def process_python_source(
         # Fallback to plain chunking when unparseable snippet provided
         narrative = (
             f"[Code AST: {file_name} | Snippet (Unparsed) | Lines: 1-{total_lines}]\n"
-            f"Error: {e}\n{code_text[:500]}"
+            f"Error: {e}\n{code_text}"
         )
         c = CodeChunk(
             chunk_id=f"{file_name}_snippet",
@@ -325,6 +360,17 @@ def process_python_source(
             ]
             if method_names:
                 cls_narrative += f"Methods: {', '.join(method_names)}\n"
+            # Class-level statements (attributes, fields, constants) outside the methods.
+            method_spans = [
+                (_first_line(m), getattr(m, "end_lineno", m.lineno))
+                for m in node.body
+                if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)
+            ]
+            class_lines = lines[cls_s - 1 : cls_e]
+            spans = [(1, 1)] + [(a - cls_s + 1, b - cls_s + 1) for a, b in method_spans]
+            members = uncovered_blocks(class_lines, spans)
+            if members:
+                cls_narrative += "Body:\n" + "\n".join(text for _s, _e, text in members) + "\n"
 
 
             chunks.append(
@@ -338,7 +384,7 @@ def process_python_source(
                     end_line=cls_e,
                     signature=cls_sig,
                     docstring=cls_doc,
-                    body_text=cls_body[:2000],
+                    body_text=cls_body,
                     narrative_text=cls_narrative,
                     metadata={"bases": bases, "methods": method_names},
                 )
@@ -358,7 +404,7 @@ def process_python_source(
         )
         if doc:
             narrative += f'"""{doc}"""\n'
-        narrative += code_text[:2000]
+        narrative += code_text
 
         chunks.append(
             CodeChunk(
@@ -376,6 +422,15 @@ def process_python_source(
                 metadata={"imports": imports},
             )
         )
+
+    else:
+        # Module-level code between the symbols (imports, constants, script statements).
+        spans = [
+            (_first_line(n), getattr(n, "end_lineno", n.lineno))
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        ]
+        chunks.extend(_module_chunks(lines, spans, file_name, "python"))
 
     metadata = CodeMetadata(
         file_name=file_name,
@@ -556,6 +611,10 @@ def process_polyglot_source(
             i = end_line
         else:
             i += 1
+
+    if chunks:  # code outside the matched symbols (imports, constants, statements)
+        spans = [(c.start_line, c.end_line) for c in chunks]
+        chunks.extend(_module_chunks(lines, spans, file_name, lang))
 
     # Fallback to windowed code chunks if no symbols identified
     if not chunks:

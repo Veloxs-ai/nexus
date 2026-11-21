@@ -351,7 +351,7 @@ def segment_temporal_scenes(
             f"Keyframe dHash: {dhash_hex}"
         )
         if transcript_text:
-            narrative += f' | Dialogue: "{transcript_text[:140]}"'
+            narrative += f' | Dialogue: "{transcript_text}"'
 
         scenes.append(
             VideoSceneChunk(

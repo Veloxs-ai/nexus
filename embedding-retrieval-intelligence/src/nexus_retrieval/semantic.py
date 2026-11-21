@@ -18,13 +18,21 @@
 
 Backed by FastEmbed (ONNX Runtime, CPU-friendly, no torch dependency). Models are
 downloaded once and cached; loading is lazy and process-wide so every NexusClient
-shares one model instance.
+shares one embedder.
+
+Query-time inference never waits behind ingestion: a ``SemanticEmbedder`` keeps a
+second, query-only model instance (``embed_query``) next to the passage instance
+(``embed_batch``), and ``embed_batch`` takes its lock once per mini-batch, so
+concurrent ingests interleave instead of queueing behind one another's whole batch.
+The cross-encoder re-ranker likewise locks per mini-batch of pairs.
 
 Configuration (environment):
     NEXUS_EMBEDDING_PROVIDER   fastembed | openai                   (default: fastembed)
     NEXUS_EMBEDDING_MODEL      FastEmbed model id              (default: BAAI/bge-small-en-v1.5)
     NEXUS_RERANK_MODEL         FastEmbed cross-encoder id      (default: Xenova/ms-marco-MiniLM-L-6-v2)
     NEXUS_MODEL_CACHE_DIR      Model cache directory           (default: FastEmbed default)
+    NEXUS_QUERY_MODEL          separate | shared: query-only model instance (default: separate)
+    NEXUS_ONNX_THREADS         ONNX intra-op threads per instance (default: ONNX Runtime default)
 
 ``openai`` calls the OpenAI embeddings API (OPENAI_API_KEY; model via
 NEXUS_OPENAI_EMBEDDING_MODEL, default text-embedding-3-small) with
@@ -57,12 +65,47 @@ class TextEmbedder(Protocol):
     provider: str
     model_name: str
     dimensions: int
+    max_tokens: int
 
     def embed(self, text: str) -> list[float]: ...
 
     def embed_query(self, text: str) -> list[float]: ...
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
+
+    def count_tokens(self, text: str) -> int: ...
+
+
+# Share of the model's input window a stored chunk may use. The rest is headroom for the
+# special tokens and for a short prefix callers add at embedding time (a document name):
+# 512-token models -> 450 tokens per chunk.
+CHUNK_WINDOW_SHARE = 0.88
+
+
+def max_chunk_tokens(window: int) -> int:
+    """Largest chunk (in tokens) a model with a ``window``-token input can embed whole."""
+    return max(16, int(window * CHUNK_WINDOW_SHARE))
+
+
+def estimate_tokens(text: str) -> int:
+    """Upper-bound token estimate for models without a local tokenizer (~3 chars/token)."""
+    return max(1, -(-len(text or "") // 3))
+
+
+def _onnx_threads() -> int | None:
+    raw = (os.environ.get("NEXUS_ONNX_THREADS") or "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
+def _fastembed_kwargs(model_name: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"model_name": model_name}
+    cache_dir = os.environ.get("NEXUS_MODEL_CACHE_DIR")
+    if cache_dir:
+        kwargs["cache_dir"] = cache_dir
+    threads = _onnx_threads()
+    if threads:
+        kwargs["threads"] = threads
+    return kwargs
 
 
 class SemanticEmbedder:
@@ -71,22 +114,78 @@ class SemanticEmbedder:
     Passages and queries are embedded asymmetrically (``passage_embed`` /
     ``query_embed``) which is what BGE/E5-style retrieval models are trained for.
     Vectors are L2-normalised, so cosine distance == 1 - dot product.
+
+    Two model instances serve the two paths: ``embed_query`` runs on a query-only
+    instance with its own lock, so a user's question is answered in milliseconds while
+    a pipeline embeds thousands of passages. ``embed_batch`` sorts passages by length
+    (less padding) and holds the passage lock for one mini-batch at a time. Set
+    ``NEXUS_QUERY_MODEL=shared`` to use one instance for both (half the memory; queries
+    then wait for at most one passage mini-batch).
     """
 
     provider = "fastembed"
 
-    def __init__(self, model_name: str | None = None, batch_size: int = 64) -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        batch_size: int = 64,
+        separate_query_model: bool | None = None,
+    ) -> None:
         from fastembed import TextEmbedding
 
         self.model_name = model_name or os.environ.get("NEXUS_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
-        self.batch_size = batch_size
-        kwargs: dict[str, Any] = {"model_name": self.model_name}
-        cache_dir = os.environ.get("NEXUS_MODEL_CACHE_DIR")
-        if cache_dir:
-            kwargs["cache_dir"] = cache_dir
-        self._model = TextEmbedding(**kwargs)
-        self._infer_lock = threading.Lock()
+        self.batch_size = max(1, batch_size)
+        if separate_query_model is None:
+            choice = (os.environ.get("NEXUS_QUERY_MODEL") or "separate").strip().lower()
+            separate_query_model = choice != "shared"
+        self._model = TextEmbedding(**_fastembed_kwargs(self.model_name))
+        self._passage_lock = threading.Lock()
+        if separate_query_model:
+            self._query_model = TextEmbedding(**_fastembed_kwargs(self.model_name))
+            self._query_lock = threading.Lock()
+        else:
+            self._query_model = self._model
+            self._query_lock = self._passage_lock
+        self.separate_query_model = bool(separate_query_model)
+        self._counter = self._token_counter()
+        self.window = self._window()
+        self.max_tokens = max_chunk_tokens(self.window)
         self.dimensions = len(self.embed_query("dimension probe"))
+
+    def _tokenizer(self) -> Any:
+        return getattr(getattr(self._model, "model", None), "tokenizer", None)
+
+    def _window(self) -> int:
+        tok = self._tokenizer()
+        truncation = getattr(tok, "truncation", None) or {}
+        return int(truncation.get("max_length") or 512)
+
+    def _token_counter(self) -> Any:
+        """A non-truncating copy of the model's tokenizer (the model's own one truncates)."""
+        tok = self._tokenizer()
+        if tok is None:
+            return None
+        try:
+            from tokenizers import Tokenizer
+
+            counter = Tokenizer.from_str(tok.to_str())
+            counter.no_truncation()
+            counter.no_padding()
+            return counter
+        except Exception:  # pragma: no cover - tokenizer layout of another backend
+            return None
+
+    def count_tokens(self, text: str) -> int:
+        """Tokens ``text`` costs in this model's window (without the special tokens)."""
+        if self._counter is None:
+            return estimate_tokens(text)
+        return len(self._counter.encode(text or "", add_special_tokens=False).ids)
+
+    def count_tokens_batch(self, texts: list[str]) -> list[int]:
+        if self._counter is None:
+            return [estimate_tokens(t) for t in texts]
+        encoded = self._counter.encode_batch(list(texts), add_special_tokens=False)
+        return [len(e.ids) for e in encoded]
 
     @staticmethod
     def _to_list(vec: Any) -> list[float]:
@@ -96,15 +195,24 @@ class SemanticEmbedder:
         return self.embed_batch([text])[0]
 
     def embed_query(self, text: str) -> list[float]:
-        with self._infer_lock:
-            return self._to_list(next(iter(self._model.query_embed([text or " "]))))
+        with self._query_lock:
+            return self._to_list(next(iter(self._query_model.query_embed([text or " "]))))
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         clean = [t if (t and t.strip()) else " " for t in texts]
-        with self._infer_lock:
-            return [self._to_list(v) for v in self._model.passage_embed(clean, batch_size=self.batch_size)]
+        # Length-sorted mini-batches pad less; results are put back in input order.
+        order = sorted(range(len(clean)), key=lambda i: len(clean[i]))
+        out: list[list[float] | None] = [None] * len(clean)
+        for start in range(0, len(order), self.batch_size):
+            idx = order[start : start + self.batch_size]
+            batch = [clean[i] for i in idx]
+            with self._passage_lock:  # one mini-batch at a time: other callers interleave
+                vecs = list(self._model.passage_embed(batch, batch_size=len(batch)))
+            for i, vec in zip(idx, vecs, strict=True):
+                out[i] = self._to_list(vec)
+        return out  # type: ignore[return-value]
 
 
 class OpenAIEmbedder:
@@ -120,6 +228,14 @@ class OpenAIEmbedder:
         self.base_model = model_name or os.environ.get("NEXUS_OPENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
         self.dimensions = int(dimensions or os.environ.get("NEXUS_EMBEDDING_DIMENSIONS") or 384)
         self.model_name = f"openai/{self.base_model}@{self.dimensions}"
+        self.window = 8191
+        self.max_tokens = max_chunk_tokens(self.window)
+
+    def count_tokens(self, text: str) -> int:
+        return estimate_tokens(text)
+
+    def count_tokens_batch(self, texts: list[str]) -> list[int]:
+        return [estimate_tokens(t) for t in texts]
 
     def _request(self, texts: list[str]) -> list[list[float]]:
         import json
@@ -180,26 +296,29 @@ class CrossEncoderReranker:
 
     Far more precise than bi-encoder similarity, so it is applied to a small
     candidate pool (typically 30-100) produced by hybrid first-stage retrieval.
+    The model lock is held per mini-batch of pairs, so concurrent questions
+    interleave instead of each waiting for every earlier pool to finish.
     """
 
     provider = "fastembed"
+    batch_size = 32
 
     def __init__(self, model_name: str | None = None) -> None:
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
         self.model_name = model_name or os.environ.get("NEXUS_RERANK_MODEL") or DEFAULT_RERANK_MODEL
-        kwargs: dict[str, Any] = {"model_name": self.model_name}
-        cache_dir = os.environ.get("NEXUS_MODEL_CACHE_DIR")
-        if cache_dir:
-            kwargs["cache_dir"] = cache_dir
-        self._model = TextCrossEncoder(**kwargs)
+        self._model = TextCrossEncoder(**_fastembed_kwargs(self.model_name))
         self._infer_lock = threading.Lock()
 
     def score(self, query: str, passages: list[str]) -> list[float]:
         if not passages:
             return []
-        with self._infer_lock:
-            raw = [float(s) for s in self._model.rerank(query, passages, batch_size=32)]
+        raw: list[float] = []
+        for start in range(0, len(passages), self.batch_size):
+            batch = passages[start : start + self.batch_size]
+            with self._infer_lock:
+                scores = self._model.rerank(query, batch, batch_size=len(batch))
+                raw.extend(float(s) for s in scores)
         # Logits -> (0, 1) so callers can apply absolute relevance thresholds.
         return [1.0 / (1.0 + math.exp(-s)) for s in raw]
 

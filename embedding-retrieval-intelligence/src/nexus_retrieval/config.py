@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -62,6 +63,9 @@ class RankingConfig(BaseModel):
     semantic_weight: float = 0.6
     lexical_weight: float = 0.3
     graph_weight: float = 0.1
+    # "weighted": weighted sum of the raw scores (the weights above);
+    # "rrf": Reciprocal Rank Fusion of the ranked lists (scale-free; weights unused).
+    fusion: Literal["weighted", "rrf"] = "weighted"
 
     @model_validator(mode="after")
     def validate_weights(self) -> RankingConfig:

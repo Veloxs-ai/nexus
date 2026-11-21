@@ -33,7 +33,9 @@ class RetrievalEngine:
     """In-memory vector embedding and hybrid retrieval intelligence engine.
 
     Uses the configured semantic embedder (FastEmbed/OpenAI) and conducts
-    hybrid (semantic + lexical + knowledge graph) retrieval with Reciprocal Rank Fusion.
+    hybrid (semantic + lexical + knowledge graph) retrieval. Scores are fused by a weighted
+    sum (``RankingConfig.fusion="weighted"``, the default) or by Reciprocal Rank Fusion
+    (``fusion="rrf"``).
     Provides complete thread safety and pure in-memory execution for serverless runtimes.
     """
 

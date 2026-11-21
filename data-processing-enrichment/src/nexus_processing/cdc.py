@@ -28,14 +28,26 @@ One entry point for the change-event formats databases actually emit:
 Payloads may be a single event, a list, ``{"events": [...]}`` or NDJSON text.
 ``verify_webhook_signature`` implements HMAC-SHA256 request signing with optional
 timestamp binding (replay protection).
+
+Ordering and idempotency: each event carries ``source_position`` (a PostgreSQL LSN, a
+MySQL binlog file and position, a MongoDB cluster time) when the source provides one, and
+``is_newer`` compares two positions, so a consumer can skip a redelivered or older event
+for a record it already holds a newer state of. ``apply_change`` merges an event into the
+record's stored state (partial MongoDB updates, removed fields, deletes);
+``mysql_row_event`` and ``mongo_change_event`` turn binlog rows and change-stream
+documents into events ``normalize_change_event`` reads.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
+import decimal
 import hashlib
 import hmac
 import json
+import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +75,10 @@ class ChangeEvent:
     removed_fields: list[str] = field(default_factory=list)
     partial: bool = False  # only changed fields are present (merge with stored record)
     timestamp_ms: int = 0
+    # Where the change is in the source's log ("lsn:<n>", "binlog:<file>:<pos>",
+    # "clustertime:<t>:<i>"); "" when the source does not say. See ``is_newer``.
+    source_position: str = ""
+    tx_id: str = ""
 
     @property
     def is_delete(self) -> bool:
@@ -126,6 +142,8 @@ def normalize_change_event(event: dict[str, Any]) -> ChangeEvent:
             removed_fields=list(update.get("removedFields") or []),
             partial=partial,
             timestamp_ms=int((event.get("wallTime") or {}).get("$date", 0) or 0) if isinstance(event.get("wallTime"), dict) else 0,
+            source_position=_mongo_position(event.get("clusterTime")),
+            tx_id=str(event.get("txnNumber") or ""),
         )
 
     # Maxwell: {"database","table","type","ts","data","old","primary_key"}
@@ -140,6 +158,8 @@ def normalize_change_event(event: dict[str, Any]) -> ChangeEvent:
             key=_derive_key(record, event.get("primary_key")),
             record=record,
             timestamp_ms=int(event.get("ts", 0) or 0) * 1000,
+            source_position=_binlog_position(event.get("position")),
+            tx_id=str(event.get("xid") or ""),
         )
 
     # Debezium (optionally wrapped: {"schema":..,"payload":..}; Kafka key may ride along)
@@ -157,6 +177,8 @@ def normalize_change_event(event: dict[str, Any]) -> ChangeEvent:
             key=_derive_key(record, event.get("key")),
             record=record,
             timestamp_ms=int(payload.get("ts_ms") or source.get("ts_ms") or 0),
+            source_position=_debezium_position(source),
+            tx_id=str((payload.get("transaction") or {}).get("id") or source.get("txId") or ""),
         )
 
     # Generic webhook: {"op"/"operation", "table"/"collection", "record"/"after"/"data", "key"?}
@@ -171,6 +193,152 @@ def normalize_change_event(event: dict[str, Any]) -> ChangeEvent:
         record=record if isinstance(record, dict) else {"value": record},
         timestamp_ms=int(event.get("ts_ms", event.get("timestamp_ms", 0)) or 0),
     )
+
+
+def _debezium_position(source: dict[str, Any]) -> str:
+    try:
+        return _debezium_position_raw(source)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _debezium_position_raw(source: dict[str, Any]) -> str:
+    if source.get("lsn") not in (None, ""):
+        return f"lsn:{_lsn_int(source['lsn'])}"
+    if source.get("file") and source.get("pos") not in (None, ""):
+        return f"binlog:{source['file']}:{int(source['pos'])}"
+    if source.get("change_lsn"):  # SQL Server: "00000027:00000758:0005"
+        return f"lsn:{int(str(source['change_lsn']).replace(':', ''), 16)}"
+    return ""
+
+
+def _lsn_int(value: Any) -> int:
+    """PostgreSQL LSN as an integer (accepts 23503040 or "0/166A2C0")."""
+    text = str(value)
+    if "/" in text:
+        high, low = text.split("/", 1)
+        return (int(high, 16) << 32) + int(low, 16)
+    return int(text)
+
+
+def _binlog_position(position: Any) -> str:
+    """Maxwell ``position``: "mysql-bin.000004:4596"."""
+    if not position or ":" not in str(position):
+        return ""
+    file, pos = str(position).rsplit(":", 1)
+    return f"binlog:{file}:{int(pos)}" if pos.isdigit() else ""
+
+
+def _mongo_position(cluster_time: Any) -> str:
+    if isinstance(cluster_time, dict) and isinstance(cluster_time.get("$timestamp"), dict):
+        ts = cluster_time["$timestamp"]
+        try:
+            return f"clustertime:{int(ts.get('t', 0))}:{int(ts.get('i', 0))}"
+        except (TypeError, ValueError):
+            return ""
+    if hasattr(cluster_time, "time") and hasattr(cluster_time, "inc"):  # bson.Timestamp
+        return f"clustertime:{int(cluster_time.time)}:{int(cluster_time.inc)}"
+    return ""
+
+
+_BINLOG_FILE = re.compile(r"^(.*?)(\d+)$")
+
+
+def _position_key(position: str) -> tuple[str, tuple[Any, ...]] | None:
+    kind, _, rest = position.partition(":")
+    try:
+        if kind == "lsn":
+            return kind, (int(rest),)
+        if kind == "clustertime":
+            t, i = rest.split(":")
+            return kind, (int(t), int(i))
+        if kind == "binlog":
+            file, pos = rest.rsplit(":", 1)
+            match = _BINLOG_FILE.match(file)
+            seq = (match.group(1), int(match.group(2))) if match else (file, 0)
+            return kind, (*seq, int(pos))
+    except ValueError:
+        return None
+    return None
+
+
+def is_newer(event: ChangeEvent, than: ChangeEvent | str | None) -> bool:
+    """True when ``event`` comes after ``than`` (another event or a stored position).
+
+    Positions of the same kind are compared exactly; otherwise event timestamps decide
+    when both are known. When nothing can be compared the event is treated as newer
+    (applying it is the at-least-once default).
+    """
+    if than is None or than == "":
+        return True
+    other_pos = than if isinstance(than, str) else than.source_position
+    mine, theirs = _position_key(event.source_position), _position_key(other_pos)
+    if mine and theirs and mine[0] == theirs[0]:
+        return mine[1] > theirs[1]
+    if not isinstance(than, str) and event.timestamp_ms and than.timestamp_ms:
+        return event.timestamp_ms >= than.timestamp_ms
+    return True
+
+
+def apply_change(previous: dict[str, Any] | None, event: ChangeEvent) -> dict[str, Any] | None:
+    """The record's state after ``event``: ``None`` for a delete; a partial update is merged
+    into ``previous`` (and its removed fields dropped); a full image replaces it."""
+    if event.is_delete:
+        return None
+    record = dict(event.record)
+    if event.partial:
+        record = {**(previous or {}), **record}
+        for removed in event.removed_fields:
+            record.pop(removed, None)
+    return record
+
+
+def driver_jsonable(value: Any) -> Any:
+    """Database-driver values (Decimal, datetime, UUID, bytes, ObjectId, ...) -> JSON-safe."""
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    if isinstance(value, dict):
+        return {str(k): driver_jsonable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [driver_jsonable(v) for v in value]
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, _dt.datetime | _dt.date | _dt.time):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, bytes | bytearray | memoryview):
+        return f"<{len(bytes(value))} bytes>"
+    if hasattr(value, "time") and hasattr(value, "inc"):  # bson.Timestamp
+        return {"$timestamp": {"t": int(value.time), "i": int(value.inc)}}
+    return str(value)
+
+
+def mysql_row_event(
+    database: str,
+    table: str,
+    operation: str,
+    row: dict[str, Any],
+    primary_key: list[str] | None = None,
+    ts: int = 0,
+    position: str | None = None,
+) -> dict[str, Any]:
+    """A MySQL binlog row as a Maxwell-style event (``operation``: insert/update/delete)."""
+    data = driver_jsonable(row)
+    event: dict[str, Any] = {
+        "database": database, "table": table, "type": operation, "data": data, "ts": ts,
+    }
+    if primary_key and all(k in data for k in primary_key):
+        event["primary_key"] = {k: data[k] for k in primary_key}
+    if position:
+        event["position"] = position
+    return event
+
+
+def mongo_change_event(change: dict[str, Any]) -> dict[str, Any]:
+    """A MongoDB change-stream document as a JSON-safe event (the resume token ``_id`` is
+    dropped; ``clusterTime`` is kept for ordering)."""
+    return driver_jsonable({k: v for k, v in change.items() if k != "_id"})
 
 
 def normalize_change_events(payload: Any) -> list[ChangeEvent]:

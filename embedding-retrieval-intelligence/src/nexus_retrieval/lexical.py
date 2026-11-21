@@ -48,20 +48,63 @@ class LexicalIndex:
         uri: str = "data/indexes/lexical_index.json",
         base_dir: Path | None = None,
         in_memory_only: bool = True,
+        scoring: str = "share",
     ) -> None:
+        """``scoring``: ``"share"`` (default) scores the IDF-weighted share of the query
+        matched (0..1); ``"bm25"`` is Okapi BM25 (``k1=1.2``, ``b=0.75``: term-frequency
+        saturation and document-length normalisation), normalised to 0..1 by the best hit."""
+        if scoring not in ("share", "bm25"):
+            raise ValueError("scoring must be 'share' or 'bm25'")
         self.uri = uri
         self.base_dir = base_dir or Path.cwd()
         self.in_memory_only = in_memory_only
+        self.scoring = scoring
         self.documents: dict[str, IndexedDocument] = {}
         self.postings: dict[str, dict[str, int]] = defaultdict(dict)
+        self.lengths: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def add(self, document: IndexedDocument) -> None:
-        tokens_count = Counter(tokenize(document.text)).items()
+        tokens = tokenize(document.text)
+        tokens_count = Counter(tokens).items()
         with self._lock:
             self.documents[document.id] = document
+            self.lengths[document.id] = len(tokens)
             for token, count in tokens_count:
                 self.postings[token][document.id] = count
+
+    def _bm25(
+        self, terms: list[str], limit: int, k1: float = 1.2, b: float = 0.75
+    ) -> list[SearchResult]:
+        with self._lock:
+            total_docs = len(self.documents)
+            postings = {term: dict(self.postings.get(term, {})) for term in terms}
+            docs_snapshot = dict(self.documents)
+            lengths = dict(self.lengths)
+        if not total_docs:
+            return []
+        avg_len = (sum(lengths.values()) / len(lengths)) if lengths else 1.0
+        scores: dict[str, float] = defaultdict(float)
+        for docs in postings.values():
+            idf = math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
+            for doc_id, tf in docs.items():
+                norm = k1 * (1 - b + b * lengths.get(doc_id, avg_len) / (avg_len or 1.0))
+                scores[doc_id] += idf * tf * (k1 + 1) / (tf + norm)
+        top = max(scores.values(), default=0.0) or 1.0
+        results = [
+            SearchResult(
+                id=doc_id,
+                collection=docs_snapshot[doc_id].collection,
+                text=docs_snapshot[doc_id].text,
+                score=round(score / top, 6),
+                lexical_score=round(score / top, 6),
+                metadata=docs_snapshot[doc_id].metadata,
+            )
+            for doc_id, score in scores.items()
+            if doc_id in docs_snapshot
+        ]
+        results.sort(key=lambda result: result.score, reverse=True)
+        return results[:limit]
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         """Keyword search scored by how much of the query matched.
@@ -74,6 +117,8 @@ class LexicalIndex:
         terms = query_terms(query)
         if not terms:
             return []
+        if self.scoring == "bm25":
+            return self._bm25(terms, limit)
         with self._lock:
             total_docs = len(self.documents)
             postings = {term: dict(self.postings.get(term, {})) for term in terms}
@@ -128,5 +173,9 @@ class LexicalIndex:
                     for doc_id, document in payload.get("documents", {}).items()
                 }
                 self.postings = defaultdict(dict, payload.get("postings", {}))
+                self.lengths = {
+                    doc_id: len(tokenize(document.text))
+                    for doc_id, document in self.documents.items()
+                }
         except Exception:
             pass

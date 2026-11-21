@@ -23,12 +23,57 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 
-TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_\-]+")
+# Words in any script: letters, digits, "_", "-" and the combining marks of scripts whose
+# vowel signs and viramas are marks (Indic, Thai, Arabic, Hebrew...; ``\w`` alone would cut
+# "हिन्दी" apart). CJK runs are split into bigrams below.
+TOKEN_PATTERN = re.compile(
+    r"[\w\-\u0300-\u036f\u0483-\u0489\u0591-\u05c7\u0610-\u061a\u064b-\u065f\u0670"
+    r"\u06d6-\u06ed\u0900-\u0dff\u0e00-\u0e7f\u0e80-\u0eff\u1000-\u109f\u1780-\u17ff"
+    r"\u200c\u200d]+"
+)
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+")
+
+
+def _fold(token: str) -> str:
+    """Casefold; Latin letters also lose their accents (``Café`` -> ``cafe``). Other scripts
+    keep their combining marks: Devanagari vowel signs are letters of the word."""
+    token = token.casefold().replace("\u200c", "").replace("\u200d", "")
+    if token.isascii():
+        return token
+    decomposed = unicodedata.normalize("NFKD", token)
+    out: list[str] = []
+    for char in decomposed:
+        if unicodedata.combining(char) and out and out[-1].isascii():
+            continue  # an accent on a Latin base letter
+        out.append(char)
+    return unicodedata.normalize("NFC", "".join(out))
 
 
 def tokenize(text: str) -> list[str]:
-    return [token.lower() for token in TOKEN_PATTERN.findall(text)]
+    """Lexical tokens of ``text`` in any script.
+
+    ASCII words are lowercased exactly as before. Accented Latin words match their
+    unaccented spelling, Devanagari/Arabic/Cyrillic/... words are tokens of their own, and
+    Chinese/Japanese/Korean runs (no spaces between words) become overlapping character
+    bigrams (a single character stays a token).
+    """
+    tokens: list[str] = []
+    for raw in TOKEN_PATTERN.findall(text or ""):
+        if raw.isascii():
+            tokens.append(raw.lower())
+            continue
+        pos = 0
+        for match in _CJK.finditer(raw):
+            if match.start() > pos:
+                tokens.append(_fold(raw[pos : match.start()]))
+            run = match.group(0)
+            tokens.extend(run if len(run) == 1 else [run[i : i + 2] for i in range(len(run) - 1)])
+            pos = match.end()
+        if pos < len(raw):
+            tokens.append(_fold(raw[pos:]))
+    return [t for t in tokens if t]
 
 
 def normalize_vector(vector: list[float]) -> list[float]:

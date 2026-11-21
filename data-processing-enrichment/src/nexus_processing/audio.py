@@ -16,22 +16,23 @@
 
 """Native pure-Python audio processor, acoustic feature extractor, and temporal segmenter.
 
-Processes uncompressed WAV and AIFF audio waveforms as well as MP3 ID3 metadata containers,
-extracts time-domain and frequency-domain acoustic descriptors (RMS energy, ZCR, spectral
-centroids, sub-band energies), and segments audio streams into temporally grounded chunks.
-Zero external C dependencies or deprecated standard library modules.
+Decodes uncompressed WAV and AIFF natively and, with PyAV (optional), compressed audio
+(MP3, M4A/AAC, OGG/Opus, FLAC). Transcribed audio is chunked by transcript segments, so
+every word is kept; audio without a transcript is framed into fixed windows with
+time-domain and frequency-domain descriptors (RMS energy, ZCR, spectral centroid,
+sub-band energies).
 """
 
 from __future__ import annotations
 
-import io
 import math
 import re
-import struct
-import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .audio_pcm import _decode_aiff_stream, _decode_wav_stream, compute_spectral_features
+from .audio_transcript import decode_audio, group_transcript, rms_zcr, split_transcript
 
 
 @dataclass(frozen=True)
@@ -198,222 +199,6 @@ def parse_id3_metadata(raw_bytes: bytes) -> dict[str, str]:
     return tags
 
 
-def _decode_wav_stream(
-    raw_bytes: bytes,
-) -> tuple[int, int, int, list[float]]:
-    """Decodes standard RIFF/WAVE container into sample rate, channels,
-    bit depth, and mono float samples.
-    """
-    bio = io.BytesIO(raw_bytes)
-    with wave.open(bio, "rb") as wf:
-        channels = max(1, wf.getnchannels())
-        sampwidth = wf.getsampwidth()
-        sample_rate = wf.getframerate()
-        num_frames = wf.getnframes()
-        pcm_bytes = wf.readframes(num_frames)
-
-    bit_depth = sampwidth * 8
-    samples: list[float] = []
-
-    if sampwidth == 1:
-        # 8-bit unsigned PCM (128 is center)
-        for i in range(num_frames):
-            frame_slice = pcm_bytes[i * channels : (i + 1) * channels]
-            mono = sum((b - 128) / 128.0 for b in frame_slice) / channels
-            samples.append(mono)
-    elif sampwidth == 2:
-        # 16-bit signed little-endian PCM
-        fmt = f"<{channels}h"
-        step = 2 * channels
-        for i in range(num_frames):
-            sub = pcm_bytes[i * step : (i + 1) * step]
-            vals = struct.unpack(fmt, sub)
-            mono = sum(vals) / (channels * 32768.0)
-            samples.append(mono)
-    elif sampwidth == 3:
-        # 24-bit signed little-endian PCM
-        step = 3 * channels
-        for i in range(num_frames):
-            sub = pcm_bytes[i * step : (i + 1) * step]
-            mono_acc = 0.0
-            for c in range(channels):
-                c_bytes = sub[c * 3 : (c + 1) * 3]
-                raw_int = int.from_bytes(c_bytes, "little", signed=True)
-                mono_acc += raw_int / 8388608.0
-            samples.append(mono_acc / channels)
-    elif sampwidth == 4:
-        # 32-bit audio: try IEEE float first, then signed integer
-        fmt_float = f"<{channels}f"
-        fmt_int = f"<{channels}i"
-        step = 4 * channels
-        # Detect format: if values as float are in [-1.0, 1.0] range, it's float
-        is_float = False
-        if num_frames > 0:
-            test_sub = pcm_bytes[:step]
-            if len(test_sub) == step:
-                test_vals = struct.unpack(fmt_float, test_sub)
-                if all(-1.0 <= v <= 1.0 for v in test_vals):
-                    is_float = True
-        if is_float:
-            for i in range(num_frames):
-                sub = pcm_bytes[i * step : (i + 1) * step]
-                vals = struct.unpack(fmt_float, sub)
-                mono = sum(vals) / channels
-                samples.append(max(-1.0, min(1.0, mono)))
-        else:
-            for i in range(num_frames):
-                sub = pcm_bytes[i * step : (i + 1) * step]
-                vals = struct.unpack(fmt_int, sub)
-                mono = sum(vals) / (channels * 2147483648.0)
-                samples.append(mono)
-    else:
-        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
-
-    return sample_rate, channels, bit_depth, samples
-
-
-def _decode_aiff_stream(
-    raw_bytes: bytes,
-) -> tuple[int, int, int, list[float]]:
-    """Decodes big-endian AIFF audio streams without external dependencies or deprecated aifc."""
-    if len(raw_bytes) < 12:
-        raise ValueError("AIFF file too small to contain valid header.")
-
-    magic, _form_size, aiff_type = struct.unpack(">4sI4s", raw_bytes[:12])
-    if magic != b"FORM" or aiff_type not in (b"AIFF", b"AIFC"):
-        raise ValueError("Invalid AIFF/AIFC signature.")
-
-    pos = 12
-    channels = 1
-    total_frames = 0
-    bit_depth = 16
-    sample_rate = 44100
-    pcm_data = b""
-
-    while pos + 8 <= len(raw_bytes):
-        ck_id, ck_size = struct.unpack(">4sI", raw_bytes[pos : pos + 8])
-        ck_data = raw_bytes[pos + 8 : pos + 8 + ck_size]
-        pos += 8 + ck_size
-        # AIFF chunks are padded to even byte boundary
-        if ck_size % 2 == 1:
-            pos += 1
-
-        if ck_id == b"COMM" and len(ck_data) >= 18:
-            channels, total_frames, bit_depth = struct.unpack(">hIh", ck_data[:8])
-            # Decode IEEE 754 80-bit extended precision float
-            exp_raw, mantissa = struct.unpack(">HQ", ck_data[8:18])
-            sign = (exp_raw >> 15) & 1
-            exp = exp_raw & 0x7FFF
-            if exp == 0 and mantissa == 0:
-                s_rate = 0.0
-            else:
-                s_rate = mantissa * (2.0 ** (exp - 16383 - 63))
-                if sign:
-                    s_rate = -s_rate
-            sample_rate = round(s_rate)
-        elif ck_id == b"SSND" and len(ck_data) >= 8:
-            offset, _block_size = struct.unpack(">II", ck_data[:8])
-            pcm_data = ck_data[8 + offset :]
-
-    if not pcm_data or total_frames == 0:
-        raise ValueError("AIFF audio contains empty sound data chunk (SSND).")
-
-    samples: list[float] = []
-    sampwidth = bit_depth // 8
-
-    if sampwidth == 2:
-        fmt = f">{channels}h"
-        step = 2 * channels
-        for i in range(total_frames):
-            sub = pcm_data[i * step : (i + 1) * step]
-            if len(sub) < step:
-                break
-            vals = struct.unpack(fmt, sub)
-            mono = sum(vals) / (channels * 32768.0)
-            samples.append(mono)
-    else:
-        # Fallback for 8-bit signed AIFF
-        for i in range(min(total_frames, len(pcm_data) // channels)):
-            frame_slice = pcm_data[i * channels : (i + 1) * channels]
-            mono = sum(struct.unpack(f">{channels}b", frame_slice)) / (channels * 128.0)
-            samples.append(mono)
-
-    return sample_rate, channels, bit_depth, samples
-
-
-def compute_spectral_features(samples: list[float], sample_rate: int) -> tuple[float, list[float]]:
-    """Computes spectral centroid and 7 sub-band energies via discrete transform approximation.
-
-    Frequency Sub-Bands:
-    1. Sub-Bass (20 - 60 Hz)
-    2. Bass (60 - 250 Hz)
-    3. Low-Mid (250 - 500 Hz)
-    4. Mid (500 - 2000 Hz)
-    5. High-Mid (2000 - 4000 Hz)
-    6. Presence (4000 - 6000 Hz)
-    7. Brilliance (6000 - 20000 Hz)
-    """
-    if not samples:
-        return 0.0, [0.0] * 7
-
-    # Use a downsampled representation of up to 1024 points for fast computation
-    n = len(samples)
-    target_len = min(n, 1024)
-    step = max(1, n // target_len)
-    window = samples[::step][:target_len]
-    w_len = len(window)
-
-    # 14 log-spaced frequencies across 40 Hz to 12000 Hz
-    center_freqs = [
-        40.0,
-        80.0,
-        150.0,
-        300.0,
-        450.0,
-        750.0,
-        1200.0,
-        1800.0,
-        2500.0,
-        3500.0,
-        4800.0,
-        6500.0,
-        8500.0,
-        12000.0,
-    ]
-    powers: list[float] = []
-
-    for fc in center_freqs:
-        # Discrete trigonometric projection
-        omega = 2.0 * math.pi * fc / sample_rate
-        re_sum = 0.0
-        im_sum = 0.0
-        for idx, val in enumerate(window):
-            angle = omega * idx
-            re_sum += val * math.cos(angle)
-            im_sum += val * math.sin(angle)
-        pwr = (re_sum * re_sum + im_sum * im_sum) / (w_len * w_len)
-        powers.append(pwr)
-
-    total_power = sum(powers)
-    if total_power > 1e-9:
-        centroid = sum(f * p for f, p in zip(center_freqs, powers, strict=False)) / total_power
-    else:
-        centroid = 0.0
-
-    # Aggregate into 7 sub-bands (pairs of center frequencies)
-    sub_bands: list[float] = [
-        powers[0],  # Sub-bass (~40Hz)
-        (powers[1] + powers[2]) / 2,  # Bass (80 - 150Hz)
-        (powers[3] + powers[4]) / 2,  # Low-Mid (300 - 450Hz)
-        (powers[5] + powers[6]) / 2,  # Mid (750 - 1200Hz)
-        (powers[7] + powers[8]) / 2,  # High-Mid (1800 - 2500Hz)
-        (powers[9] + powers[10]) / 2,  # Presence (3500 - 4800Hz)
-        (powers[11] + powers[12] + powers[13]) / 3,  # Brilliance (6.5kHz - 12kHz)
-    ]
-    norm_bands = [round(b * 1000.0, 4) for b in sub_bands]
-    return round(centroid, 1), norm_bands
-
-
 def process_audio_binary(
     audio_bytes: bytes,
     window_seconds: float = 10.0,
@@ -449,15 +234,19 @@ def process_audio_binary(
     ):
         detected_format = "aiff"
         sample_rate, channels, bit_depth, samples = _decode_aiff_stream(audio_bytes)
-    elif audio_bytes.startswith(b"ID3") or audio_bytes.startswith(b"\xff\xfb") or id3_tags:
-        # MP3 container with metadata
+    elif (decoded := decode_audio(audio_bytes)) is not None:
+        # MP3, M4A/AAC, OGG/Opus, FLAC, ... decoded with PyAV: real samples and duration.
+        detected_format = decoded.format
+        sample_rate, channels, samples = decoded.sample_rate, decoded.channels, decoded.samples
+        bit_depth = 16
+    elif audio_bytes.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")) or id3_tags:
+        # MP3 without a decoder (PyAV not installed): tags only; the duration comes from
+        # the transcript when there is one.
         detected_format = "mp3"
-        sample_rate = 44100
+        sample_rate = 16000
         channels = 2
         bit_depth = 16
-        # Generate representative sample points based on file bytes
-        stride = max(1, len(audio_bytes) // 44100)
-        samples = [(b - 128) / 128.0 for b in audio_bytes[::stride]]
+        samples = []
     else:
         # Attempt fallback to WAV parser
         try:
@@ -466,7 +255,8 @@ def process_audio_binary(
         except Exception as exc:
             raise ValueError(
                 f"Unsupported audio format (header: {audio_bytes[:8]!r}). "
-                "Supported formats: WAV (.wav), AIFF (.aiff), and MP3 (.mp3)."
+                "Supported formats: WAV (.wav), AIFF (.aiff), and, with PyAV installed "
+                "(extra [video]), MP3, M4A/AAC, OGG/Opus and FLAC."
             ) from exc
 
     total_samples = len(samples)
@@ -489,45 +279,85 @@ def process_audio_binary(
         if auto_transcript:
             transcript = auto_transcript
 
-    # Map transcribed segments to audio windows by time overlap
-    def _get_segment_transcript(start_sec: float, end_sec: float, timed_segs: list[dict]) -> str:
-        """Collects transcribed text that overlaps with [start_sec, end_sec] window."""
-        parts = []
-        for ts in timed_segs:
-            seg_start = ts.get("start", 0.0)
-            seg_end = ts.get("end", 0.0)
-            # Check overlap
-            if seg_end > start_sec and seg_start < end_sec:
-                parts.append(ts.get("text", ""))
-        return " ".join(parts).strip()
+    # Grounded narrative prefix shared by every chunk
+    tag_items: list[str] = []
+    if filename:
+        tag_items.append(f"Audio: {filename}")
+    if speaker:
+        tag_items.append(f"Speaker/Persona: {speaker}")
+    if voice_info.get("parameters"):
+        tag_items.append(f"Settings: {voice_info['parameters']}")
+    if id3_tags.get("title"):
+        tag_items.append(f"Title: {id3_tags['title']}")
+    if id3_tags.get("artist"):
+        tag_items.append(f"Artist: {id3_tags['artist']}")
 
-    # Frame into temporal segment windows
+    def _prefix(t_label: str) -> str:
+        return f"[{' | '.join(tag_items)} | {t_label}]" if tag_items else f"{t_label} Audio Segment"
+
+    # With a transcript, chunks are built from it (every word kept, acoustic numbers left
+    # out of the text); without one, the audio is framed into fixed acoustic windows.
+    if auto_segments:
+        groups = group_transcript(auto_segments)
+        duration_seconds = max(duration_seconds, max((g.end for g in groups), default=0.0))
+    elif transcript:
+        groups = split_transcript(transcript, duration_seconds)
+    else:
+        groups = []
+
+    segments: list[AudioSegment] = []
+    for seg_idx, group in enumerate(groups):
+        lo = min(total_samples, int(group.start * sample_rate))
+        hi = min(total_samples, max(lo, math.ceil(group.end * sample_rate)))
+        seg_samples = samples[lo:hi]
+        rms, zcr = rms_zcr(seg_samples)
+        centroid, sub_bands = compute_spectral_features(seg_samples, sample_rate)
+        t_label = f"[{format_audio_timestamp(group.start)} - {format_audio_timestamp(group.end)}]"
+        segments.append(
+            AudioSegment(
+                segment_index=seg_idx,
+                start_seconds=round(group.start, 2),
+                end_seconds=round(group.end, 2),
+                timestamp_label=t_label,
+                rms_energy=round(rms, 4),
+                zero_crossing_rate=round(zcr, 4),
+                spectral_centroid_hz=centroid,
+                activity_level="Speech",
+                sub_band_energies=sub_bands,
+                narrative_text=f'{_prefix(t_label)} Transcript: "{group.text}"',
+                transcript=group.text,
+                speaker=speaker,
+            )
+        )
+    if not groups and total_samples == 0:
+        # Undecodable container without a transcript: one tag-only chunk.
+        t_label = f"[{format_audio_timestamp(0)} - {format_audio_timestamp(0)}]"
+        segments.append(
+            AudioSegment(
+                segment_index=0, start_seconds=0.0, end_seconds=0.0, timestamp_label=t_label,
+                rms_energy=0.0, zero_crossing_rate=0.0, spectral_centroid_hz=0.0,
+                activity_level="Silent", sub_band_energies=[0.0] * 7,
+                narrative_text=_prefix(t_label), transcript=None, speaker=speaker,
+            )
+        )
+
+    # Frame into temporal segment windows (no transcript)
     win_sec = max(0.1, window_seconds)
     samples_per_win = round(win_sec * sample_rate)
-    segments: list[AudioSegment] = []
 
     seg_idx = 0
-    pos = 0
+    pos = 0 if not groups else total_samples
 
     while pos < total_samples:
         seg_samples = samples[pos : pos + samples_per_win]
-        if not seg_samples:
+        if not len(seg_samples):
             break
 
         start_s = pos / sample_rate
         end_s = min(duration_seconds, (pos + len(seg_samples)) / sample_rate)
         t_label = f"[{format_audio_timestamp(start_s)} - {format_audio_timestamp(end_s)}]"
 
-        # Compute RMS energy
-        rms = math.sqrt(sum(s * s for s in seg_samples) / len(seg_samples))
-
-        # Compute Zero-Crossing Rate
-        zcr_count = sum(
-            1
-            for j in range(1, len(seg_samples))
-            if (seg_samples[j] >= 0) != (seg_samples[j - 1] >= 0)
-        )
-        zcr = zcr_count / max(1, len(seg_samples) - 1)
+        rms, zcr = rms_zcr(seg_samples)
 
         # Activity level
         if rms < 0.01:
@@ -541,41 +371,11 @@ def process_audio_binary(
 
         centroid, sub_bands = compute_spectral_features(seg_samples, sample_rate)
 
-        # Grounded narrative text
-        tag_items: list[str] = []
-        if filename:
-            tag_items.append(f"Audio: {filename}")
-        if speaker:
-            tag_items.append(f"Speaker/Persona: {speaker}")
-        if voice_info.get("parameters"):
-            tag_items.append(f"Settings: {voice_info['parameters']}")
-        if id3_tags.get("title"):
-            tag_items.append(f"Title: {id3_tags['title']}")
-        if id3_tags.get("artist"):
-            tag_items.append(f"Artist: {id3_tags['artist']}")
-
-        prefix = (
-            f"[{' | '.join(tag_items)} | {t_label}]"
-            if tag_items
-            else f"{t_label} Audio Segment"
+        prefix = _prefix(t_label)
+        narrative = (
+            f"{prefix} | RMS: {rms:.3f} ({activity}) | "
+            f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
         )
-
-        seg_transcript = (
-            _get_segment_transcript(start_s, end_s, auto_segments)
-            if auto_segments
-            else (transcript or None)
-        )
-        
-        if seg_transcript:
-            narrative = (
-                f'{prefix} Transcript: "{seg_transcript}" | RMS: {rms:.3f} ({activity}) | '
-                f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
-            )
-        else:
-            narrative = (
-                f"{prefix} | RMS: {rms:.3f} ({activity}) | "
-                f"ZCR: {zcr:.3f} | Centroid: {centroid:.0f}Hz | Bands: {sub_bands}"
-            )
 
         segments.append(
             AudioSegment(
@@ -589,7 +389,7 @@ def process_audio_binary(
                 activity_level=activity,
                 sub_band_energies=sub_bands,
                 narrative_text=narrative,
-                transcript=seg_transcript,
+                transcript=None,
                 speaker=speaker,
             )
         )
@@ -605,14 +405,9 @@ def process_audio_binary(
 
     for b in range(num_bins):
         bin_slice = samples[b * step_samples : (b + 1) * step_samples]
-        if bin_slice:
-            rms_val = math.sqrt(sum(s * s for s in bin_slice) / len(bin_slice))
+        if len(bin_slice):
+            rms_val, zcr_val = rms_zcr(bin_slice)
             rms_envelope[b] = round(rms_val, 4)
-            zcr_val = sum(
-                1
-                for j in range(1, len(bin_slice))
-                if (bin_slice[j] >= 0) != (bin_slice[j - 1] >= 0)
-            ) / max(1, len(bin_slice) - 1)
             zcr_profile[b] = round(zcr_val, 4)
 
     # 64-bin spectral distribution

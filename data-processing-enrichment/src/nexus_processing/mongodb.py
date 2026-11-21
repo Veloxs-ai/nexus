@@ -98,8 +98,9 @@ def flatten_mongo_document(
             if v and all(isinstance(elem, str | int | float | bool) for elem in v):
                 items[new_key] = json.dumps(v)
             elif v and all(isinstance(elem, dict) for elem in v):
-                # Array of subdocuments: flatten first 10 elements
-                for idx, subdoc in enumerate(v[:10]):
+                # Array of subdocuments (order lines, addresses, ...): every element is kept;
+                # long arrays are split into more chunks downstream, never truncated.
+                for idx, subdoc in enumerate(v):
                     items.update(
                         flatten_mongo_document(
                             subdoc,
@@ -107,8 +108,6 @@ def flatten_mongo_document(
                             _pre_cleaned=_pre_cleaned,
                         )
                     )
-                if len(v) > 10:
-                    items[f"{new_key}._truncated"] = f"{len(v) - 10} more items"
             else:
                 items[new_key] = json.dumps(v)
         else:
