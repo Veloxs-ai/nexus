@@ -50,6 +50,7 @@ __all__ = [
     "mask_rows",
     "needs_vector",
     "row_hash",
+    "row_hash_json",
     "rows_from_columns",
     "rows_to_markdown",
 ]
@@ -313,10 +314,20 @@ def row_hash(record: Mapping[str, Any], *, exclude: Iterable[str] = ()) -> str:
     """A 40-character hex digest of a record's content (keys sorted, ``exclude`` keys left
     out): equal for equal rows whatever their key order, so a re-read table can tell changed,
     new and vanished rows apart without comparing them field by field."""
+    return row_hash_json(record, exclude=exclude)[0]
+
+
+def row_hash_json(record: Mapping[str, Any], *, exclude: Iterable[str] = ()) -> tuple[str, str]:
+    """``(row_hash(record), text)``: the digest and the canonical JSON text it is computed from
+    (keys sorted, compact, non-ASCII kept, other values as ``str``). A writer that stores the
+    row as JSON can store this text and get the hash without encoding the row twice."""
     skip = set(exclude)
-    body = {str(k): v for k, v in record.items() if k not in skip}
+    if not skip and type(record) is dict and all(type(k) is str for k in record):
+        body = record  # the same text without a copy
+    else:
+        body = {str(k): v for k, v in record.items() if k not in skip}
     text = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
-    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest(), text
 
 
 FREE_TEXT_CHARS = 40  # a text column whose typical value is this long is prose, not a code

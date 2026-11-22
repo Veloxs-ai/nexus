@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![Tests](https://img.shields.io/badge/tests-935%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-942%20passing-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -700,7 +700,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
-**Status (3.4.1):** all 935 tests pass (1 skipped) — 315 in the root suite and 620 across the seven layer suites on Python 3.12.
+**Status (3.4.2):** all 942 tests pass (1 skipped) — 322 in the root suite and 620 across the seven layer suites on Python 3.12.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git

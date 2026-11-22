@@ -73,6 +73,12 @@ def cap_record_values(
     otherwise only the changed objects are copied, the caller's record is not modified."""
     if not isinstance(record, dict) or max_chars is None or max_chars < 0:
         return record
+    limit = int(max_chars)
+    for value in record.values():  # the common flat row with short values: nothing to cut
+        if isinstance(value, (dict, list)) or (isinstance(value, str) and len(value) > limit):
+            break
+    else:
+        return record
     cut: dict[str, int] = {}
     capped = _cap(record, int(max_chars), "", cut)  # the marker holds numbers only
     if not cut:

@@ -18,7 +18,7 @@ from setuptools import setup
 
 setup(
     name="veloxs-nexus",
-    version="3.4.1",
+    version="3.4.2",
     package_dir={
         "nexus": "src/nexus",
         "nexus.pipeline": "enterprise-data-pipeline/src/nexus_pipeline",

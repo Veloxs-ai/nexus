@@ -27,7 +27,8 @@ each value and the count, exact sum, minimum and maximum of each numeric column:
 
 It is plain JSON (sums are exact decimal strings), so it can be stored with the table's profile.
 ``apply_row_change(rollups, old, new)`` keeps it current when one row changes (a removed
-minimum or maximum marks that value's min/max unknown rather than wrong).
+minimum or maximum marks that value's min/max unknown rather than wrong); ``apply_row_changes``
+does the same for a batch of ``(old, new)`` pairs.
 
 ``answer_from_rollups(query, rollups)`` answers a resolved ``RecordQuery`` (``nexus.record_spec``)
 when it is a count / sum / avg / min / max (or count_distinct of the filtered column) over the
@@ -48,8 +49,15 @@ from .record_eval import _nulls_last, _test, _test_metric, bucket
 from .record_render import RecordResult, render
 from .record_spec import Order, RecordQuery
 from .record_values import WS, fold, number_of, text_of
+from .table_rollups_build import accumulate
 
-__all__ = ["ROLLUP_VERSION", "answer_from_rollups", "apply_row_change", "build_rollups"]
+__all__ = [
+    "ROLLUP_VERSION",
+    "answer_from_rollups",
+    "apply_row_change",
+    "apply_row_changes",
+    "build_rollups",
+]
 
 ROLLUP_VERSION = 1
 MAX_GROUPS = 50
@@ -207,10 +215,11 @@ def build_rollups(
         "all": _entry(None, None),
         "columns": columns,
     }
-    indexes = _indexes(out)
-    for row in rows:
-        if isinstance(row, dict):
-            _change(out, row, 1, indexes)
+    caps = [
+        MAX_MONTHS if c["kind"] == "month" else c.get("max_groups", MAX_GROUPS) for c in columns
+    ]
+    # the same result as _change per row (apply_row_change), computed in blocks
+    accumulate(out, rows, caps=caps, key_of=_key, new_entry=_entry, context=_CTX)
     return _as_json(out)
 
 
@@ -220,11 +229,20 @@ def apply_row_change(
     """Update ``rollups`` in place for one row replaced (``old`` -> ``new``), inserted (``old``
     None) or deleted (``new`` None); returns it. A column that gets a value it cannot hold
     (more than its group cap, or a new value on delete) stops answering until rebuilt."""
+    return apply_row_changes(rollups, [(old, new)])
+
+
+def apply_row_changes(
+    rollups: dict[str, Any], changes: Iterable[tuple[dict[str, Any] | None, dict[str, Any] | None]]
+) -> dict[str, Any]:
+    """``apply_row_change`` for many ``(old, new)`` pairs in order (one index build and one JSON
+    conversion for the whole batch); returns ``rollups``."""
     indexes = _indexes(rollups)
-    if isinstance(old, dict):
-        _change(rollups, old, -1, indexes)
-    if isinstance(new, dict):
-        _change(rollups, new, 1, indexes)
+    for old, new in changes:
+        if isinstance(old, dict):
+            _change(rollups, old, -1, indexes)
+        if isinstance(new, dict):
+            _change(rollups, new, 1, indexes)
     return _as_json(rollups)
 
 

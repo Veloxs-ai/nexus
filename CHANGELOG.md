@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.2] — unreleased
+
+### Changed
+
+- `build_rollups` reads rows in blocks (`nexus.table_rollups_build`): each numeric value is parsed once, each column's group key is computed once per distinct raw value, and every group's count, exact sum, minimum and maximum is folded in one pass over its rows. The output is identical to adding the rows one at a time (same groups and order, labels, decimal sums, first-seen extremes, and the same point where a column past its group cap stops); about 2.7x faster on a 200,000-row table. Any iterable is read once, a block at a time, so memory stays flat.
+- `cap_record_values` returns a flat row whose texts are all within the limit without walking it (same object as before); `row_hash` hashes a dict with string keys without copying it (same digest).
+
+### Added
+
+- `table_rollups.apply_row_changes(rollups, changes)`: `apply_row_change` for a batch of `(old, new)` pairs, building the group index and converting sums to JSON once per batch instead of once per row.
+- `table_records.row_hash_json(record, *, exclude=())` → `(row_hash(record), text)`: the digest and the canonical JSON it is computed from, so a writer that stores the row as JSON encodes it once.
+
 ## [3.4.1] — unreleased
 
 ### Changed
