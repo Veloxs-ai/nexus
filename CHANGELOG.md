@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] — Unreleased
+
+Exact answers over every row of a table, computed where the rows are stored; document-level routing, map-reduce over every candidate document, and a grounding verifier for cited answers. Standard library only: no new dependency. No public method is renamed or removed.
+
+### Summary
+
+- **Exact table answers over every row.** `table_profile` describes each column; `record_spec` (spec v2) resolves a planner's spec against the profile (allow-listed fields, dirty spellings matched, missing values reported with the closest stored ones); `record_sql` compiles it to one parameterised PostgreSQL JSONB / SQLite JSON1 statement that runs where the rows are stored; `record_eval` is the Python reference engine; `record_render` gives both engines the same result text. SQL equals the Python engine on 3,140 randomised specs (3 storage layouts, joins and dirty values included).
+- **Document routing and map-reduce.** `doc_routing` ranks a catalog (BM25 + weighted RRF), finds the documents a "list every / how many" question needs, and builds a bounded knowledge index; `map_reduce` plans, prompts, parses and reduces per-document map calls under a cost cap and says when coverage is partial.
+- **Grounding verifier.** `grounding.check_answer` checks every cited claim of an answer against the passages it cites (exact figures, ids and dates; content words; an optional cross-encoder), in milliseconds per answer.
+- Standard library only; no new dependency, no public API renamed or removed.
+
+### Added
+
+- `nexus.table_profile`: `profile_records(records)` describes each column of a table's records in one pass (type: integer / number / date / boolean / text / object / array / mixed; nulls and null %; distinct count, capped at 1,000 tracked values per column; every value when there are at most 50, else the top 10; min/max for numbers and dates; nested object fields one level down). `profile_text` renders a profile as one planner line; `link_columns(question, profiles)` keeps the columns a question is about when more than 10 tables or 40 columns are in scope (name words and value hits).
+- `nexus.record_spec`: records spec v2 and `parse_spec(spec, profile, join_profile=None, current=True)` → `RecordQuery`. Adds `and`/`or`/`not` conditions, `is_null`, `count_distinct`, several metrics with names, `order_by` + `limit` (top N), `date_trunc` groups (day, week, month, quarter, year), `having`, list projection (`fields`), nested fields (`"address.city"`) and one join with a second table on a declared key (`inner` or `left`). v1 specs (`filters`, `metric`, `field`, `group_by`, `limit`) are unchanged. Field names are allow-listed from the profile. With a complete value list, a text value matches every stored spelling that normalises the same (`"mid market"` = `"Mid-Market"` = `"MID_MARKET "`), and a value that is not stored is reported with the closest stored values (`RecordQuery.not_found`, `impossible`) instead of computing 0.
+- `nexus.record_eval`: `query_records(records, spec)` and `evaluate(query, records, join_records)`, the Python engine (the reference for the SQL engine).
+- `nexus.record_sql`: `compile_query(query, "postgresql" | "sqlite", ChunkTable(...))` compiles a `RecordQuery` to one parameterised statement over records stored in chunk metadata (`record`, or `records` row groups), and `read_result` turns its rows into the same `RecordResult`. Every value, JSON path and constant is a bound parameter; results are bounded (at most 200 listed rows or 100 groups). `ChunkTable.layout="record"` reads one-row chunks with a single JSON parse per chunk on SQLite. `unicode_lower(sqlite_connection)` makes SQLite's `lower()` fold like PostgreSQL and Python.
+- `nexus.record_render`: `RecordResult` (`kind`, `matched`, `total`, `columns`, `rows`, `listed`, `groups`, `not_found`, `notes`, `text`) and the Markdown result text shared by both engines.
+- `nexus.record_values`: the value rules both engines share (`text_of`, `number_of`, `fold`, `normalize_value`, `key_text`).
+- `nexus.doc_routing` (document-level routing): `rank_documents(question, documents, vector=, chunks=, named=, mentions=)` orders a catalog by relevance — BM25 over each document's name (x3) and summary head, fused by weighted Reciprocal Rank Fusion with the caller's summary-vector ranking, chunk keyword hits and named documents; the catalog index is cached by content (8 catalogs). `question_mentions(question)` finds the entities a question names (quoted phrases, capitalised names, ids such as `P1` / `C-1014`); `mentions_in(text, phrases)` checks whole-word matches. `candidate_documents(...)` returns every document a "list every / how many / everything about X" question needs read: the documents that mention its entities, else those whose keyword hits carry at least half of the question's IDF weight, plus the closest summary vectors. `knowledge_index(...)` renders the knowledge-index text (counts by type, the most relevant documents) within a token budget.
+- `nexus.map_reduce`: the text side of map-reduce over many documents — `excerpt` (a document's first chunk plus the chunks with the question's words, or the whole document when small), `plan_batches` (map calls by token budget and count, with a cost cap: documents past it are `skipped`), `MAP_SYSTEM` / `map_prompt` / `parse_map` (one finding line per document, `NONE` dropped), `REDUCE_SYSTEM` / `reduce_groups` / `reduce_prompt`, and `coverage_note` ("every one of the N candidate documents was read" or "PARTIAL: read X of Y").
+- `nexus.grounding`: `check_answer(answer, passages, score=None, question="")` splits an answer into claims (sentences, list items, table rows) with their inline citations (`[2]`, `[2][3]`, `[2, 3]`; list items take the citations of the line that introduces them) and checks each cited claim against the passages it cites: every figure, id and date must appear there (`45,000` = `45k` within its precision; small counts and figures the question states are exempt), the content-word share decides clear cases, and the cross-encoder (`score`, e.g. `NexusClient.rerank`) scores the rest on the best-matching window of each passage. Claims are `supported`, `unsupported` (missing figure or id, a citation to no passage, or almost nothing in common) or `unverified` (a loose paraphrase or weak match). `GroundingReport.to_dict()`, `cited_refs`, `strip_unsupported`.
+- `nexus.text_terms`: the shared word, stem, number and id helpers of the three modules above (`terms`, `question_terms`, `query_words`, `numbers`, `key_tokens`).
+- `nexus.figure_text`: `spell_figures(text)` writes English number words (`"one hundred and twenty"` → `120`, `"twenty-one"` → `21`) and long-form dates (`"March 5, 2026"`, `"5th of March 2026"` → `2026-03-05`) as digits; number words inside hyphenated names (`priority-one`) are kept. Grounding compares figures through it.
+
+### Performance
+
+Measured on the same 8-core machine (SQLite 3.53, one row per chunk, best of 3), 200,000 rows:
+
+| Workload | Time |
+|---|---|
+| `profile_records`, 200k rows x 7 columns | 1.43 s |
+| SQL count, no filter | 0.18 s |
+| SQL count, 2 equality filters | 0.42 s |
+| SQL sum with 2 filters | 0.67 s |
+| SQL group by customer, top 3 by sum | 1.06 s |
+| SQL sum by month (`date_trunc`) | 1.00 s |
+| SQL list, top 10 by amount | 0.80 s |
+| SQL join (200k orders x 20 customers) with 2 filters, packed rows | 2.6 s |
+| Python engine on the same queries (rows already in memory) | 0.10–1.90 s |
+
+Document routing, map-reduce and grounding (same machine, best of 3):
+
+| Workload | Time |
+|---|---|
+| `rank_documents`, 5,000-document catalog, first call (builds the index) / cached | 203 ms / 25 ms |
+| `candidate_documents`, 5,000 keyword-hit chunks | 263 ms |
+| `excerpt`, 1,000 documents of 8 chunks | 341 ms |
+| `plan_batches`, 1,000 documents | 0.5 ms |
+| `check_answer`, 20 cited claims, word and figure checks only | 5 ms |
+| `check_answer`, a 6-claim answer with 4 paraphrases, MiniLM-L-6 cross-encoder (4-5 calls) | 53-92 ms p50, 157 ms max |
+
+Grounding quality on Nexora's offline evaluation (fixtures S and M): no supported claim of a correct answer flagged unsupported; every claim with an altered figure or id, and every unrelated claim, flagged unsupported.
+
+The SQL engine needs no rows in application memory. PostgreSQL reads JSONB without parsing it, so it is expected to be faster than these SQLite numbers; it was not measured here.
+
+### Fixed (before release)
+
+- Records SQL: groups tied on the ordering metric now put the empty group last, as the Python engine does (the empty group's label was `''`, which sorted first and could change which groups a `limit` kept).
+- `parse_spec`: a `limit` that is not a whole number raises `RecordQueryError` with the reason instead of `ValueError`.
+- Grounding: a correct claim whose figure is written another way than in its passage (`30 days` / `thirty days`, `120` / `one hundred and twenty`, `5 March 2026` / `2026-03-05`, a year inside an ISO date, `FY2025` / `fiscal year 2025`) is no longer marked unsupported; a changed figure still is.
+
+### Known limits
+
+- On PostgreSQL, a `week` bucket of an impossible calendar date (`2025-02-30`) fails the statement; the other buckets only read the text.
+- SQLite's built-in `lower()` folds ASCII only; call `unicode_lower(connection)` for parity on non-ASCII text.
+- Texts of JSON objects differ between engines (`{"a": 1}` vs `{"a":1}`); condition on their fields instead (`"address.city"`).
+- On SQLite, a field whose name contains a double quote cannot be read (the query says so); a list without `fields` over such a table fails. PostgreSQL binds the path as an array and is not affected.
+- Grounding does not convert units: `24 months` against `two years` is still reported unsupported. The cross-encoder measures relevance, not entailment.
+
 ## [3.2.0] — 2026-11-22
 
 Data-loss, chunk-size, record and PII fixes for retrieval over everything a customer uploads or connects. No public method is renamed or removed; the outputs below change, as described under **Changed**.

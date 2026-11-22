@@ -272,6 +272,60 @@ json_table(api_dump).rows                       # the largest record array, flat
 
 PDFs are read by a standard-library reader (xref streams, object streams, ToUnicode fonts); scanned pages are OCR'd with the `[ocr]` extra, running headers and footers are removed and font-size headings become the page's `heading_path`. JSON exports become row records like CSV. Database change events go through `client.process_change_events(events, state=..., column_kinds=...)`, which merges partial updates and masks each record by column with kinds that stay stable across batches.
 
+### 3a. Exact answers over table rows (records queries)
+
+Tabular processors keep each source row on its chunk (`metadata.record` / `metadata.records`). Nexus profiles those rows and answers "how many / total / top N / by month" questions over all of them, in Python or as one parameterised SQL statement over the stored chunks:
+
+```python
+from nexus.table_profile import profile_records, profile_text, link_columns
+from nexus.record_spec import parse_spec
+from nexus.record_eval import query_records, evaluate
+from nexus.record_sql import ChunkTable, compile_query, read_result
+
+profile = profile_records(rows)          # types, null %, distinct counts, values, min/max per column
+print(profile_text(profile))             # "region (text; 4 values: East, North, South, West) | amount (number; ...)"
+
+spec = {"document": "orders", "where": {"field": "status", "op": "eq", "value": "shipped"},
+        "group_by": [{"field": "order_date", "date_trunc": "month"}],
+        "metrics": [{"op": "sum", "field": "amount", "as": "total"}],
+        "order_by": [{"by": "total", "dir": "desc"}], "limit": 3}
+print(query_records(rows, spec).text)    # Python over rows in memory (the reference engine)
+
+q = parse_spec(spec, profile)            # fields allow-listed, values matched to stored spellings
+sql = compile_query(q, "postgresql", ChunkTable("knowledge_chunks", "c.document_id = %s", (doc_id,)),
+                    placeholder="%s")    # run it read-only, with a statement timeout
+result = read_result(sql, cursor.execute(sql.sql, sql.params).fetchall(), total=len(rows))
+```
+
+The spec has `and`/`or`/`not` conditions, `is_null`, `count_distinct`, `order_by` + `limit` (top N), `date_trunc` groups, `having`, several metrics, list projection, nested fields (`"address.city"`) and a join with a second table on a declared key. A value that is not in the table comes back as "not found, closest: ..." instead of a count of 0. The Python and SQL engines (PostgreSQL JSONB, SQLite JSON1) give the same results.
+
+### 3b. Whole-knowledge questions: document routing, map-reduce and grounding
+
+Three standard-library modules for questions a top-k search cannot answer, and for checking answers:
+
+```python
+from nexus.doc_routing import rank_documents, question_mentions, candidate_documents, knowledge_index
+from nexus.map_reduce import MAP_SYSTEM, excerpt, plan_batches, map_prompt, parse_map, coverage_note
+from nexus.grounding import check_answer, strip_unsupported
+
+# Which documents is a question about, out of thousands? BM25 over names (x3) and summaries,
+# fused with your summary-vector order, chunk keyword hits and the documents it names.
+ranked = rank_documents("approval limit in the travel policy", catalog, vector=ids_by_summary_vector)
+
+# "List every contract that expires in 2027": every candidate document, then read them all.
+cands = candidate_documents(question, keyword_hit_chunks, total_documents=len(catalog),
+                            mention_hits=docs_mentioning(question_mentions(question)))
+plan = plan_batches([excerpt(question, d, name, chunks_of[d]) for d in cands.ids])  # cost-capped
+for batch in plan.batches:                       # in parallel, with your model
+    findings = parse_map(model(MAP_SYSTEM, map_prompt(question, batch)), batch)
+note = coverage_note(read, len(cands.ids), contributing)  # "complete" or "PARTIAL: read X of Y"
+
+# Is each cited sentence in the passages it cites? Figures and ids must match exactly; the
+# cross-encoder (NexusClient.rerank) scores paraphrases.
+report = check_answer(answer, {1: passage_1, 2: passage_2}, score=client.rerank, question=question)
+report.to_dict()   # claims, supported, unsupported, unverified, faithfulness, flagged sentences
+```
+
 ### 4. Unified Cross-Modal Search
 
 Every modality produces text chunks embedded by the same semantic model, so you can index and query across text, spreadsheets, audio transcripts, and diagrams at once:
