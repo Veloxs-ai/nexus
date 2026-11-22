@@ -82,10 +82,21 @@ class RowEntitySpec:
 
 @dataclass(frozen=True, slots=True)
 class ForeignKey:
+    """``table.column`` references ``ref_table.ref_column`` (``table`` is the owning table)."""
+
     column: str
     ref_table: str
     ref_column: str
     containment: float = 1.0
+    table: str = ""  # owning (from) table; set by detect_foreign_keys (3.4.0)
+
+    @property
+    def from_table(self) -> str:
+        return self.table
+
+    @property
+    def to_table(self) -> str:
+        return self.ref_table
 
 
 def is_masked(text: str) -> bool:
@@ -429,7 +440,7 @@ def detect_foreign_keys(
                         continue
                     share = len(values & ref_values) / len(values)
                     if share >= min_containment and (best is None or share > best.containment):
-                        best = ForeignKey(name, ref_table, ref_col, round(share, 3))
+                        best = ForeignKey(name, ref_table, ref_col, round(share, 3), table)
             if best is not None:
                 found.append(best)
     return found

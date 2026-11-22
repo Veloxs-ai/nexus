@@ -114,85 +114,60 @@ department office republic kingdom state city museum school church district coun
 """)
 HONORIFICS = _words("mr mrs ms miss dr prof professor sir madam shri smt sri kumari mx")
 
-GIVEN_NAMES = _words("""
-aaron abigail adam adrian aisha alan albert alex alexander alice alicia alison amanda amber
-amelia amit amy ana andrea andrew angela anil anita ankit ann anna anne anthony anuj anupam
-arjun arnav arthur arun asha ashish ashok ava barbara ben benjamin beth betty bhavna bill
-bob bonnie brandon brenda brian bruce bryan carl carlos carol caroline catherine charles
-charlie charlotte cheryl chloe chris christian christina christine christopher cindy claire
-clara colin connor craig crystal cynthia dan daniel danielle david dawn deborah deepa deepak
-denise dennis derek diana diane dinesh divya dominic donald donna doris dorothy douglas
-dylan edward elaine eleanor elena elizabeth ella ellen emily emma eric erica erin ethan
-eugene eva evelyn fatima fiona frances francis frank gabriel gary gaurav gavin george
-gerald gina gloria grace greg gregory hannah harish harold harry harsh heather helen henry
-hiro hiroshi howard ian irene isaac isabella jack jacob jacqueline james jamie jane janet
-janice jason jay jean jeff jeffrey jennifer jeremy jerry jessica jill jim joan joe joel john
-johnny jonathan jordan jose joseph joshua joyce juan judith judy julia julie justin karan
-karen kate katherine kathleen kathryn katie kavita keith kelly ken kenneth kevin kim
-kimberly kiran kumar kyle laura lauren lawrence leah lee leo liam lily linda lisa lori
-louis louise lucas lucy luis madhu mahesh manish manoj margaret maria marie mark martha
-martin mary mason matthew maya megan meera melissa michael michelle mike mohammed mohan
-monica nancy naomi naresh natalie nathan neha neil nicholas nicole nikhil nina noah norma
-olivia omar oscar pamela patricia patrick paul paula peter philip pooja prakash pranav
-priya priyanka rachel rahul raj rajesh rakesh ralph ram ramesh randy ravi raymond rebecca
-rekha richard rita robert robin rohan rohit roger ronald rose ross roy ruby russell ruth
-ryan sachin sakura sam samantha samuel sandeep sandra sanjay sara sarah satish scott sean
-shalini sharon shirley shreya simon sneha sofia sonia sophia stephanie stephen steve steven
-sudha suman sunil sunita suresh susan swati tanvi tara teresa terry thomas tiffany tim
-timothy tina todd tom tony tracy tyler uma usha valerie varun vanessa veronica vicky victor
-victoria vijay vikram vinay vincent virginia vivek walter wayne wei william xin yan yash
-yuki yusuf zachary zara zoe zhang li wang chen liu ahmed ali hassan hussein ibrahim yasmin
-lars sven ingrid hans klaus jurgen stefan anke heike pierre jean-pierre francois marc
-camille louis-philippe giulia marco luca giovanni francesca alessandro sofia matteo pablo
-javier miguel carmen lucia diego mateo ana-maria joao pedro rafael gabriela fernanda
-olga ivan dmitri sergei natalia elena-maria takeshi kenji haruto ji-woo min-jun seo-yeon
-""")
+_LAZY: dict[str, frozenset[str]] = {}
 
-PLACES = _words("""
-afghanistan albania algeria andorra angola argentina armenia australia austria azerbaijan
-bahamas bahrain bangladesh barbados belarus belgium belize benin bhutan bolivia bosnia
-botswana brazil brunei bulgaria burundi cambodia cameroon canada chad chile china colombia
-congo croatia cuba cyprus czechia czech_republic denmark djibouti dominica ecuador egypt
-el_salvador eritrea estonia eswatini ethiopia fiji finland france gabon gambia georgia
-germany ghana greece grenada guatemala guinea guyana haiti honduras hungary iceland india
-indonesia iran iraq ireland israel italy jamaica japan jordan kazakhstan kenya kiribati
-kosovo kuwait kyrgyzstan laos latvia lebanon lesotho liberia libya liechtenstein lithuania
-luxembourg madagascar malawi malaysia maldives mali malta mauritania mauritius mexico
-moldova monaco mongolia montenegro morocco mozambique myanmar namibia nauru nepal
-netherlands new_zealand nicaragua niger nigeria north_korea norway oman pakistan palau
-panama paraguay peru philippines poland portugal qatar romania russia rwanda samoa
-san_marino saudi_arabia senegal serbia seychelles sierra_leone singapore slovakia slovenia
-somalia south_africa south_korea spain sri_lanka sudan suriname sweden switzerland syria
-taiwan tajikistan tanzania thailand togo tonga trinidad tunisia turkey turkmenistan tuvalu
-uganda ukraine united_arab_emirates uae united_kingdom uk united_states usa us uruguay
-uzbekistan vanuatu vietnam yemen zambia zimbabwe england scotland wales europe asia africa
-north_america south_america latin_america middle_east apac emea americas
-mumbai delhi new_delhi bengaluru bangalore chennai hyderabad kolkata pune ahmedabad jaipur
-surat lucknow kanpur nagpur indore thane bhopal visakhapatnam patna vadodara ghaziabad
-ludhiana agra nashik faridabad meerut rajkot varanasi srinagar aurangabad amritsar
-allahabad ranchi coimbatore jabalpur gwalior vijayawada jodhpur madurai raipur kota
-guwahati chandigarh mysore mysuru noida gurgaon gurugram kochi thiruvananthapuram goa
-london manchester birmingham glasgow edinburgh liverpool leeds bristol dublin belfast cardiff
-paris lyon marseille berlin munich hamburg frankfurt cologne stuttgart vienna zurich geneva
-basel amsterdam rotterdam brussels antwerp madrid barcelona valencia seville lisbon porto
-rome milan naples turin florence venice athens istanbul ankara moscow saint_petersburg
-warsaw krakow prague budapest bucharest sofia belgrade zagreb copenhagen stockholm oslo
-helsinki reykjavik tallinn riga vilnius kyiv kiev minsk
-new_york los_angeles chicago houston phoenix philadelphia san_antonio san_diego dallas
-san_jose austin jacksonville san_francisco seattle denver boston washington nashville
-detroit portland las_vegas atlanta miami minneapolis cleveland pittsburgh baltimore
-toronto montreal vancouver calgary ottawa edmonton mexico_city guadalajara monterrey
-sao_paulo rio_de_janeiro buenos_aires lima bogota santiago caracas quito montevideo
-tokyo osaka kyoto yokohama nagoya seoul busan beijing shanghai shenzhen guangzhou chengdu
-hong_kong macau taipei bangkok hanoi ho_chi_minh_city kuala_lumpur jakarta manila
-singapore_city dhaka karachi lahore islamabad kathmandu colombo dubai abu_dhabi doha riyadh
-jeddah muscat kuwait_city tehran baghdad tel_aviv jerusalem amman beirut cairo alexandria
-lagos abuja nairobi addis_ababa johannesburg cape_town durban casablanca tunis accra
-sydney melbourne brisbane perth adelaide canberra auckland wellington
-california texas florida new_jersey massachusetts ontario quebec bavaria catalonia
-maharashtra karnataka tamil_nadu kerala gujarat rajasthan punjab bihar telangana
-west_bengal uttar_pradesh madhya_pradesh andhra_pradesh haryana odisha assam
-""")
+
+def _packed(*texts: str) -> frozenset[str]:
+    return frozenset(w.replace("_", " ") for text in texts for w in text.split())
+
+
+def given_names() -> frozenset[str]:
+    """About 3,000 casefolded given names (``graph_names``), built on first use."""
+    names = _LAZY.get("given")
+    if names is None:
+        from .graph_names import PACKED
+
+        names = _LAZY["given"] = _packed(PACKED)
+    return names
+
+
+def ambiguous_names() -> frozenset[str]:
+    """Given names that are also ordinary words or places ("Grant", "Victoria")."""
+    names = _LAZY.get("given_ambiguous")
+    if names is None:
+        from .graph_names import AMBIGUOUS
+
+        names = _LAZY["given_ambiguous"] = _packed(AMBIGUOUS)
+    return names
+
+
+def places() -> frozenset[str]:
+    """About 3,700 casefolded places (``graph_places``), built on first use."""
+    found = _LAZY.get("places")
+    if found is None:
+        from .graph_places import CITIES, PACKED, TOWNS
+
+        found = _LAZY["places"] = _packed(PACKED, CITIES, TOWNS)
+    return found
+
+
+def ambiguous_places() -> frozenset[str]:
+    """Places that are also words, names or brands ("Reading", "Phoenix"): need a cue."""
+    found = _LAZY.get("places_ambiguous")
+    if found is None:
+        from .graph_places import AMBIGUOUS
+
+        found = _LAZY["places_ambiguous"] = _packed(AMBIGUOUS)
+    return found
+
+
+def __getattr__(name: str) -> frozenset[str]:  # GIVEN_NAMES / PLACES (3.3.0 names), lazily
+    if name == "GIVEN_NAMES":
+        return given_names()
+    if name == "PLACES":
+        return places()
+    raise AttributeError(name)
+
 
 # Job titles and roles: a span that names a role is not an entity ("Chief Risk Officer").
 ROLE_HEADS = _words("""

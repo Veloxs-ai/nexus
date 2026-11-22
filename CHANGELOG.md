@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-11-22
+
+Text entity typing without a model, the review and key helpers a knowledge-graph product needs, and two parsers that applications were carrying themselves (GitHub Markdown, CDC DDL). Standard library only: no new dependency. No public method is renamed or removed.
+
+### Added
+
+- Text entity typing (`graph_typing`, `graph_names`, `graph_places`, `graph_orgs`): every capitalised span gets weighted type votes from its own words (honorific, `Project X` and `X Initiative` / `X Programme`, legal suffix or org head word, departments such as "Legal", "Customer Success", "HR"; unit words such as "Vendor Management Office"; known organisations and products; model numbers "Zephyr X2", "Atlas 300", "Nimbus 12"; org industry words "Tidewater Logistics"; about 2,900 given names and 3,700 countries, regions, states and cities; product and document head words) and from its context (the word before: "the customer X", "joined X", "in X", "at X"; the words after: "the X migration", "the X upgrade", "the X office", "X requested"). Coordinated names share a type ("Soylent, Cyberdyne and Vandelay Industries"). Votes are summed per name and document, so every mention of a name in a document gets one type, and a lone "Olivia" or "Bluepeak" takes the type of "Olivia Chen" or "Bluepeak Energy" there; a name still untyped takes the type it got in other documents of the call. Department words open a sentence only before a verb ("Legal will review"), never as "Head of Sales". Word lists are packed strings built into sets on first use (`graph_lexicon.given_names()`, `places()`, `ambiguous_names()`, `ambiguous_places()`; `GIVEN_NAMES` / `PLACES` still resolve). Ambiguous places ("Reading", "Phoenix", "Aurora") need a place cue.
+- `guess_primary_key(columns, rows, table=, profile=)` and `key_like_column(name)` (`graph_keys`): the column that identifies a row (`id`, `<table>_id`, `*_no`, `*_code`, `*_number`, `uuid`, camelCase `customerId`), unique and never null in the profile or the rows; `id` / `<singular>_id` first.
+- `merge_proposals(resolution, names=)` → `MergeProposal(source_type, source_key, target_type, target_key, score, reason, source_name, target_name)` (`graph_review`): a stable, de-duplicated list (one row per pair, by score then keys) with the reason the pair was not merged: `ambiguous`, `both_structured`, `legal_suffix`, `similar_name`. `Resolution.proposal_reasons` is aligned with `Resolution.proposals`; `extract_graph(proposals=[...])` collects the list.
+- `promote_concepts(extraction, texts, documents=, min_documents=2, window=4, template_share=0.6, max_document_share=0.5, min_corpus=10)` → `ConceptPromotion(promoted, boilerplate, rare)` with `.apply(extraction)`: noun-phrase concepts become active when they appear in two or more documents and are not template boilerplate (one sentence context shared by most of their documents, e.g. "payable within thirty days").
+- `ForeignKey.table` (the owning table), with `from_table` / `to_table`; `detect_foreign_keys` fills it and `extract_graph` fills it from `TableInput.name` (without changing the caller's object).
+- `nexus.processing.github_markdown`: `github_file_markdown(repo, branch, path, text, url=, absolute_links=True)` (header with path, repository, branch and link; Markdown kept with YAML front matter as plain lines, MDX import/export lines dropped, relative links and images made absolute outside code blocks; other files in a fence longer than any backtick run, with a language), `github_issue_markdown(repo, item, comments, reviews, review_comments, state=, labels=, url=)`, `code_fence`, `is_markdown_path`, `markdown_links_absolute`.
+- `nexus.processing.cdc_ddl`: `parse_ddl(query)` → `DdlChange(verb, tables, renames)` and `ddl_cleared_tables(query, wanted=())` for `TRUNCATE`, `DROP [TEMPORARY] TABLE [IF EXISTS]`, `RENAME TABLE a TO b, ...` and `ALTER TABLE a RENAME TO b`: several statements, leading comments, MySQL `/*! */` hints, quoted (`` ` ``, `"`, `[]`) and qualified names, `ONLY`, `RESTART IDENTITY`, `CASCADE`.
+- `graph_resolve.key_from_base(text, entity_type)`: `normalise_name` for an already normalised generic key.
+
+### Changed
+
+- Capitalised spans are typed per document after all of its chunks are read (was: per span). A one-word name at a sentence start followed by an org verb is typed `org` ("Gringotts requested ...", was `entity`). Tax and employment forms (`W-9`, `W-8BEN`, `I-9`) are no longer record ids.
+
+### Quality
+
+Measured with `nexus.graph_eval` (text only, no gazetteer; precision over active entities):
+
+| Labelled set | Entities | Precision 3.3.0 → 3.4.0 | Mention recall | Typing |
+|---|---|---|---|---|
+| 40 hand-labelled passages (development) | 115 | 1.00 → 1.00 | 0.99 → 1.00 | 0.58 → 0.98 |
+| 20 held-out passages | 46 | 1.00 → 1.00 | 0.98 → 1.00 | 0.63 → 1.00 |
+| 15 independent passages | 60 | 0.97 → 1.00 | 0.98 → 1.00 | 0.64 → 0.97 |
+| 25 blind passages (`tests/graph_samples_blind.py`, written before this work, never edited) | 98 | 0.90 → 0.97 | 0.86 → 0.99 | 0.56 → 0.99 |
+| Synthetic contracts, tickets, calls + tables | 141 | 1.00 → 1.00 | 1.00 → 1.00 | 1.00 → 1.00 |
+
+The blind set was written by the same team that wrote the rules, so it is honest about over-fitting to the development sets but not a substitute for a reviewer's set.
+
+### Performance
+
+`extract_mentions` without a gazetteer, 10,000 chunks (17.8 MB, capitalised-name dense), one core, best of 3: 4.73 s → 5.65 s (3.76 → 3.15 MB/s). The word lists (2,902 given names, 3,648 places) load on first use in about 1 ms. Gazetteer, structured, resolution and community paths are unchanged.
+
 ## [3.3.0] — 2026-11-22
 
 Knowledge graph under the knowledge base: deterministic entities and relations from table rows, entity mentions in text without an NER model, entity resolution with an alias table, incremental (per-chunk) maintenance, Leiden communities, PageRank and ego-graph selection. Pure functions, standard library only: no new dependency, no I/O (the caller owns storage). No public method is renamed or removed.

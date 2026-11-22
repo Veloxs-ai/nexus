@@ -48,13 +48,14 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .graph_phrases import np_runs, rank_concepts
 from .graph_resolve import normalise_name
 from .graph_spans import find_abbreviations, token_pass, type_of_span
 from .graph_tokens import START, Gazetteer, Tokens, tokenise
 from .graph_types import Alias, EntityRef, GraphExtraction, Mention, RelationRef
+from .graph_typing import finalise_document
 
 __all__ = ["TextGraphConfig", "extract_mentions", "type_of_span"]
 
@@ -83,6 +84,7 @@ class _Acc:
         self.relations: Counter[tuple[str, str, str, str, str]] = Counter()
         self.aliases: dict[tuple[str, str, str], Alias] = {}
         self.stats: Counter[str] = Counter()
+        self.type_votes: dict[str, dict[str, int]] = {}  # generic key -> types given in documents
 
     def entity(self, etype: str, key: str, surface: str, status: str = "active") -> None:
         ref = (etype, key)
@@ -94,7 +96,50 @@ class _Acc:
             self.status[ref] = "active"
         bucket[surface] += 1
 
+    def retype(self) -> None:
+        """Names left untyped in their document take the type they got in other documents."""
+        remap: dict[tuple[str, str], tuple[str, str]] = {}
+        for ref, counter in list(self.surfaces.items()):
+            if ref[0] != "entity":
+                continue
+            votes = self.type_votes.get(ref[1])
+            if not votes:
+                continue
+            etype = max(sorted(votes), key=votes.__getitem__)
+            surface = max(counter.items(), key=lambda kv: (kv[1], kv[0]))[0]
+            key = normalise_name(surface, entity_type=etype)
+            if not key:
+                continue
+            remap[ref] = (etype, key)
+            status = self.status.pop(ref)
+            del self.surfaces[ref]
+            self.surfaces.setdefault((etype, key), Counter()).update(counter)
+            if self.status.get((etype, key)) != "active":
+                self.status[(etype, key)] = status
+        if not remap:
+            return
+        self.mentions = [
+            m._replace(entity_type=remap[r][0], entity_key=remap[r][1])
+            if (r := (m.entity_type, m.entity_key)) in remap
+            else m
+            for m in self.mentions
+        ]
+        relations: Counter[tuple[str, str, str, str, str]] = Counter()
+        for (st, sk, dt, dk, chunk), n in self.relations.items():
+            st, sk = remap.get((st, sk), (st, sk))
+            dt, dk = remap.get((dt, dk), (dt, dk))
+            a, b = sorted(((st, sk), (dt, dk)))
+            if a != b:
+                relations[(a[0], a[1], b[0], b[1], chunk)] += n
+        self.relations = relations
+        aliases = {}
+        for a in self.aliases.values():
+            etype, key = remap.get((a.entity_type, a.entity_key), (a.entity_type, a.entity_key))
+            aliases[(a.alias_key, etype, key)] = replace(a, entity_type=etype, entity_key=key)
+        self.aliases = aliases
+
     def result(self) -> GraphExtraction:
+        self.retype()
         entities = tuple(
             EntityRef(
                 ref[1],
@@ -191,6 +236,7 @@ def _document(
         token_pass(tk, config, abbrs, mid_caps, lower_seen, covered, hits, acc)
         found.append(hits)
         runs.append(np_runs(tk, covered) if config.noun_phrases else [])
+    finalise_document(tokenised, found, acc)
     concepts = rank_concepts(runs, config.max_concepts_per_chunk) if config.noun_phrases else None
     for idx, (chunk_key, tk) in enumerate(tokenised):
         hits = found[idx]

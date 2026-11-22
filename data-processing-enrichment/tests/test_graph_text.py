@@ -123,7 +123,7 @@ def test_sentence_start_single_token_needs_evidence():
     x = extract_mentions([("c", "Zorbex is new. We like it.")])
     assert not _names(x)
     x = extract_mentions([("c", "Gringotts requested a copy.")])  # subject of a past-tense verb
-    assert ("Gringotts", "entity") in _names(x)
+    assert ("Gringotts", "org") in _names(x)  # typed by the verb cue (3.4.0)
 
 
 def test_lowercase_use_elsewhere_rejects_single_token():

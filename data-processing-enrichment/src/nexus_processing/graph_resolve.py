@@ -82,7 +82,11 @@ def _base(name: str) -> str:
 @lru_cache(maxsize=65536)
 def normalise_name(name: str, *, entity_type: str = "entity") -> str:
     """The entity key of ``name`` for ``entity_type`` ("" when nothing is left)."""
-    text = _base(name)
+    return key_from_base(_base(name), entity_type)
+
+
+def key_from_base(text: str, entity_type: str = "entity") -> str:
+    """``normalise_name`` for text that is already a generic key (``normalise_name(name)``)."""
     if not text:
         return ""
     if entity_type == "org":
@@ -196,6 +200,9 @@ class Resolution:
     merges: tuple[tuple[tuple[str, str], tuple[str, str], float], ...] = ()
     proposals: tuple[tuple[tuple[str, str], tuple[str, str], float], ...] = ()
     stats: dict[str, int] = field(default_factory=dict)
+    # why each proposal was not merged, aligned with ``proposals`` (3.4.0): ``ambiguous``,
+    # ``both_structured``, ``legal_suffix`` or ``similar_name`` (score below ``auto_merge``)
+    proposal_reasons: tuple[str, ...] = ()
 
 
 class _Union:
@@ -246,6 +253,7 @@ def resolve(
     aliases: list[Alias] = []
     merges: list[tuple[tuple[str, str], tuple[str, str], float]] = []
     proposals: list[tuple[tuple[str, str], tuple[str, str], float]] = []
+    reasons: list[str] = []
     stats = {"candidates": len(candidates), "type_upgrades": 0, "alias_hits": 0, "fuzzy_merges": 0}
 
     def rank(ref: tuple[str, str]) -> tuple[int, int, float, str]:
@@ -321,6 +329,11 @@ def resolve(
                     targets[child].append((into, score))
                 else:
                     proposals.append((child, into, score))
+                    reasons.append(
+                        "both_structured"
+                        if both_structured and score >= auto_merge
+                        else _proposal_reason(a, b)
+                    )
     # A name that matches two different entities ("Atlas Labs" vs "Atlas Labs GmbH" and
     # "Atlas Labs Inc") is ambiguous: proposed, never merged.
     for child in sorted(targets, key=rank):
@@ -328,6 +341,7 @@ def resolve(
         roots = {union.find(into) for into, _ in options}
         if len(roots) > 1:
             proposals.extend((child, into, score) for into, score in options)
+            reasons.extend("ambiguous" for _ in options)
             stats["ambiguous"] = stats.get("ambiguous", 0) + 1
             continue
         into, score = max(options, key=lambda o: o[1])
@@ -345,7 +359,8 @@ def resolve(
         mapping[c.ref] = root
         if root != c.ref and c.ref not in fuzzy_children:
             aliases.append(Alias(c.ref[1], c.name, root[1], root[0], "name", 1.0))
-    proposals = [p for p in proposals if union.find(p[0]) != union.find(p[1])]
+    kept = [i for i, p in enumerate(proposals) if union.find(p[0]) != union.find(p[1])]
+    proposals, reasons = [proposals[i] for i in kept], [reasons[i] for i in kept]
     final = []
     for a in aliases:  # point every alias at the final canonical entity (merges chain)
         t, k = union.find((a.entity_type, a.entity_key))
@@ -355,8 +370,21 @@ def resolve(
             else Alias(a.alias_key, a.alias, k, t, a.source, a.confidence)
         )
     return Resolution(
-        mapping, tuple(_dedupe_aliases(final)), tuple(merges), tuple(proposals), stats
+        mapping,
+        tuple(_dedupe_aliases(final)),
+        tuple(merges),
+        tuple(proposals),
+        stats,
+        tuple(reasons),
     )
+
+
+def _proposal_reason(a: tuple[str, str], b: tuple[str, str]) -> str:
+    if "org" in (a[0], b[0]):
+        (base_a, suf_a), (base_b, suf_b) = _split_org(a[1]), _split_org(b[1])
+        if base_a == base_b and suf_a and suf_b and suf_a != suf_b:
+            return "legal_suffix"  # "Acme Inc" / "Acme Ltd": possibly two legal entities
+    return "similar_name"
 
 
 def _score(a: tuple[str, str], b: tuple[str, str]) -> float:

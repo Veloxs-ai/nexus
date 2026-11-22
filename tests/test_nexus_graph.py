@@ -24,6 +24,7 @@ import sys
 import time
 
 from graph_samples import HAND_LABELLED
+from graph_samples_blind import BLIND
 from graph_samples_heldout import HELD_OUT, INDEPENDENT
 from graph_samples_synthetic import synthetic_corpus
 
@@ -85,6 +86,7 @@ def test_quality_on_hand_labelled_passages():
     report = score_extraction(extract_graph(texts=texts), gold)
     assert report["entity_precision"] >= 0.9, report["false_positives"]
     assert report["mention_recall"] >= 0.95
+    assert report["typing_accuracy"] >= 0.9  # 0.58 in 3.3.0
 
 
 def test_quality_on_held_out_passages():
@@ -92,6 +94,7 @@ def test_quality_on_held_out_passages():
     report = score_extraction(extract_graph(texts=texts), gold)
     assert report["entity_precision"] >= 0.85, report["false_positives"]
     assert report["mention_recall"] >= 0.9
+    assert report["typing_accuracy"] >= 0.9  # 0.63 in 3.3.0
 
 
 def test_quality_on_independent_passages():
@@ -99,6 +102,17 @@ def test_quality_on_independent_passages():
     report = score_extraction(extract_graph(texts=texts), gold)
     assert report["entity_precision"] >= 0.9, report["false_positives"]
     assert report["mention_recall"] >= 0.95
+    assert report["typing_accuracy"] >= 0.9  # 0.64 in 3.3.0
+
+
+def test_quality_on_blind_passages():
+    # written before the 3.4.0 typing work, never edited: 3.3.0 scored P 0.90 R 0.86 T 0.56
+    texts, gold = _labelled(BLIND)
+    assert len(BLIND) >= 20 and len(gold) >= 80
+    report = score_extraction(extract_graph(texts=texts), gold)
+    assert report["entity_precision"] >= 0.95, report["false_positives"]
+    assert report["mention_recall"] >= 0.95
+    assert report["typing_accuracy"] >= 0.85
 
 
 def _synthetic():
@@ -214,3 +228,19 @@ def test_score_extraction_counts_aliases_and_candidates():
     assert report["active_entities"] == 1  # noun-phrase candidates are not scored
     empty = score_extraction(extract_graph(), [])
     assert empty["entity_precision"] == 1.0 and empty["mention_recall"] == 1.0
+
+
+def test_extract_graph_reports_proposals_and_owning_tables():
+    # 3.4.0: merge proposals come back as a stable list; foreign keys name their owner
+    found: list = []
+    x = extract_graph(
+        texts=[("t1", "Atlas Labs shipped the order. Atlas Labs GmbH and Atlas Labs Inc. agree.")],
+        proposals=found,
+    )
+    assert x.stats["proposals"] == len(found) == 3
+    assert [p.reason for p in found] == ["ambiguous", "ambiguous", "legal_suffix"]
+    assert found[0].source_name == "Atlas Labs" and found[0].score >= found[-1].score
+    _, tables, _, _ = _synthetic()
+    assert tables[1].foreign_keys[0].table == ""  # the caller's TableInput is not changed
+    assert graph.ForeignKey("customer", "customers", "name", 1.0, "orders").from_table == "orders"
+    assert graph.guess_primary_key(["id", "name"], [{"id": 1}, {"id": 2}]) == "id"

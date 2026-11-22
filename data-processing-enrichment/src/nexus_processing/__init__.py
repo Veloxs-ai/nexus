@@ -37,6 +37,7 @@ from .cdc import (
     sign_webhook_payload,
     verify_webhook_signature,
 )
+from .cdc_ddl import DdlChange, ddl_cleared_tables, parse_ddl
 from .chunk_store import document_digest, prepare_chunks, title_passages
 from .code import (
     CodeChunk,
@@ -61,6 +62,13 @@ from .email_chat import (
     process_email_binary,
 )
 from .engine import ProcessingEngine
+from .github_markdown import (
+    code_fence,
+    github_file_markdown,
+    github_issue_markdown,
+    is_markdown_path,
+    markdown_links_absolute,
+)
 from .images import ImageMetadata, VisualFeaturePayload, process_image_binary
 from .json_table import JsonTable, compact_json, find_record_array, flatten_json, json_table
 from .kafka import KafkaRecord, KafkaSettings, KafkaSource, KafkaSourceError
@@ -174,6 +182,7 @@ __all__ = [
     "CodeProcessingPayload",
     "CodeSymbol",
     "ColumnSchema",
+    "DdlChange",
     "DecodedText",
     "EasyOCRProvider",
     "EmailChunk",
@@ -234,7 +243,9 @@ __all__ = [
     "change_event_text",
     "chunk_mongo_collection",
     "chunk_mysql_table",
+    "code_fence",
     "compact_json",
+    "ddl_cleared_tables",
     "decode_text",
     "detect_language",
     "detect_script",
@@ -248,10 +259,13 @@ __all__ = [
     "flatten_mongo_document",
     "format_audio_timestamp",
     "format_timestamp",
+    "github_file_markdown",
+    "github_issue_markdown",
     "group_word_sections",
     "html_to_markdown",
     "is_easyocr_available",
     "is_faster_whisper_available",
+    "is_markdown_path",
     "is_newer",
     "is_package_available",
     "is_pyav_available",
@@ -259,6 +273,7 @@ __all__ = [
     "json_table",
     "looks_binary",
     "looks_like_slack_export",
+    "markdown_links_absolute",
     "messages_to_chunks",
     "mongo_change_event",
     "mysql_row_event",
@@ -268,6 +283,7 @@ __all__ = [
     "notion_page_title",
     "notion_property_value",
     "notion_rich_text",
+    "parse_ddl",
     "parse_id3_metadata",
     "parse_slack_export",
     "plan_sections",

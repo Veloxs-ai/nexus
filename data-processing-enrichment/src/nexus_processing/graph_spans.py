@@ -33,14 +33,12 @@ from .graph_lexicon import (
     ACRONYM_STOP,
     COMMON_WORDS,
     CONNECTORS,
-    GIVEN_NAMES,
     HEADING_WORDS,
     HONORIFICS,
     MONTHS,
     OF_HEADS,
     ORG_HEAD_WORDS,
     ORG_LEGAL_SUFFIXES,
-    PLACES,
     ROLE_FIRST,
     ROLE_HEADS,
     SENTENCE_LEAD,
@@ -48,41 +46,33 @@ from .graph_lexicon import (
     STOPWORDS,
     VERBS,
     WEEKDAYS,
+    ambiguous_names,
+    ambiguous_places,
+    given_names,
+    places,
 )
 from .graph_resolve import normalise_name
 from .graph_tokens import JOIN, START, Tokens
+from .graph_typing import Pending, base_type, is_model_token, lexicon, span_votes
 
 __all__ = ["find_abbreviations", "token_pass", "type_of_span"]
 
 _ID = re.compile(r"^(?:[A-Z][A-Za-z0-9]*(?:[-_/][A-Za-z0-9]+)+|[A-Z]{2,}\d{3,})$")
-_NOT_ID = re.compile(r"^(?:FY|CY|Q[1-4]|H[12]|COVID|ISO|UTF|SHA|MD|TLS|SSL|IPV)[-_]?\d")
+_NOT_ID = re.compile(
+    r"^(?:(?:FY|CY|Q[1-4]|H[12]|COVID|ISO|UTF|SHA|MD|TLS|SSL|IPV)[-_]?\d|(?:W|I)-\d{1,2}[A-Z]*$)"
+)  # also tax and employment forms: W-9, W-8BEN, I-9
 _HAS_DIGIT = re.compile(r"\d").search
 _LEAD_TRIM = STOPWORDS | HEADING_WORDS | SPAN_STOP | HONORIFICS
 # Full month and weekday names split a capitalised run ("Acme on Monday"); short forms and
 # months that are also given names ("May", "June") do not ("Blue Sun").
 _SPLIT = frozenset(w for w in MONTHS | WEEKDAYS if len(w) > 3) - {"may", "june", "april", "august"}
+_ROLE_WORDS = ROLE_HEADS | ROLE_FIRST | frozenset({"vp", "svp", "evp", "avp", "director"})
 _ABBR_SKIP = frozenset({"of", "and", "the", "for", "&", "in", "on", "to", "a", "an"})
 
 
 def type_of_span(folds: Sequence[str], honorific: bool = False) -> str:
-    """The entity type of a capitalised span (lowercased tokens)."""
-    if honorific:
-        return "person"
-    last = folds[-1].rstrip(".")
-    if last in ORG_LEGAL_SUFFIXES or last in ORG_HEAD_WORDS:
-        return "org"
-    if any(folds[k] in ORG_HEAD_WORDS and folds[k + 1] == "of" for k in range(len(folds) - 1)):
-        return "org"
-    joined = " ".join(folds)
-    if joined in PLACES:
-        return "place"
-    if (
-        2 <= len(folds) <= 3
-        and folds[0] in GIVEN_NAMES
-        and not any(f in COMMON_WORDS for f in folds[1:])
-    ):
-        return "person"
-    return "entity"
+    """The entity type a capitalised span's own words suggest (lowercased tokens)."""
+    return base_type(folds, honorific)[0]
 
 
 def find_abbreviations(tk: Tokens, abbrs: dict[str, tuple[str, str, str]]) -> None:
@@ -195,6 +185,10 @@ def token_pass(
         if (j - i > 1 and j < n and flags[j] & JOIN and not covered[j] and toks[j].isdigit()
                 and len(toks[j]) <= 3 and (j + 1 >= n or not flags[j + 1] & JOIN)):  # fmt: skip
             j += 1
+        elif (j < n and flags[j] & JOIN and not covered[j] and j not in blocked
+              and is_model_token(toks[j])
+              and folds[j - 1] not in lexicon().model_stop):  # fmt: skip
+            j += 1  # a model number: "Zephyr X2", "Atlas 300", "Nimbus 12"
         _span(tk, i, j, config, abbrs, mid_caps, lower_seen, covered, hits, acc)
         i = j
 
@@ -251,7 +245,7 @@ def _span(
             and not _acronym(toks[seg[0]])
         ):
             seg = seg[1:]
-        while len(seg) > 2 and folds[seg[0]] in ROLE_HEADS and folds[seg[1]] in GIVEN_NAMES:
+        while len(seg) > 2 and folds[seg[0]] in ROLE_HEADS and folds[seg[1]] in given_names():
             # "CFO Daniel Abernathy", "Chair Eleanor Whitfield": the role is not part of the name
             honorific = True
             seg = seg[1:]
@@ -261,52 +255,47 @@ def _span(
         first = seg[0]
         if len(seg) == 1:
             tok, fold = toks[first], seg_folds[0]
-            if (
+            if _department(tk, first, tok, fold):
+                pass  # "Legal will review", "approved by Finance", "HR will run"
+            elif (
                 len(tok) < 2
                 or fold in COMMON_WORDS
                 or fold in SPAN_STOP
                 or fold in ORG_LEGAL_SUFFIXES
             ):
                 continue
-            if tok.isupper():
+            elif tok.isupper():
                 if tok in ACRONYM_STOP or len(tok) > 6:
                     continue
-            elif fold in lower_seen and not honorific:
-                continue
-            if (
+            elif (fold in lower_seen and not honorific) or (
                 flags[first] & START
                 and tok not in mid_caps
                 and not honorific
-                and fold not in GIVEN_NAMES
-                and fold not in PLACES
+                and (fold not in given_names() or fold in ambiguous_names())
+                and (fold not in places() or fold in ambiguous_places())
                 and not _subject(tk, first)
             ):
                 continue
         elif (
             all(f in COMMON_WORDS for f in seg_folds)
             and " ".join(seg_folds) not in long_forms
+            and " ".join(seg_folds) not in lexicon().departments
             and flags[first] & START
         ):
             continue  # "Contract Term", "Status Update" as headings or labels
         if _is_role(seg_folds):
             continue
-        etype = type_of_span(seg_folds, honorific)
         s, e = tk.starts[first], tk.ends[seg[-1]]
         surface = tk.text[s:e]
         if surface.endswith(("'s", "’s")):
             surface, e = surface[:-2], e - 2
-        key = normalise_name(surface, entity_type=etype)
-        if not key:
+        generic = normalise_name(surface)
+        if not generic:
             continue
-        conf = (
-            0.8
-            if etype == "org"
-            else 0.75
-            if etype in ("person", "place")
-            else (0.7 if len(seg) > 1 else 0.6)
-        )
-        acc.entity(etype, key, surface)
-        hits.append((first, etype, key, s, e, "caps", conf))
+        votes, _ = span_votes(tk, seg, seg_folds, honorific)
+        # typed per document by graph_typing.finalise_document
+        pending = Pending(first, s, e, surface, votes, len(seg), generic)
+        hits.append((first, "entity", "", s, e, "caps", 0.0, pending))
         for k in seg:
             covered[k] = 1
 
@@ -322,6 +311,19 @@ def _subject(tk: Tokens, i: int) -> bool:
         return False
     nxt = tk.toks[i + 1]
     return nxt[0].islower() and (nxt in ("said", "says") or (nxt.endswith("ed") and len(nxt) > 4))
+
+
+def _department(tk: Tokens, i: int, tok: str, fold: str) -> bool:
+    """A one-word department name: mid-sentence, or opening a sentence before a verb."""
+    if fold not in lexicon().departments or (fold == "it" and tok != "IT"):
+        return False
+    if i > 1 and tk.folds[i - 1] == "of" and tk.folds[i - 2] in _ROLE_WORDS:
+        return False  # "Head of Sales", "VP of Finance"
+    if not tk.flags[i] & START:
+        return True
+    nxt = i + 1
+    return (nxt < len(tk) and bool(tk.flags[nxt] & JOIN)
+            and tk.folds[nxt] in lexicon().subject_verbs)  # fmt: skip
 
 
 def _acronym(tok: str) -> bool:

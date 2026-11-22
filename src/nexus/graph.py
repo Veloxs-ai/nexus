@@ -32,7 +32,7 @@ entities first, a gazetteer from them (names and ids), text mentions, then resol
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from nexus.table_profile import profile_records
@@ -48,6 +48,7 @@ try:
         prune_relations,
         touched_entities,
     )
+    from nexus.processing.graph_keys import guess_primary_key, key_like_column
     from nexus.processing.graph_resolve import (
         AliasIndex,
         Resolution,
@@ -57,6 +58,12 @@ try:
         normalise_name,
         resolve,
         similarity,
+    )
+    from nexus.processing.graph_review import (
+        ConceptPromotion,
+        MergeProposal,
+        merge_proposals,
+        promote_concepts,
     )
     from nexus.processing.graph_structured import (
         EntityColumn,
@@ -113,6 +120,10 @@ except (ImportError, ModuleNotFoundError):  # layer packages installed on their 
         prune_relations,
         touched_entities,
     )
+    from nexus_processing.graph_keys import (  # type: ignore[no-redef]
+        guess_primary_key,
+        key_like_column,
+    )
     from nexus_processing.graph_resolve import (  # type: ignore[no-redef]
         AliasIndex,
         Resolution,
@@ -122,6 +133,12 @@ except (ImportError, ModuleNotFoundError):  # layer packages installed on their 
         normalise_name,
         resolve,
         similarity,
+    )
+    from nexus_processing.graph_review import (  # type: ignore[no-redef]
+        ConceptPromotion,
+        MergeProposal,
+        merge_proposals,
+        promote_concepts,
     )
     from nexus_processing.graph_structured import (  # type: ignore[no-redef]
         EntityColumn,
@@ -181,6 +198,7 @@ __all__ = [
     "CSRGraph",
     "ChangeSet",
     "CommunitySummaryInput",
+    "ConceptPromotion",
     "EntityColumn",
     "EntityRef",
     "ForeignKey",
@@ -189,6 +207,7 @@ __all__ = [
     "IncrementalGraph",
     "Mention",
     "MentionDelta",
+    "MergeProposal",
     "RelationAggregate",
     "RelationRef",
     "Resolution",
@@ -210,18 +229,22 @@ __all__ = [
     "extract_graph",
     "extract_mentions",
     "gazetteer_from",
+    "guess_primary_key",
     "infer_entity_columns",
     "infer_row_entity",
     "is_masked",
+    "key_like_column",
     "leiden",
     "members_hash",
     "mention_delta",
     "merge_extractions",
+    "merge_proposals",
     "modularity",
     "normalise_name",
     "pagerank",
     "personalized_pagerank",
     "pk_index_for",
+    "promote_concepts",
     "prune_relations",
     "relation_id",
     "resolve",
@@ -271,10 +294,12 @@ def extract_graph(
     extra_detector: Callable[[str], Iterable[tuple[int, int, str]]] | None = None,
     resolve_entities: bool = True,
     auto_merge: float = 0.92,
+    proposals: list[MergeProposal] | None = None,
 ) -> GraphExtraction:
     """Structured entities from ``tables``, text mentions from ``texts`` (``(chunk_key, text)``
     or ``(chunk_key, text, document_key)``) using a gazetteer of those entities plus
-    ``gazetteer_names``, then resolution against ``known_aliases``."""
+    ``gazetteer_names``, then resolution against ``known_aliases``. A ``proposals`` list is
+    extended with the resolution's merge proposals (``merge_proposals``) for review."""
     specs: dict[str, tuple[TableInput, Mapping[str, Any], RowEntitySpec | None]] = {}
     for table in tables:
         profile = table.profile or profile_records([r for _, r in table.records])
@@ -284,6 +309,11 @@ def extract_graph(
             table=table.name,
             column_kinds=table.column_kinds,
         )
+        if any(not fk.table for fk in table.foreign_keys):  # name the owning table (a copy)
+            fks = tuple(
+                fk if fk.table else replace(fk, table=table.name) for fk in table.foreign_keys
+            )
+            table = replace(table, foreign_keys=fks)
         specs[table.name] = (table, profile, row_spec)
     pk_index: dict[str, dict[str, tuple[str, str, str]]] = {}
     for table, _, _ in specs.values():
@@ -326,6 +356,8 @@ def extract_graph(
     candidates = [e for e in merged.entities if e.status == "active"]
     resolution = resolve(candidates, known_aliases, auto_merge=auto_merge, weights=weights)
     out = apply_resolution(merged, resolution)
+    if proposals is not None:
+        proposals.extend(merge_proposals(resolution, merged.entities))
     stats = dict(out.stats)
     stats["proposals"] = len(resolution.proposals)
     stats["auto_merges"] = len(resolution.merges)
