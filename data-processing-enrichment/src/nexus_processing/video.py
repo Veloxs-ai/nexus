@@ -434,7 +434,7 @@ def process_video_binary(
         if transcriber is None:
             from .ml_providers import auto_detect_transcriber
             transcriber = auto_detect_transcriber()
-        if ocr_provider is None:
+        if ocr_provider is None and demuxer is not None:  # OCR only reads demuxed frames
             from .ml_providers import auto_detect_ocr_provider
             ocr_provider = auto_detect_ocr_provider()
 

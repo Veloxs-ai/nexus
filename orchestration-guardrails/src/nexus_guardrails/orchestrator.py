@@ -22,8 +22,9 @@ from typing import Any
 
 from .config import GuardrailsConfig
 from .models import Citation, Decision, GuardrailResponse
+from .normalization import strip_invisible
 from .offtopic import detect_off_topic
-from .pii import detect_pii, mask_pii
+from .pii import detect_pii_spans, findings_for, mask_pii, mask_spans
 from .policy import enforce_input_policies, enforce_output_policies
 from .prompt_security import inspect_prompt
 from .rag import compose_grounded_answer, retrieve_context
@@ -37,8 +38,14 @@ def evaluate(
     retrieval_engine: Any | None = None,
     search_provider: Callable[[str, int], list[Citation]] | None = None,
 ) -> GuardrailResponse:
-    pii_findings = detect_pii(query, config.pii)
-    masked_query = mask_pii(query, config.pii)
+    # One detection pass serves both the findings and the masked query.
+    spans = detect_pii_spans(query, config.pii) if config.pii.enabled else []
+    pii_findings = findings_for(spans, config.pii)
+    masked_query = (
+        strip_invisible(mask_spans(query, spans))
+        if config.pii.enabled and config.pii.mask and query
+        else query
+    )
     findings = [
         *inspect_prompt(masked_query, config.prompt_security),
         *enforce_input_policies(masked_query, config.policies),

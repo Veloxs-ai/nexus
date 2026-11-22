@@ -93,8 +93,11 @@ INJECTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "fake_system_turn",
+        # Linear time: a line-anchored turn label and possessive spaces inside "<...>" (the
+        # former ``(^|\n)\s*`` / ``<\s*/?\s*`` forms were quadratic on long blank runs).
         re.compile(
-            r"(^|\n)\s*(system|assistant)\s*:|<\s*/?\s*(system|im_start|im_end)\s*>|\[/?INST\]",
+            r"(?m)^[^\S\n]*(system|assistant)\s*:"
+            r"|<\s*+(?:/\s*+)?(system|im_start|im_end)\s*>|\[/?INST\]",
             re.I,
         ),
     ),

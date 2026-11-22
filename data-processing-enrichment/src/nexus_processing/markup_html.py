@@ -142,17 +142,100 @@ def _text(node: _Node | str | None) -> str:
     return "".join(_text(c) for c in node.children)
 
 
+# HTML5 implied end tags (end tags HTML lets authors omit): a start tag listed here
+# closes the open element named in ``targets`` unless a ``stops`` element is nearer.
+_P_CLOSERS = frozenset(
+    [
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "center",
+        "details",
+        "dialog",
+        "dir",
+        "div",
+        "dl",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hgroup",
+        "hr",
+        "main",
+        "menu",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "ul",
+        "li",
+        "dd",
+        "dt",
+    ]
+)
+_P_STOPS = frozenset(
+    ["table", "td", "th", "caption", "marquee", "object", "applet", "template", "button"]
+)
+_TABLE_STOPS = frozenset({"table"})
+_P_ONLY = frozenset({"p"})
+_IMPLIED: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "li": (frozenset({"li"}), frozenset({"ul", "ol", "menu", "dir", *_P_STOPS})),
+    "dt": (frozenset({"dt", "dd"}), frozenset({"dl", *_P_STOPS})),
+    "dd": (frozenset({"dt", "dd"}), frozenset({"dl", *_P_STOPS})),
+    "td": (frozenset({"td", "th"}), frozenset({"tr", *_TABLE_STOPS})),
+    "th": (frozenset({"td", "th"}), frozenset({"tr", *_TABLE_STOPS})),
+    "tr": (frozenset({"tr"}), frozenset({"thead", "tbody", "tfoot", *_TABLE_STOPS})),
+    "thead": (frozenset({"thead", "tbody", "tfoot"}), _TABLE_STOPS),
+    "tbody": (frozenset({"thead", "tbody", "tfoot"}), _TABLE_STOPS),
+    "tfoot": (frozenset({"thead", "tbody", "tfoot"}), _TABLE_STOPS),
+    "option": (frozenset({"option"}), frozenset({"select", "datalist", "optgroup"})),
+}
+# Every (targets, stops) rule a start tag triggers, in order: one lookup per start tag.
+_START_RULES: dict[str, tuple[tuple[frozenset[str], frozenset[str]], ...]] = {
+    tag: (((_P_ONLY, _P_STOPS),) if tag in _P_CLOSERS else ())
+    + ((_IMPLIED[tag],) if tag in _IMPLIED else ())
+    for tag in _P_CLOSERS | _IMPLIED.keys()
+}
+# Deeper nesting is flattened into the element at this depth, so rendering (recursive)
+# never hits Python's recursion limit and a document is never lost.
+_MAX_DEPTH = 200
+
+
 class _TreeBuilder(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, implied_ends: bool = True) -> None:
         super().__init__(convert_charrefs=True)
         self.root = _Node("root")
         self.stack = [self.root]
+        self.implied_ends = implied_ends
 
     def handle_starttag(self, tag, attrs):
+        stack = self.stack
+        if self.implied_ends:
+            rules = _START_RULES.get(tag)
+            if rules:
+                for targets, stops in rules:  # close the nearest target unless a stop is nearer
+                    for i in range(len(stack) - 1, 0, -1):
+                        open_tag = stack[i].tag
+                        if open_tag in targets:
+                            del stack[i:]
+                            break
+                        if open_tag in stops:
+                            break
         node = _Node(tag, {k: (v or "") for k, v in attrs})
-        self.stack[-1].children.append(node)
-        if tag not in _VOID:
-            self.stack.append(node)
+        stack[-1].children.append(node)
+        if tag not in _VOID and len(stack) < _MAX_DEPTH:
+            stack.append(node)
 
     def handle_startendtag(self, tag, attrs):
         self.stack[-1].children.append(_Node(tag, {k: (v or "") for k, v in attrs}))
@@ -436,7 +519,8 @@ _BLOCK_MACROS = {"code", "noformat", "expand", *_PANELS}
 
 def html_to_markdown(html: str, *, dialect: Literal["html", "confluence"] = "html") -> str:
     """HTML (or Confluence storage XHTML) as readable Markdown; see the module docstring."""
-    builder = _TreeBuilder()
+    # Confluence storage is XHTML (every element closed), so only HTML gets implied ends.
+    builder = _TreeBuilder(implied_ends=dialect != "confluence")
     builder.feed(html or "")
     builder.close()
     renderer = _Renderer(html=dialect != "confluence")

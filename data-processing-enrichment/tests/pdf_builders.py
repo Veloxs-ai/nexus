@@ -31,6 +31,7 @@ def build_pdf(
     xref_stream: bool = False,
     compress_into: dict[int, list[int]] | None = None,
     info: int | None = None,
+    trailer: str = "",
 ) -> bytes:
     """A PDF with ``objects`` (number -> body); a classic xref table, or an xref stream.
 
@@ -60,7 +61,7 @@ def build_pdf(
         offsets[num] = len(out)
         out += f"{num} 0 obj\n".encode() + objects[num] + b"\nendobj\n"
     size = max([*objects, *in_stream]) + 2
-    trailer_extra = f" /Info {info} 0 R" if info else ""
+    trailer_extra = (f" /Info {info} 0 R" if info else "") + trailer
     if not xref_stream:
         start = len(out)
         out += f"xref\n0 {size - 1}\n0000000000 65535 f \n".encode()

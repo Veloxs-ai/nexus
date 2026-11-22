@@ -7,11 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.2.0] — 2026-11-21
+## [3.2.0] — 2026-11-22
 
 Data-loss, chunk-size, record and PII fixes for retrieval over everything a customer uploads or connects. No public method is renamed or removed; the outputs below change, as described under **Changed**.
 
+### Performance
+
+Measured against 3.2.0-pre (commit 8dc3371) on the same 8-core machine, run back to back with nothing else running; CPU p50 unless noted. Outputs are identical except where **Changed** / **Fixed** say otherwise. Benchmarks: `bench.py` per layer (processing parsers, client/pipeline/tables, guardrails/PII, chunking/retrieval), re-runnable against any checkout with `--repo`.
+
+| Workload | 3.2.0-pre | 3.2.0 |
+|---|---|---|
+| `process_document` CSV, 10k rows (wall / CPU) | 2.43 s / 6.40 s | 1.68 s / 4.29 s |
+| `process_document` CSV, 200k rows (wall / CPU) | 57.2 s / 178 s | 33.4 s / 92 s |
+| `process_mysql_table`, 20k rows | 2.09 s | 1.20 s |
+| `process_pdf`, 200 pages (wall / CPU) | 1.79 s / 2.07 s | 0.93 s / 1.76 s |
+| PDF text extraction, 400 pages | 1.53 s | 1.10 s |
+| XLSX, 50k rows (CPU / peak memory) | 2.28 s / 219 MB | 1.51 s / 40 MB |
+| XLSX, 200k rows (CPU / peak memory) | 9.24 s / 878 MB | 6.39 s / 160 MB |
+| CSV parse, 100k rows (CPU / peak memory) | 629 ms / 156 MB | 441 ms / 140 MB |
+| Slack export, 40 channels | 670 ms | 322 ms |
+| `prepare_chunks`, long rows / `ChunkLimiter` corpus | 546 ms / 7.13 s | 263 ms / 3.63 s |
+| Keyword search, 80k documents (per query) | 143 ms | 21 ms |
+| Vector search, 32k entries (peak memory) | 3.56 s (39 MB) | 0.10 s (0.3 MB) |
+| `RetrievalEngine.search` (hybrid) | 72.9 ms | 9.0 ms |
+| `mask_records`, 200k rows | 13.6 s | 8.4 s |
+| `mask_pii`, 1 MB multilingual text | 548 ms | 420 ms |
+| Encrypt / decrypt, 1,000 values | 49 / 45 ms | 27 / 24 ms |
+| Nexora offline eval (M fixture, 63,769 chunks): ingest | 13.9 s | 9.8 s |
+
+Search quality: hybrid RRF MRR@10 0.695 -> 0.739 (weighted fusion unchanged at 0.9); keyword search returns the same order. Nexora's offline eval headline is unchanged (accuracy 0.706, hit@5 0.969, refusal correctness 1.0, false completeness 0).
+
+Costs paid for accuracy: English `mask_pii` is 5-9% slower (cued national phone formats; phone recall 0.63 -> 0.73 at precision 1.0); `detect_pii` is about 1.7x slower because it now uses the masking spans; `validate_records` compares every duplicate's event time (50k records: 10 -> 36 ms); well-formed HTML is 4-5% slower (HTML5 implied end tags); a non-UTF-8 file pays about 0.2 ms for code-page detection; polyglot code emits five times as many chunks (one per method).
+
 ### Added
+- **Encrypted PDFs are read** (`nexus.processing.pdf_crypt`, standard library only): the standard security handler with RC4 (40-128 bit, revisions 2-3), AES-128 (`AESV2`, revision 4) and AES-256 (`AESV3`, revisions 5-6), crypt filters and `Identity`; the empty user password, then the empty owner password, is tried (most "secured" statements and forms). Streams are decrypted lazily, on first use. A file that needs a real password reports `PdfDocument.needs_password` and its pages `source="encrypted"` (they were `empty` with no reason). On the test files encrypted with pypdf (5 algorithms x 2 documents) the text is identical to the unencrypted file (word recall 1.0; was 0.0).
+- **Two-column pages are read column by column** (`nexus.processing.pdf_columns`): when a page's baselines hold gutter-wide gaps and a vertical gutter separates two prose columns (each with a fifth of the text, lines filling their column, almost nothing crossing), the left column is read before the right, with full-width lines (titles, footers) in place. Tables and single-column pages keep stream order. Word-bigram recall on a row-wise two-column file: 0.872 -> 0.983 (pypdf 0.889). Pages without such gaps pay nothing (the detector is not run).
+- **Pages scanned in strips or tiles are OCR'd** (`pdf_scan.page_images`): a text-less page with no single image covering a quarter of it, but whose image tiles (each at least 2% of the page) together do, is OCR'd tile by tile, top to bottom.
+- **Record pages** (`nexus.processing.record_pages`): `servicenow_task_page`, `servicenow_generic_page`, `servicenow_article_page`, `jira_issue_page`, `file_page_header` / `file_page` and `field_text` render already-fetched ServiceNow rows, Jira issues with comments and bucket/drive files as the Markdown page that is chunked (moved from Nexora; same output).
+- Opt-in `address` PII detector (`detect_pii_spans(text, entities=["address"])`, mask `[ADDRESS]`): house number, 1-4 capitalised words and a street type (`Street`, `Rd`, `Marg`, `Nagar`, ...) with an optional unit. Not a default detector.
+- `prepare_chunks(..., count_many=)`, `fit_text(..., known=, count_many=)` and `ChunkLimiter.fit(text, known)`: batched token counting and already-known counts (see **Changed**). `SemanticEmbedder.additive_counts` is True for BERT-style tokenizers, whose counts add up across whitespace.
 - **Token-bounded chunks.** Every `process_*` method caps each chunk at the embedder's window (450 tokens for `bge-small-en-v1.5`, counted with the model's own tokenizer; a conservative estimate when no local tokenizer is available). A chunk over the cap becomes consecutive parts with its context header (`Section: A > B`, `Columns: ...`, `[Workbook: f | Sheet: s | Row n]`, `[Table: t | PK: 1]`, ...) repeated on every part and `metadata.part` / `parts` / `parent_chunk_id`; nothing is dropped. `NexusClient(chunk_max_tokens=...)` or `NEXUS_CHUNK_MAX_TOKENS` lowers the cap, `0` turns it off. New `NexusClient.count_tokens()`, `fit_chunk_text()` and `chunk_limiter`; `nexus.processing.token_budget.fit_text()`.
 - `embedding_info()` returns `max_tokens` (largest chunk the model embeds whole) and `window` (the model's input limit).
 - **Row records for every tabular source.** `process_mysql_table` and `process_mongo_collection` attach the masked row as `metadata.record` (`records` for `rows_per_chunk > 1`); `process_spreadsheet` attaches a typed, masked `record` per row plus `metadata.sheet` (and a `sheet` field in the record when the workbook has several data sheets); CSV through `process_document` is read with `csv.DictReader` (delimiter sniffed among `, ; | tab`, title lines skipped) into row-group chunks carrying `metadata.records` and `row_range`. Numeric CSV columns become numbers (`1,234.50` -> `1234.5`); identifier-like columns (leading zeros, `id`, `zip`, `phone`, ...) keep their text.
@@ -37,8 +71,21 @@ Data-loss, chunk-size, record and PII fixes for retrieval over everything a cust
 - **Language and parse quality**: `detect_language(text)` / `detect_script(text)` (script histogram plus stopword profiles; ISO 639-1 codes) and `assess_text(texts)`; every `process_*` result has `quality` (`chars_indexed`, `alnum_ratio`, `replacement_char_ratio`, `empty_chunks`, `language`, flags `no_text`, `garbled_text`, `replacement_chars`, `mostly_empty`).
 - `EasyOCRProvider.read_lines(image)` returns OCR lines in reading order with confidence (`order_ocr_boxes`).
 - Separate query-time inference: `SemanticEmbedder` keeps a query-only model instance (`NEXUS_QUERY_MODEL=shared` turns it off), so `embed_query` no longer waits for a running `embed_batch`. Measured on an 8-core Mac while 1,500 passages were embedded: `embed_query` p95 13.8 ms (was 96 s, the whole batch). `NEXUS_ONNX_THREADS` sets ONNX intra-op threads.
+- `NEXUS_ML_THREADS` caps the CPU threads of EasyOCR (torch) and faster-whisper (CTranslate2); opt-in, defaults unchanged.
+- **Legacy encodings are detected** (`nexus.processing.charset_detect`, used by `decode_text`): Central European, Cyrillic, Greek, Turkish, Arabic, Hebrew, Baltic, KOI8-R, Shift-JIS, EUC-JP, GB18030, Big5 and EUC-KR. Windows-1252 stays the default for Western text (all 984 single-character cp1252 contexts still decode as cp1252); a mostly-UTF-8 file with a few broken bytes stays UTF-8 with only those bytes replaced.
+- Language ID: Ukrainian, Bulgarian, Serbian, Macedonian, Belarusian, Kazakh, Marathi, Persian, Urdu and kanji-only Japanese, plus Polish, Czech, Romanian, Danish, Norwegian, Finnish, Hungarian and Vietnamese profiles.
+- `SheetData.context`: XLSX title rows above the header (also emitted as a title chunk).
+- Polyglot code: methods inside TS/JS/Java/C#/Rust classes become `Class.method` symbols and chunks (the class chunk is unchanged and lists them).
+- DOCX headings are also recognised from localised style names (`styles.xml`) and outline levels.
+- Opt-in PII detectors `aadhaar` (Verhoeff checksum), `pan` and `iban` (mod-97 and country length); none is a default detector. Phone masks absorb a leading `+` or `(` (`+[PHONE]` is now `[PHONE]`); national formats (Indian, German, UK, French) are masked after a phone cue or a leading `+`.
+- `LocalVectorStore.remove(id)` and `LexicalIndex.remove(id)`.
+- `NexusClient.process_change_events(..., positions=)`: key -> last applied log position, updated in place, so redelivered events are skipped across batches.
+- `NEXUS_ONNX_THREADS` / `NEXUS_ONNX_QUERY_THREADS` (ONNX threads for passage/re-rank and query models) and opt-in `NEXUS_TOKENIZER_THREADS`.
+- `iter_jsonl` (streaming JSONL reader) in `nexus_observability.io` and `nexus_security.io`.
 
 ### Changed
+- **Token budgeting counts each text once** (output identical, checked against 3.2.0-pre on 4 corpora x 5 counters): `estimate_tokens` counts with one regular expression in C (same values; 1.7x faster); `prepare_chunks` counts only chunks longer than the budget in characters, in one batch (`NexusClient.prepare_chunks` passes the tokenizer's batch call), and reuses the counts for row packing; `fit_text` and its splitter take the count the caller already has, count each level's parts in one batch and skip the re-check of joined pieces when the counter is additive (`estimate_tokens`; the bge tokenizer, fuzz-checked). Nexora's offline RAG eval (M) table ingest, wall p50 of 5: `public.cases` 3.02 s -> 1.40 s, `public.accounts` 0.41 s -> 0.25 s, `public.orders` 1.51 s -> 1.42 s (3.1.1: 0.41 / 0.10 / 0.66 s; the rest is token-accurate splitting and packing that 3.1.1 did by characters). With the bge tokenizer, `prepare_chunks` on 600 rows of ~3.4k characters: 6.5 s -> 2.2 s wall (batched, tokenizer threads) or 3.5 s CPU with `TOKENIZERS_PARALLELISM=false`.
+- The OCR engine is loaded on the first page that needs OCR, not for every PDF: a born-digital PDF no longer imports the deep-learning runtime (about 2.4 s and 165 MB per worker process with EasyOCR installed). Output is identical.
 - **Audio with a transcript is chunked by transcript segments** (whole segments, at most ~60 s or ~180 words per chunk), and the acoustic numbers (RMS, ZCR, centroid, bands) are no longer in the chunk text (they stay in metadata). Audio without a transcript is still framed into fixed windows. An untimed `transcript=` is split by sentences instead of being repeated on every window.
 - `embed_batch` sorts passages by length and takes the model lock per mini-batch; the re-ranker locks per mini-batch of 32 pairs, so concurrent questions interleave.
 - PII text detectors are context-aware: a bare digit run is a phone number only after a cue (`phone`, `call`, `mobile`, `tel`, `whatsapp`, ...) and a card only when it is Luhn-valid with a card prefix or a card cue; formatted numbers (`415-555-0100`, `(415) 555-0100`, `+91 98765 43210`, `4111 1111 1111 1111`) are masked as before. Numbers glued to a longer token (`ORD-555-123-4567`, `1234567890.50`) or following an identifier / timestamp key (`order_id:`, `created_at:`, `account_no:`) are no longer masked. Database, Mongo and spreadsheet rows are masked by column, and their chunk text is built from the masked row so text and record agree.
@@ -56,8 +103,27 @@ Data-loss, chunk-size, record and PII fixes for retrieval over everything a cust
 - Lexical tokens cover every script: accented Latin words match their unaccented spelling, Devanagari/Arabic/Cyrillic words are tokens (marks included), and Chinese/Japanese/Korean runs become character bigrams; ASCII tokens are unchanged.
 - `EasyOCRProvider.extract_text` orders lines top to bottom and drops boxes under 0.3 confidence.
 - The `RetrievalEngine` docstring no longer claims RRF for the default weighted fusion.
+- **XLSX is streamed** (`iterparse`, each row cleared): 50k rows 2.5 s / 219 MB -> 1.0 s / 40 MB; 200k rows 878 MB -> 160 MB peak. Repeated headers are numbered (`Amount_2`); only columns that hold data get a header.
+- CSV is parsed in one `csv.reader` pass (about 28% less CPU, rows identical); integers without a decimal point are parsed exactly.
+- PDF text showing is table-driven (per-font decode tables, C-level advance sums): about 26-30% less CPU with bit-identical text positions. Form XObjects are decoded once per document.
+- Slack exports render each message once (3x faster); Mongo documents are cleaned once (7x faster on deep documents); PNG Up prediction, CMYK and image-mask conversion are vectorised (identical bytes).
+- JSON: a second record array in a document becomes one readable context line per record instead of one multi-MB JSON line; `flatten_json` is iterative.
+- `EasyOCRProvider` resolves the torch device when the model loads; video OCR is detected only when a demuxer exists; images under 32 x 10 px are not OCR'd; identical embedded images are OCR'd once per file.
+- Language ID returns `und` when under 5% of the words are stopwords.
+- **Vector search** normalises once on insert and scores by dot product with a heap top-k (32k entries: 2.2 s -> 65 ms per query; same top-k); re-adding an id replaces its vector; `load()` de-duplicates.
+- **Keyword search** touches only the query's postings with a heap top-k (80k documents: 97.5 -> 13.3 ms per query, same order); saved indexes store document lengths, so `load()` no longer re-tokenises (old index files still load).
+- ONNX threads: the passage model and re-ranker default to `NEXUS_ONNX_THREADS` or half the CPUs, the query model to `NEXUS_ONNX_QUERY_THREADS` or 2 (embeddings identical; process CPU while querying during ingest 7.5 -> 5.9 cores).
+- **PII detection is linear and faster**: e-mail scan anchored on `@`; Unicode shadow built with one `str.translate`; ASCII and literal prefilters; ASCII fast path in `normalize_text`; table masking memoised per call (`mask_records` 20k rows 1.41 -> 0.62 s). Output is identical except the phone and placeholder changes listed here.
+- `detect_pii` uses the same spans as masking; `GuardrailsEngine.evaluate()` detects once and masks from those spans.
+- **`NexusClient.process_document` masks free text once, before chunking**, so a value cut at a chunk boundary or repeated in an overlap can no longer escape detection. Chunk boundaries can shift slightly (a mask is shorter than its value). CSV cells are masked once (CSV 10k rows: 2.2 -> 1.4 s wall, 6.0 -> 2.8 s CPU; output identical). Packed row groups are not re-tokenised by the chunk limiter.
+- **`process_change_events` emits one chunk per key** (its final state, or one delete) and skips events that are not newer than the last applied one; Kafka tombstones (`None`) are ignored. A batch that inserts and deletes a key now reports one delete instead of an upsert and a delete (1,000 events: 1,000 -> 731 chunks, final state always correct).
+- `validate_records` keeps the newest record per key (was the first); event times are timezone-aware (epoch values are UTC, not local time); `FileDropConnector.read` honours the checkpoint.
+- Encryption keys (HKDF + Fernet) are cached per key (token format unchanged); `evaluate_existing_alerts` only writes alerts not already recorded.
+- Placeholders (`N/A`, `none`, `-`, ...) stay visible in PII columns; secrets are always masked.
+- Code-page detection scores each distinct word once, language ID looks each word up once in a stopword index, and the national phone scan is skipped when no ten-digit run exists (all three with identical results, checked by equivalence tests).
 
 ### Fixed
+- PowerPoint: text placed directly on a slide, outside any shape, was dropped; it is kept as the slide's text.
 - **MP3 transcripts lost ~95% of their words**: the duration was estimated from the compressed bytes (a 72.5 s file measured 1.03 s), so only the transcript of the first second survived. All 146 of 146 words are now kept on the test recording.
 - Silent truncations removed: Slack threads over 4,500 characters (now split into parts with the thread header), video scene dialogue cut at 140 characters, Python class bodies and script-only modules cut at 2,000 characters, unparseable snippets at 500. Module-level code between functions (imports, constants, `__main__` blocks) and class attributes, previously dropped, are now chunked for Python and the other languages.
 - An XLSX with embedded images failed with a `TypeError` while building the image-text chunk.
@@ -67,6 +133,20 @@ Data-loss, chunk-size, record and PII fixes for retrieval over everything a cust
 - A Markdown table split across chunks kept its header only in the first chunk (80-row probe: `[True, False, False, False, False]`); every piece now has it.
 - `{"data": [200 records]}` JSON became one chunk with no records; counts and totals over JSON exports are now computed from records.
 - The package's Documentation link and the README point to nexus.veloxs.ai/documentation.html and the guide; the /docs/ address used in 3.1.1 is not served.
+- CSV: a title line containing the delimiter became the header; integers above 2^53 lost precision; a blank line inside a quoted cell was dropped.
+- HTML without explicit end tags (`li`, `td`, `tr`, `p`, ...) lost tables and lists; unclosed `<p>` and deep nesting raised `RecursionError`.
+- DOCX: tabs, line breaks and multi-paragraph table cells glued words together; `|` inside cells broke tables; merged cells shifted columns; header and footer runs got false spaces.
+- XLSX: duplicate headers overwrote values; a title row became the header; a stray far cell created 16k columns; phonetic guides were mixed into the text.
+- Polyglot code patterns backtracked quadratically on long whitespace runs (ReDoS); extensionless JavaScript with `import` lines was parsed as Python.
+- PDF: hyphenated compounds that the document writes elsewhere keep their hyphen when broken at a line end (`user-level`, not `userlevel`).
+- Atlassian (ADF) documents nested thousands of levels deep no longer lose their text.
+- UTF-8 files with a few broken bytes were decoded as cp1252.
+- Keyword index: re-adding a document left its old postings behind.
+- Hybrid RRF was made worse by an all-zero graph ranking, and graph scoring matched stopwords, substrings and the node type label (RRF MRR@10 0.553 -> 0.739 on the bench).
+- Nested dicts and lists in id, time or number columns were never masked; raw e-mail addresses were kept in `metadata.emails`; `N/A` placeholders were masked as `[PHONE]`.
+- Quadratic e-mail and `fake_system_turn` regular expressions (hyphen chains and blank-line runs are now linear).
+- `run_cdc` mutated its input; a mixed naive/aware checkpoint raised `TypeError`.
+- The re-ranker's sigmoid overflowed on large scores; loading one embedding model no longer blocks loading another.
 
 ## [3.1.1] — 2026-09-28
 

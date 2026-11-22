@@ -18,14 +18,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
+import itertools
 import re
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from .docx_text import (
+    block_texts,
+    cell_span,
+    cell_text,
+    heading_levels,
+    outline_level,
+    paragraph_text,
+)
 from .spreadsheet_values import WorkbookStyles, xls_cell_value
+from .xlsx_stream import iter_rows as xlsx_iter_rows
+from .xlsx_stream import pick_header
+from .xlsx_stream import shared_strings as xlsx_shared_strings
 
 __all__ = [
     "PresentationMetadata",
@@ -44,21 +57,10 @@ __all__ = [
     "spreadsheet_row_text",
 ]
 
-_COORD_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
-
 
 def _local_tag(elem: ET.Element) -> str:
     """Returns local XML tag without namespace prefix."""
     return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-
-
-def _col_letter_to_index(col_str: str) -> int:
-    """Converts spreadsheet column letter (e.g. 'A', 'Z', 'AA') to 0-based index."""
-    idx = 0
-    for char in col_str.upper():
-        if "A" <= char <= "Z":
-            idx = idx * 26 + (ord(char) - ord("A") + 1)
-    return max(0, idx - 1)
 
 
 # Image extensions recognized in OpenXML media folders
@@ -90,6 +92,7 @@ def _extract_images_from_zip(
     from .images import process_image_binary
 
     image_texts: list[str] = []
+    seen: dict[bytes, Any] = {}  # the same picture embedded twice is OCR'd once
     for name in zf.namelist():
         if not name.startswith(media_prefix):
             continue
@@ -100,12 +103,15 @@ def _extract_images_from_zip(
             img_bytes = zf.read(name)
             if not img_bytes:
                 continue
-            payload = process_image_binary(
-                img_bytes,
-                filename=name.split("/")[-1],
-                ocr_provider=ocr_provider,
-                auto_extract=auto_extract,
-            )
+            digest = hashlib.sha1(img_bytes).digest()
+            payload = seen.get(digest)
+            if payload is None:
+                payload = seen[digest] = process_image_binary(
+                    img_bytes,
+                    filename=name.split("/")[-1],
+                    ocr_provider=ocr_provider,
+                    auto_extract=auto_extract,
+                )
             parts: list[str] = []
             basename = name.split("/")[-1]
             if payload.metadata.ocr_text:
@@ -155,6 +161,7 @@ class SheetData:
     total_columns: int
     headers: list[str]
     rows: list[SpreadsheetRowChunk] = field(default_factory=list)
+    context: list[str] = field(default_factory=list)  # title rows above the header
 
 
 @dataclass
@@ -435,17 +442,10 @@ def process_spreadsheet_binary(
     namelist = set(zf.namelist())
     styles = WorkbookStyles.from_zip(zf)  # date number formats: serials become ISO dates
 
-    # 1. Parse Shared Strings Table (xl/sharedStrings.xml)
+    # 1. Shared Strings Table (xl/sharedStrings.xml), read incrementally
     shared_strings: list[str] = []
     if "xl/sharedStrings.xml" in namelist:
-        try:
-            sst_root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
-            for si in sst_root.iter():
-                if _local_tag(si) == "si":
-                    parts = [t.text or "" for t in si.iter() if _local_tag(t) == "t" and t.text]
-                    shared_strings.append("".join(parts))
-        except ET.ParseError:
-            pass
+        shared_strings = xlsx_shared_strings(zf)
 
     # 2. Parse Workbook relationships (xl/_rels/workbook.xml.rels)
     wb_rels: dict[str, str] = {}
@@ -496,137 +496,90 @@ def process_spreadsheet_binary(
     total_populated_cells = 0
     total_rows_all_sheets = 0
 
-    # 4. Parse Worksheets
+    # 4. Worksheets, streamed row by row (memory is one row, not the sheet's DOM)
     for sheet_name, sheet_path in sheet_targets:
         if sheet_path not in namelist:
             continue
-        try:
-            ws_root = ET.fromstring(zf.read(sheet_path))
-        except ET.ParseError:
-            continue
-
-        # Extract rows and sparse cells
-        raw_rows: dict[int, dict[int, Any]] = {}
-        max_col_idx = 0
-
-        for row_elem in ws_root.iter():
-            if _local_tag(row_elem) != "row":
-                continue
-            r_attr = row_elem.attrib.get("r")
-            try:
-                row_idx = int(r_attr) if r_attr else len(raw_rows) + 1
-            except ValueError:
-                row_idx = len(raw_rows) + 1
-
-            row_cells: dict[int, Any] = {}
-            current_col_idx = 0
-
-            for cell_elem in row_elem.iter():
-                if _local_tag(cell_elem) != "c":
-                    continue
-                cell_ref = cell_elem.attrib.get("r", "")
-                m = _COORD_RE.match(cell_ref)
-                col_idx = _col_letter_to_index(m.group(1)) if m else current_col_idx
-
-                current_col_idx = col_idx + 1
-                max_col_idx = max(max_col_idx, col_idx)
-
-                # Parse cell value
-                cell_type = cell_elem.attrib.get("t", "n")
-                v_elem = next((ch for ch in cell_elem if _local_tag(ch) == "v"), None)
-                is_elem = next((ch for ch in cell_elem if _local_tag(ch) == "is"), None)
-
-                val: Any = ""
-                if cell_type == "s" and v_elem is not None and v_elem.text:
-                    try:
-                        str_idx = int(v_elem.text)
-                        val = (
-                            shared_strings[str_idx]
-                            if str_idx < len(shared_strings)
-                            else v_elem.text
-                        )
-                    except ValueError:
-                        val = v_elem.text
-                elif cell_type == "b" and v_elem is not None:
-                    val = "TRUE" if v_elem.text == "1" else "FALSE"
-                elif cell_type == "inlineStr" or is_elem is not None:
-                    parts = [
-                        t.text or ""
-                        for t in (is_elem if is_elem is not None else cell_elem).iter()
-                        if _local_tag(t) == "t" and t.text
-                    ]
-                    val = "".join(parts)
-                elif v_elem is not None and v_elem.text is not None:
-                    raw_v = v_elem.text.strip()
-                    if cell_type in ("n", ""):
-                        val = styles.value(raw_v, cell_elem.attrib.get("s"))
-                    else:  # "str" (formula text), "e" (error), "d" (ISO date): keep the text
-                        val = raw_v
-
-                if val != "":
-                    row_cells[col_idx] = val
-                    total_populated_cells += 1
-
-            if row_cells:
-                raw_rows[row_idx] = row_cells
-
-        if not raw_rows:
+        rows = xlsx_iter_rows(zf, sheet_path, shared_strings, styles)
+        lead: list[tuple[int, dict[int, Any]]] = []
+        for item in rows:  # leading rows decide where the header is
+            lead.append(item)
+            if len(lead) >= 12:
+                break
+        if not lead:
             processed_sheets.append(
-                SheetData(
+                SheetData(sheet_name=sheet_name, total_rows=0, total_columns=0, headers=[])
+            )
+            continue
+        start = pick_header([cells for _, cells in lead]) if len(lead) > 1 else 0
+        context = [" ".join(str(v) for v in cells.values()) for _, cells in lead[:start]]
+        header_row_map = lead[start][1]
+        # A sheet with one row is data, not a header.
+        data_rows: Any = lead[start + 1 :] if len(lead) > start + 1 else lead[start:]
+        if len(lead) >= 12:
+            data_rows = itertools.chain(data_rows, rows)
+        names: dict[int, str] = {}  # column index -> header name, columns with data only
+        taken: set[str] = set()
+
+        def column_name(c_idx: int, _names=names, _taken=taken, _map=header_row_map) -> str:
+            base = str(_map.get(c_idx, f"Column_{c_idx + 1}"))
+            name, n = base, 2
+            while name in _taken:  # repeated header names keep every column
+                name, n = f"{base}_{n}", n + 1
+            _taken.add(name)
+            _names[c_idx] = name
+            return name
+
+        for c_idx in sorted(header_row_map):
+            column_name(c_idx)
+        sheet_row_chunks: list[SpreadsheetRowChunk] = []
+        populated = sum(len(cells) for _, cells in lead[: start + 1])
+        row_count = start + 1
+        last_index = lead[start][0]
+        ordered = True
+        for r_num, r_data in data_rows:
+            if r_data is header_row_map:  # one-row sheet: the row is its own data
+                populated -= len(r_data)
+                row_count -= 1
+            populated += len(r_data)
+            row_count += 1
+            ordered = ordered and r_num > last_index
+            last_index = r_num
+            row_dict = {
+                (names.get(c_idx) or column_name(c_idx)): r_data[c_idx] for c_idx in sorted(r_data)
+            }
+            sheet_row_chunks.append(
+                SpreadsheetRowChunk(
                     sheet_name=sheet_name,
-                    total_rows=0,
-                    total_columns=0,
-                    headers=[],
-                    rows=[],
+                    row_index=r_num,
+                    data=row_dict,
+                    narrative_text=spreadsheet_row_text(filename, sheet_name, r_num, row_dict),
                 )
             )
-            continue
-
-        sorted_row_indices = sorted(raw_rows.keys())
-        first_row_idx = sorted_row_indices[0]
-        header_row_map = raw_rows[first_row_idx]
-
-        num_cols = max(max_col_idx + 1, max(header_row_map.keys(), default=0) + 1)
-        headers: list[str] = [
-            str(header_row_map.get(c_idx, f"Column_{c_idx + 1}")) for c_idx in range(num_cols)
-        ]
-
-        sheet_row_chunks: list[SpreadsheetRowChunk] = []
-
-        # If more than 1 row, row 1 is header, subsequent are data rows.
-        # If only 1 row exists, treat row 1 itself as data.
-        data_row_indices = (
-            sorted_row_indices[1:] if len(sorted_row_indices) > 1 else sorted_row_indices
-        )
-
-        for r_num in data_row_indices:
-            r_data = raw_rows[r_num]
-            row_dict: dict[str, Any] = {}
-
-            for c_idx in range(num_cols):
-                h_name = headers[c_idx]
-                if c_idx in r_data:
-                    row_dict[h_name] = r_data[c_idx]
-
-            row_narrative = spreadsheet_row_text(filename, sheet_name, r_num, row_dict)
-
-            chunk = SpreadsheetRowChunk(
-                sheet_name=sheet_name,
-                row_index=r_num,
-                data=row_dict,
-                narrative_text=row_narrative,
+        if not ordered:  # rows out of order or repeated: sort, the last copy of a row wins
+            latest = {chunk.row_index: chunk for chunk in sheet_row_chunks}
+            sheet_row_chunks = [latest[k] for k in sorted(latest)]
+        headers = [names[c] for c in sorted(names)]
+        total_populated_cells += populated
+        total_rows_all_sheets += row_count
+        for (r_num, _cells), text in zip(lead[:start], context, strict=True):
+            all_chunks.append(
+                SpreadsheetRowChunk(
+                    sheet_name=sheet_name,
+                    row_index=r_num,
+                    data={"title": text},
+                    narrative_text=f"[Workbook: {filename} | Sheet: {sheet_name} | Title] {text}",
+                )
             )
-            sheet_row_chunks.append(chunk)
-            all_chunks.append(chunk)
-
-        total_rows_all_sheets += len(raw_rows)
+        all_chunks.extend(sheet_row_chunks)
         processed_sheets.append(
             SheetData(
                 sheet_name=sheet_name,
-                total_rows=len(raw_rows),
-                total_columns=num_cols,
+                total_rows=row_count,
+                total_columns=len(headers),
                 headers=headers,
                 rows=sheet_row_chunks,
+                context=context,
             )
         )
 
@@ -890,6 +843,14 @@ def process_presentation_binary(
                     title = combined_sp_text
                 elif combined_sp_text != title and combined_sp_text not in body_paragraphs:
                     body_paragraphs.append(combined_sp_text)
+
+        if not title and not body_paragraphs:
+            # Text outside any shape (hand-made or converted slides): never drop it.
+            loose = " ".join(
+                t.text.strip() for t in slide_root.iter() if _local_tag(t) == "t" and t.text
+            )
+            if loose.strip():
+                body_paragraphs.append(loose.strip())
 
         if not title:
             if body_paragraphs:
@@ -1158,6 +1119,10 @@ def process_word_binary(
             chunks=[],
         )
 
+    style_levels: dict[str, int] = {}
+    if "word/styles.xml" in namelist:
+        style_levels = heading_levels(archive.read("word/styles.xml"))
+
     chunks: list[WordSectionChunk] = []
     headings: list[str] = []
     current_section = doc_title or "Document Overview"
@@ -1174,9 +1139,11 @@ def process_word_binary(
         if tag == "p":
             p_style = ""
             is_list = False
+            p_outline: int | None = None
             for p_child in elem:
                 c_tag = _local_tag(p_child)
                 if c_tag == "pPr":
+                    p_outline = outline_level(p_child)
                     for pr_node in p_child:
                         pr_tag = _local_tag(pr_node)
                         if pr_tag == "pStyle":
@@ -1187,8 +1154,7 @@ def process_word_binary(
                         elif pr_tag == "numPr":
                             is_list = True
 
-            t_nodes = [t.text for t in elem.iter() if _local_tag(t) == "t" and t.text]
-            p_text = "".join(t_nodes).strip()
+            p_text = paragraph_text(elem).strip()
             if not p_text:
                 continue
 
@@ -1209,6 +1175,12 @@ def process_word_binary(
                 elif style_lower in ("title", "subtitle"):
                     is_heading = True
                     h_level = 1 if style_lower == "title" else 2
+                elif p_style in style_levels:  # localised style ids (Überschrift1, Titre1)
+                    is_heading = True
+                    h_level = style_levels[p_style]
+            if not is_heading and p_outline:
+                is_heading = True
+                h_level = p_outline
 
             if is_heading:
                 heading_stack = [(lvl, txt) for lvl, txt in heading_stack if lvl < h_level]
@@ -1278,12 +1250,9 @@ def process_word_binary(
                     row_cells: list[str] = []
                     for tc in tr:
                         if _local_tag(tc) == "tc":
-                            cell_text_runs: list[str] = []
-                            for p in tc.iter():
-                                if _local_tag(p) == "t" and p.text:
-                                    cell_text_runs.append(p.text)
-                            cell_text = " ".join("".join(cell_text_runs).split())
-                            row_cells.append(cell_text)
+                            row_cells.append(cell_text(tc))
+                            # a merged cell keeps the columns after it aligned
+                            row_cells.extend([""] * (cell_span(tc) - 1))
                     if row_cells:
                         table_rows_data.append(row_cells)
 
@@ -1325,10 +1294,7 @@ def process_word_binary(
         if zname.startswith("word/header") and zname.endswith(".xml"):
             try:
                 hdr_root = ET.fromstring(archive.read(zname))
-                hdr_parts = []
-                for elem in hdr_root.iter():
-                    if _local_tag(elem) == "t" and elem.text:
-                        hdr_parts.append(elem.text)
+                hdr_parts = [t.strip() for t in block_texts(hdr_root) if t.strip()]
                 if hdr_parts:
                     header_texts.append(" ".join(hdr_parts))
             except Exception:
@@ -1336,10 +1302,7 @@ def process_word_binary(
         elif zname.startswith("word/footer") and zname.endswith(".xml"):
             try:
                 ftr_root = ET.fromstring(archive.read(zname))
-                ftr_parts = []
-                for elem in ftr_root.iter():
-                    if _local_tag(elem) == "t" and elem.text:
-                        ftr_parts.append(elem.text)
+                ftr_parts = [t.strip() for t in block_texts(ftr_root) if t.strip()]
                 if ftr_parts:
                     footer_texts.append(" ".join(ftr_parts))
             except Exception:
@@ -1360,10 +1323,7 @@ def process_word_binary(
                         # Skip separator footnotes (id 0 and 1)
                         if fn_id in ("0", "1", "-1"):
                             continue
-                        fn_parts = []
-                        for t_elem in fn_elem.iter():
-                            if _local_tag(t_elem) == "t" and t_elem.text:
-                                fn_parts.append(t_elem.text)
+                        fn_parts = [t.strip() for t in block_texts(fn_elem) if t.strip()]
                         if fn_parts:
                             footnote_texts.append(" ".join(fn_parts))
             except Exception:

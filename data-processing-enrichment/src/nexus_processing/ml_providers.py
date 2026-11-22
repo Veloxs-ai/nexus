@@ -23,8 +23,10 @@ All ML dependencies are lazy-loaded and optional.
 
 from __future__ import annotations
 
+import functools
 import gc
 import importlib.util
+import os
 import sys
 import time as _time
 from typing import Any, Protocol, runtime_checkable
@@ -44,12 +46,28 @@ __all__ = [
     "is_faster_whisper_available",
     "is_package_available",
     "is_pyav_available",
+    "ml_threads",
 ]
 
 
+@functools.lru_cache(maxsize=64)
 def is_package_available(package_name: str) -> bool:
-    """Check if a given Python package is installed and importable."""
+    """Check if a given Python package is installed and importable (cached: installs do
+    not change while a worker runs, and ``find_spec`` walks ``sys.path`` each time)."""
     return importlib.util.find_spec(package_name) is not None
+
+
+def ml_threads() -> int | None:
+    """CPU threads per ML runtime from ``NEXUS_ML_THREADS`` (``None`` = runtime default).
+
+    EasyOCR (torch) and faster-whisper (CTranslate2) each default to every core; in one
+    worker process they oversubscribe a small box. Set e.g. ``NEXUS_ML_THREADS=2``."""
+    raw = os.environ.get("NEXUS_ML_THREADS", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def is_easyocr_available() -> bool:
@@ -186,7 +204,9 @@ class EasyOCRProvider:
     def __init__(self, languages: list[str] | None = None, gpu: bool | None = None):
         # Store config but DON'T import easyocr yet
         self._languages = languages or ["en"]
-        self._gpu = (best_torch_device() != "cpu") if gpu is None else gpu
+        # Resolved when the model loads: best_torch_device() imports torch (~3.6 s,
+        # ~200 MB), which a worker that never OCRs must not pay.
+        self._gpu = gpu
         self._reader = None  # lazy init
         self._lock = __import__("threading").Lock()
         self._last_used = 0.0
@@ -207,6 +227,14 @@ class EasyOCRProvider:
                     "Install via: pip install 'veloxs-nexus[ocr]'"
                 )
             import easyocr
+
+            if self._gpu is None:
+                self._gpu = best_torch_device() != "cpu"
+            threads = ml_threads()
+            if threads:
+                import torch
+
+                torch.set_num_threads(threads)
             self._reader = easyocr.Reader(self._languages, gpu=self._gpu, verbose=False)
         return self._reader
 
@@ -284,7 +312,11 @@ class FasterWhisperTranscriber:
                     device = "cpu"
             if compute_type == "auto":
                 compute_type = "float16" if device == "cuda" else "int8"
-            self._model = WhisperModel(self._model_size, device=device, compute_type=compute_type)
+            threads = ml_threads()
+            extra = {"cpu_threads": threads} if threads else {}
+            self._model = WhisperModel(
+                self._model_size, device=device, compute_type=compute_type, **extra
+            )
         return self._model
 
     def transcribe(self, audio_bytes: bytes) -> tuple[str, list[dict]]:

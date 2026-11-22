@@ -28,8 +28,9 @@ expressions:
 - the **page tree** in document order, with inherited ``/Resources``, ``/MediaBox`` and
   ``/Rotate``.
 
-Encrypted files are detected (``PdfDocument.encrypted``); their strings and streams are
-not decrypted.
+Encrypted files (standard security handler: RC4, AES-128, AES-256) are decrypted when an
+empty user or owner password opens them (``pdf_crypt``; streams lazily, on first use).
+``PdfDocument.needs_password`` is True when a real password is needed: nothing is guessed.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .pdf_crypt import SecurityHandler
 from .pdf_filters import IMAGE_FILTERS
 from .pdf_lexer import (
     WHITESPACE,
@@ -59,6 +61,23 @@ __all__ = [
 ]
 
 
+class _SealedStream(PdfStream):
+    """A stream of an encrypted file: its data is decrypted on first access to ``raw``."""
+
+    def __init__(self, sdict: dict[str, Any], sealed: bytes, unseal: Any) -> None:
+        self.dict = sdict
+        self._sealed: bytes | None = sealed
+        self._unseal = unseal
+        self._raw: bytes | None = None
+
+    @property
+    def raw(self) -> bytes:  # type: ignore[override]
+        if self._raw is None:
+            self._raw = self._unseal(self._sealed or b"")
+            self._sealed = None
+        return self._raw
+
+
 # --------------------------------------------------------------------------------------
 # Document
 # --------------------------------------------------------------------------------------
@@ -78,6 +97,7 @@ class PdfDocument:
         self.trailer: dict[str, Any] = {}
         self._cache: dict[int, Any] = {}
         self._objstm: dict[int, dict[int, Any]] = {}
+        self.form_cache: dict[int, bytes] = {}  # decoded Form XObjects (pdf_content)
         self.repaired = False
         self._resolving: set[int] = set()
         try:
@@ -87,6 +107,47 @@ class PdfDocument:
         if not self.xref or "Root" not in self.trailer:
             self._rebuild()
         self.encrypted = "Encrypt" in self.trailer
+        self.security: SecurityHandler | None = None
+        self._encrypt_num: int | None = None
+        if self.encrypted:
+            self._open_security()
+
+    # ---- encryption ---------------------------------------------------------------
+    def _open_security(self) -> None:
+        ref = self.trailer.get("Encrypt")
+        self._encrypt_num = ref.num if isinstance(ref, PdfRef) else None
+        encrypt = self.resolve(ref)
+        ids = self.resolve(self.trailer.get("ID"))
+        first_id = ids[0] if isinstance(ids, list) and ids and isinstance(ids[0], bytes) else b""
+        if isinstance(encrypt, dict):
+            self.security = SecurityHandler(encrypt, first_id)
+        # Objects read before the key was known (the Encrypt dictionary aside) are re-read.
+        self._cache = {n: o for n, o in self._cache.items() if n == self._encrypt_num}
+        self._objstm = {}
+
+    @property
+    def needs_password(self) -> bool:
+        """Encrypted, and no empty password opens it (or the handler is not supported)."""
+        return self.encrypted and (self.security is None or self.security.needs_password)
+
+    def _decrypt(self, obj: Any, num: int, gen: int, depth: int = 0) -> Any:
+        security = self.security
+        if security is None or depth > 200:
+            return obj
+        if isinstance(obj, bytes):
+            return security.decrypt_string(obj, num, gen)
+        if isinstance(obj, list):
+            return [self._decrypt(x, num, gen, depth + 1) for x in obj]
+        if isinstance(obj, dict):
+            return {k: self._decrypt(v, num, gen, depth + 1) for k, v in obj.items()}
+        if isinstance(obj, PdfStream):
+            if obj.dict.get("Type") == "XRef":
+                return obj
+            sdict = self._decrypt(obj.dict, num, gen, depth + 1)
+            return _SealedStream(
+                sdict, obj.raw, lambda raw: security.decrypt_stream(raw, sdict, num, gen)
+            )
+        return obj
 
     # ---- cross references ---------------------------------------------------------
     def _read_xref_chain(self) -> None:
@@ -248,6 +309,8 @@ class PdfDocument:
         try:
             if kind == 1:
                 obj = self._parse_indirect_at(a)
+                if self.security is not None and self.security.key and num != self._encrypt_num:
+                    obj = self._decrypt(obj, num, _gen)
             elif kind == 2:
                 obj = self._from_objstm(a, num)
             else:

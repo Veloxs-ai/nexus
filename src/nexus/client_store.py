@@ -80,12 +80,13 @@ class StoreMixin:
 
     def _json_record_chunks(
         self, text: str, apply_guardrails: bool
-    ) -> list[tuple[str, list[dict[str, Any]], int, int]]:
+    ) -> list[tuple[str, list[dict[str, Any]], int, int, int | None]]:
         """JSON with a record array -> row-group chunks with their column-masked records.
 
-        Returns ``(text, records, first row, last row)`` per chunk (1-based rows; the
-        first chunk holds the document's other fields when there are any, with no
-        records), or ``[]`` when the JSON has no record array (``chunk_json`` then applies).
+        Returns ``(text, records, first row, last row, token bound)`` per chunk (1-based
+        rows; the first chunk holds the document's other fields when there are any, with
+        no records; the bound is the summed row costs or ``None``), or ``[]`` when the
+        JSON has no record array (``chunk_json`` then applies).
         """
         table = json_table(text)
         if table is None:
@@ -97,21 +98,30 @@ class StoreMixin:
         texts = [_row_text(n, row) for n, row in enumerate(masked, start=1)]
         header = f"Columns: {', '.join(table.columns)}"
         limiter = self.chunk_limiter
+        costs = limiter.count_many(texts) if limiter else None
+        header_tokens = limiter.count(header) + 1 if limiter else 0
         groups = group_rows(
             texts,
             header=header,
             max_tokens=limiter.max_tokens if limiter else None,
-            token_costs=limiter.count_many(texts) if limiter else None,
-            header_tokens=limiter.count(header) + 1 if limiter else 0,
+            token_costs=costs,
+            header_tokens=header_tokens,
         )
-        out: list[tuple[str, list[dict[str, Any]], int, int]] = []
+        out: list[tuple[str, list[dict[str, Any]], int, int, int | None]] = []
         if table.context:
             context = "\n".join([f"Records: {table.path} ({len(rows)} rows)", *table.context])
             if apply_guardrails:
                 context = self.guardrails.mask_pii(context)
-            out.append((context, [], 0, 0))
+            out.append((context, [], 0, 0, None))
         out.extend(
-            (chunk, masked[first : last + 1], first + 1, last + 1) for chunk, first, last in groups
+            (
+                chunk,
+                masked[first : last + 1],
+                first + 1,
+                last + 1,
+                limiter.group_bound(costs, first, last, header_tokens) if limiter else None,
+            )
+            for chunk, first, last in groups
         )
         return out
 
@@ -126,6 +136,8 @@ class StoreMixin:
         """``nexus.processing.chunk_store.prepare_chunks`` with this client's token budget and
         tokenizer (chunks bounded to the embedder's window, records kept on first parts)."""
         limiter = self.chunk_limiter
+        if limiter is not None:
+            options.setdefault("count_many", limiter.count_many)
         return prepare_chunks(
             chunks,
             max_tokens=limiter.max_tokens if limiter else None,
@@ -188,6 +200,7 @@ class StoreMixin:
         state: dict[str, dict[str, Any]] | None = None,
         column_kinds: dict[str, str] | None = None,
         enable_guardrails: bool = True,
+        positions: dict[str, str] | None = None,
     ) -> tuple[list[ChangeChunk], dict[str, str]]:
         """Apply change events to record state and render each record's chunk.
 
@@ -198,19 +211,40 @@ class StoreMixin:
         is rendered from the masked record, so id and amount columns keep their values and
         PII columns are masked in both. Returns ``(chunks, column kinds)``; keep the kinds
         for the next batch.
+
+        One chunk per record key: the batch's events for a key are applied in order and
+        only its final state is rendered (or one delete). An event that is not newer than
+        the last applied one for its key (same or lower log position: an at-least-once
+        redelivery) is skipped, so a stale event never overwrites newer state.
+        ``positions`` (key -> last applied position, updated in place) carries that check
+        across batches. Kafka tombstones (``None`` events) are ignored.
         """
+        events = [e for e in events if e is not None]
         if events and not all(hasattr(e, "operation") for e in events):
             events = _cdc.normalize_change_events(events)
         state = state if state is not None else {}
-        data_events = [e for e in events if e.is_data_change]
-        merged: list[tuple[Any, dict[str, Any] | None]] = []
-        for event in data_events:
+        newest: dict[str, Any] = {}
+        final: dict[str, tuple[Any, dict[str, Any] | None]] = {}
+        for n, event in enumerate(e for e in events if e.is_data_change):
+            if not event.key:  # no key: nothing to merge with, every event stands alone
+                final[f"\0{n}"] = (event, _cdc.apply_change(None, event))
+                continue
+            last = newest.get(event.key)
+            if last is None and positions:
+                last = positions.get(event.key) or None
+            if not _cdc.is_newer(event, last):
+                continue
+            newest[event.key] = event
             record = _cdc.apply_change(state.get(event.key), event)
             if record is None:
                 state.pop(event.key, None)
             else:
                 state[event.key] = record
-            merged.append((event, record))
+            final.pop(event.key, None)  # keep the order of each key's last change
+            final[event.key] = (event, record)
+            if positions is not None and event.source_position:
+                positions[event.key] = event.source_position
+        merged = list(final.values())
         guard = self.guardrails
         kinds = dict(column_kinds or {})
         if enable_guardrails and hasattr(guard, "merge_column_kinds"):

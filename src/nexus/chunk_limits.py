@@ -36,9 +36,11 @@ from nexus.models import ProcessedChunk, ProcessedDocumentPayload
 try:
     from nexus.processing.quality import assess_text
     from nexus.processing.token_budget import DEFAULT_MAX_TOKENS, estimate_tokens, fit_text
+    from nexus.processing.token_budget import _additive as _additive_counter
 except (ImportError, ModuleNotFoundError):
     from nexus_processing.quality import assess_text
     from nexus_processing.token_budget import DEFAULT_MAX_TOKENS, estimate_tokens, fit_text
+    from nexus_processing.token_budget import _additive as _additive_counter
 
 __all__ = ["ChunkLimiter", "bounded_output"]
 
@@ -58,6 +60,14 @@ class ChunkLimiter:
         self.max_tokens = max(16, int(max_tokens))
         self.count = count or estimate_tokens
         self._count_many = count_many
+        # The count of joined texts is at most the sum of their counts (whitespace-split
+        # tokenizers and the estimate): a packed group's summed row costs bound it.
+        self.additive = _additive_counter(self.count)
+
+    def group_bound(self, costs: list[int], first: int, last: int, header_tokens: int) -> int:
+        """Token bound of a ``group_rows`` chunk: header plus each row's cost and separator
+        (trusted by ``bound`` only when the counter is additive)."""
+        return header_tokens + sum(costs[first : last + 1]) + (last - first + 1)
 
     def count_many(self, texts: list[str]) -> list[int]:
         """Token counts of many texts (batched through the tokenizer when it can)."""
@@ -65,19 +75,29 @@ class ChunkLimiter:
             return self._count_many(texts)
         return [self.count(t) for t in texts]
 
-    def fit(self, text: str) -> list[str]:
-        return fit_text(text, self.max_tokens, self.count)
+    def fit(self, text: str, known: int | None = None) -> list[str]:
+        """``text`` as pieces within the budget; ``known`` is its token count when counted."""
+        return fit_text(text, self.max_tokens, self.count, known=known, count_many=self._count_many)
+
+    def _known_to_fit(self, chunk: ProcessedChunk) -> bool:
+        known = getattr(chunk, "_token_bound", None)
+        return self.additive and known is not None and known <= self.max_tokens
 
     def bound(self, chunks: list[ProcessedChunk]) -> list[ProcessedChunk]:
         # A text never has more tokens than characters: count only the longer ones, batched.
-        long_idx = [i for i, c in enumerate(chunks) if len(c.text) > self.max_tokens]
+        # A chunk whose producer bounded it already (packed rows, additive counter) is skipped.
+        long_idx = [
+            i
+            for i, c in enumerate(chunks)
+            if len(c.text) > self.max_tokens and not self._known_to_fit(c)
+        ]
         long_counts = self.count_many([chunks[i].text for i in long_idx])
         counts = dict(zip(long_idx, long_counts, strict=True))
         out: list[ProcessedChunk] = []
         split = False
         for idx, chunk in enumerate(chunks):
             fits = counts.get(idx, 0) <= self.max_tokens
-            pieces = [chunk.text] if fits else self.fit(chunk.text)
+            pieces = [chunk.text] if fits else self.fit(chunk.text, counts[idx])
             if len(pieces) == 1:
                 out.append(chunk)
                 continue

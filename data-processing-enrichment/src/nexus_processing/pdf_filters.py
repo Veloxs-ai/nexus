@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import zlib
+from operator import add
 from typing import Any
 
 __all__ = ["IMAGE_FILTERS", "MAX_DECODED_STREAM", "apply_filters", "stream_filters"]
@@ -46,6 +47,9 @@ def _flate(data: bytes) -> bytes:
         if len(out) > MAX_DECODED_STREAM or decomp.eof:
             break
     return bytes(out[:MAX_DECODED_STREAM])
+
+
+_BYTE_SUM = bytes(s & 0xFF for s in range(511))  # (a + b) & 0xFF for two bytes
 
 
 def _predict(data: bytes, parms: dict[str, Any]) -> bytes:
@@ -72,9 +76,8 @@ def _predict(data: bytes, parms: dict[str, Any]) -> bytes:
         if kind == 1:
             for i in range(bpp, len(row)):
                 row[i] = (row[i] + row[i - bpp]) & 0xFF
-        elif kind == 2:
-            for i in range(len(row)):
-                row[i] = (row[i] + prev[i]) & 0xFF
+        elif kind == 2:  # Up: no dependency inside the row, so C-level map + table
+            row = bytearray(map(_BYTE_SUM.__getitem__, map(add, row, prev)))
         elif kind == 3:
             for i in range(len(row)):
                 left = row[i - bpp] if i >= bpp else 0

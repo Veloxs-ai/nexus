@@ -86,3 +86,13 @@ def test_strict_spans_ignore_id_and_amount_cues():
         (span,) = detect_pii_spans(text, strict=True)
         assert text[span.start : span.end].isdigit()
     assert detect_pii_spans("ref 4111111111111112", strict=True) == []  # Luhn still applies
+
+
+def test_address_detector_is_opt_in_and_spans_street_addresses():
+    text = "Ship to 221B Baker Street, Apt 4 or 12 Gandhi Marg. Call 4155550134."
+    spans = detect_pii_spans(text, entities=["address"])
+    assert [text[s.start : s.end] for s in spans] == ["221B Baker Street, Apt 4", "12 Gandhi Marg."]
+    assert all(s.entity == "address" for s in spans)
+    assert "address" not in PiiConfig().detectors  # not a default: free text keeps addresses
+    assert "Baker Street" in mask_pii(text, PiiConfig())
+    assert mask_spans(text, spans).startswith("Ship to [ADDRESS] or [ADDRESS]")

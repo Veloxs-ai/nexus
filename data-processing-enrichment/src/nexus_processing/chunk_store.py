@@ -44,6 +44,7 @@ from .token_budget import DEFAULT_MAX_TOKENS, estimate_tokens, fit_text
 __all__ = ["document_digest", "prepare_chunks", "title_passages"]
 
 TokenCounter = Callable[[str], int]
+CountMany = Callable[[list[str]], list[int]]
 
 ROW_KEYS = ("record", "records")
 
@@ -53,20 +54,35 @@ def _clean(text: Any) -> str:
 
 
 def _split(
-    text: str, meta: dict[str, Any], budget: int, count: TokenCounter, row_keys: tuple[str, ...]
+    text: str,
+    meta: dict[str, Any],
+    budget: int,
+    count: TokenCounter,
+    row_keys: tuple[str, ...],
+    cost: int | None,
+    count_many: CountMany | None,
 ) -> list[dict[str, Any]]:
-    if len(text) <= budget or count(text) <= budget:
-        return [{"text": text, "metadata": meta}]
-    parts = [p for p in fit_text(text, budget, count) if p.strip()] or [text]
+    """``text`` as one or more items; an item's ``"cost"`` is its token count when known."""
+    if cost is None or cost <= budget:
+        return [{"text": text, "metadata": meta, "cost": cost}]
+    parts = [
+        p for p in fit_text(text, budget, count, known=cost, count_many=count_many) if p.strip()
+    ] or [text]
     if len(parts) == 1:
-        return [{"text": parts[0], "metadata": meta}]
+        return [{"text": parts[0], "metadata": meta, "cost": cost if parts[0] == text else None}]
     rest = {k: v for k, v in meta.items() if k not in row_keys}
     out = []
     for n, part in enumerate(parts):
         part_meta = dict(meta) if n == 0 else dict(rest)
         part_meta["part"], part_meta["parts"] = n + 1, len(parts)
-        out.append({"text": part, "metadata": part_meta})
+        out.append({"text": part, "metadata": part_meta, "cost": None})
     return out
+
+
+def _counts(texts: list[str], count: TokenCounter, count_many: CountMany | None) -> list[int]:
+    if count_many is not None and len(texts) > 1:
+        return list(count_many(texts))
+    return [count(t) for t in texts]
 
 
 def _pack(group: list[dict[str, Any]], row_keys: tuple[str, ...]) -> dict[str, Any]:
@@ -99,6 +115,7 @@ def prepare_chunks(
     pack_median_chars: int = 300,
     pack_target_tokens: int = 350,
     pack_max_chars: int = 1500,
+    count_many: CountMany | None = None,
 ) -> list[dict[str, Any]]:
     """Normalise ``chunks`` (``{"text", "metadata"}`` dicts) for storage; see the module docstring.
 
@@ -106,6 +123,8 @@ def prepare_chunks(
     ``DEFAULT_MAX_TOKENS`` otherwise). When ``title`` is given (it is prefixed to each chunk
     at embedding time) and it is longer than the headroom the budget already leaves, the
     budget shrinks by the difference so the title never pushes text out of the window.
+    ``count_many`` is an optional batched form of ``count_tokens`` (one tokenizer call for
+    many texts); each text is counted once.
     """
     count = count_tokens or estimate_tokens
     budget = int(max_tokens or DEFAULT_MAX_TOKENS)
@@ -115,7 +134,7 @@ def prepare_chunks(
         if over > 0:
             budget = max(64, budget - over)
     dropped = set(drop_keys)
-    items: list[dict[str, Any]] = []
+    cleaned: list[tuple[str, dict[str, Any]]] = []
     for chunk in chunks:
         text = _clean(chunk.get("text", ""))
         if not text:
@@ -126,12 +145,29 @@ def prepare_chunks(
             for k, v in (raw_meta if isinstance(raw_meta, dict) else {}).items()
             if k not in dropped
         }
-        items.extend(_split(text, meta, budget, count, row_keys))
+        cleaned.append((text, meta))
+    # A text never has more tokens than characters: count only the longer ones, batched.
+    long_idx = [i for i, (text, _) in enumerate(cleaned) if len(text) > budget]
+    costs: list[int | None] = [None] * len(cleaned)
+    for i, n in zip(
+        long_idx, _counts([cleaned[i][0] for i in long_idx], count, count_many), strict=False
+    ):
+        costs[i] = n
+    items: list[dict[str, Any]] = []
+    for (text, meta), cost in zip(cleaned, costs, strict=True):
+        items.extend(_split(text, meta, budget, count, row_keys, cost, count_many))
 
     lengths = sorted(len(i["text"]) for i in items)
     if len(items) < pack_min_chunks or lengths[len(lengths) // 2] >= pack_median_chars:
-        return items
+        return [{"text": i["text"], "metadata": i["metadata"]} for i in items]
 
+    uncounted = [
+        i for i in items if i["cost"] is None and i["metadata"].get(keep_whole_key) is None
+    ]
+    for item, n in zip(
+        uncounted, _counts([i["text"] for i in uncounted], count, count_many), strict=False
+    ):
+        item["cost"] = n
     target = min(pack_target_tokens, budget)
     packed: list[dict[str, Any]] = []
     buf: list[dict[str, Any]] = []
@@ -141,9 +177,9 @@ def prepare_chunks(
             if buf:
                 packed.append(_pack(buf, row_keys))
                 buf, used, chars = [], 0, 0
-            packed.append(item)
+            packed.append({"text": item["text"], "metadata": item["metadata"]})
             continue
-        cost = count(item["text"]) + 1
+        cost = item["cost"] + 1
         size = len(item["text"]) + 1
         if buf and (used + cost > target or chars + size > pack_max_chars):
             packed.append(_pack(buf, row_keys))

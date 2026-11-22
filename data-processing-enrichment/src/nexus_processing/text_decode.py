@@ -22,9 +22,14 @@ never silently dropping characters. Order of evidence:
 1. a byte-order mark (UTF-8, UTF-16 LE/BE, UTF-32 LE/BE);
 2. UTF-16 without a BOM, recognised by NUL bytes in alternating positions;
 3. strict UTF-8;
-4. cp1252 (Windows "ANSI", which is what most non-UTF-8 office exports are), when every
-   byte is defined in it;
-5. latin-1, which maps every byte and so never fails (``confidence`` is low).
+4. UTF-8 with a few broken bytes (a truncated or concatenated file): when valid multi-byte
+   sequences outnumber the invalid bytes four to one, the text is UTF-8 and only the
+   broken bytes become U+FFFD (counted in ``replaced``);
+5. a legacy code page chosen by ``charset_detect.rank_encodings`` (Windows-1252 for
+   Western text, which is what most non-UTF-8 office exports are, and Central European,
+   Cyrillic, Greek, Turkish, Arabic, Hebrew, Baltic, KOI8-R, Shift-JIS, EUC-JP, GB18030,
+   Big5 and EUC-KR when the bytes read as plausible text only in one of them);
+6. latin-1, which maps every byte and so never fails (``confidence`` is low).
 
 ``looks_binary`` is the NUL sniff used to keep binary payloads out of text paths.
 """
@@ -33,6 +38,8 @@ from __future__ import annotations
 
 import codecs
 from dataclasses import dataclass
+
+from .charset_detect import rank_encodings
 
 __all__ = ["DecodedText", "decode_text", "looks_binary"]
 
@@ -83,12 +90,22 @@ def _utf16_order(head: bytes) -> str | None:
     return None
 
 
-def _cp1252_clean(data: bytes) -> bool:
-    try:
-        data.decode("cp1252")
-    except UnicodeDecodeError:  # 0x81, 0x8D, 0x8F, 0x90, 0x9D are undefined in cp1252
-        return False
-    return True
+def _utf8_shape(text: str, raw: bytes) -> tuple[int, int]:
+    """``(broken bytes, valid multi-byte characters)`` of a UTF-8 ``replace`` decode."""
+    broken = text.count("\ufffd") - raw.count(b"\xef\xbf\xbd")  # real U+FFFD kept apart
+    non_ascii = len(text) - len(text.encode("ascii", "ignore"))
+    return broken, non_ascii - text.count("\ufffd")
+
+
+def _mostly_utf8(raw: bytes) -> str | None:
+    """UTF-8 text with a few undecodable bytes (``None`` when it is not UTF-8)."""
+    head = raw[:65536]
+    broken, multibyte = _utf8_shape(head.decode("utf-8", errors="replace"), head)
+    if multibyte < 4 * broken and broken > 1:  # the start already reads as another encoding
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    broken, multibyte = _utf8_shape(text, raw)
+    return text if broken > 0 and multibyte >= 8 and multibyte >= 4 * broken else None
 
 
 def decode_text(data: bytes | bytearray | memoryview | str, strip_nul: bool = True) -> DecodedText:
@@ -115,11 +132,16 @@ def decode_text(data: bytes | bytearray | memoryview | str, strip_nul: bool = Tr
         usable = raw[: len(raw) - (len(raw) % 2)]
         return done(usable.decode(order, errors="replace"), order, 0.9)
     try:
-        return done(
-            raw.decode("utf-8"), "utf-8", 1.0 if any(b > 0x7F for b in raw[:_SNIFF]) else 0.95
-        )
+        return done(raw.decode("utf-8"), "utf-8", 0.95 if raw[:_SNIFF].isascii() else 1.0)
     except UnicodeDecodeError:
         pass
-    if _cp1252_clean(raw):
-        return done(raw.decode("cp1252"), "cp1252", 0.7)
+    mostly = _mostly_utf8(raw)
+    if mostly is not None:
+        return done(mostly, "utf-8", 0.8)
+    for rank, encoding in enumerate(rank_encodings(raw)):
+        try:
+            text = raw.decode(encoding)  # the whole text must decode, not just the sample
+        except UnicodeDecodeError:
+            continue
+        return done(text, encoding, 0.7 if rank == 0 else 0.5)
     return done(raw.decode("latin-1"), "latin-1", 0.4)

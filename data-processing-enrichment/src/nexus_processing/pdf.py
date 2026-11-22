@@ -59,7 +59,7 @@ class PDFPage:
     height_pts: float
     word_count: int
     char_count: int
-    # text_layer | ocr | external | empty | needs_ocr | ocr_unsupported
+    # text_layer | ocr | external | empty | needs_ocr | ocr_unsupported | encrypted
     source: str = "text_layer"
     heading_path: list[str] = field(default_factory=list)
     ocr_confidence: float | None = None

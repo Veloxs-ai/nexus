@@ -39,13 +39,14 @@ from typing import Any
 from .pdf_content import PageContent, page_content
 from .pdf_layout import (
     heading_sizes,
+    hyphenated_words,
     lines_from_text,
     page_markdown,
     remove_running_lines,
     runs_to_lines,
 )
 from .pdf_reader import PdfDocument, PdfError
-from .pdf_scan import page_image
+from .pdf_scan import page_images
 
 __all__ = ["PdfExtraction", "PdfPageText", "extract_pdf_pages", "ocr_image"]
 
@@ -57,7 +58,7 @@ MIN_OCR_CONFIDENCE = 0.3
 class PdfPageText:
     number: int
     text: str  # Markdown (headings as "#" lines); "" when the page has no text
-    source: str  # text_layer | ocr | external | empty | needs_ocr | ocr_unsupported
+    source: str  # text_layer | ocr | external | empty | needs_ocr | ocr_unsupported | encrypted
     width: float = 612.0
     height: float = 792.0
     heading_path: list[str] = field(default_factory=list)  # in force where the page starts
@@ -87,6 +88,38 @@ def ocr_image(provider: Any, image: bytes) -> tuple[str, float | None]:
             return "", None
         return "\n".join(t for t, _ in lines), round(sum(c for _, c in lines) / len(lines), 3)
     return (provider.extract_text(image) or "").strip(), None
+
+
+def _ocr_page(
+    page: PdfPageText, scans: list[Any], provider: Callable[[], Any], auto: bool, errors: list[str]
+) -> None:
+    """OCR a text-less page from its scan image (or its tiles, in reading order)."""
+    if not scans:
+        return
+    if all(scan.data is None for scan in scans):
+        page.source = "ocr_unsupported"
+        return
+    engine = provider() if auto else None
+    if engine is None:
+        page.source = "needs_ocr"
+        return
+    texts: list[str] = []
+    scores: list[float] = []
+    for scan in scans:
+        if scan.data is None:
+            continue
+        try:
+            ocr_text, confidence = ocr_image(engine, scan.data)
+        except Exception as exc:
+            errors.append(f"page {page.number} ocr: {type(exc).__name__}")
+            continue
+        if ocr_text.strip():
+            texts.append(ocr_text.strip())
+            if confidence is not None:
+                scores.append(confidence)
+    if texts:
+        page.text, page.source = "\n".join(texts), "ocr"
+        page.ocr_confidence = round(sum(scores) / len(scores), 3) if scores else None
 
 
 def _info_text(value: Any) -> str:
@@ -149,7 +182,7 @@ def extract_pdf_pages(
             except Exception as exc:
                 errors.append(f"layer: {type(exc).__name__}")
         for index, content in contents.items():
-            lines = runs_to_lines(content.runs)
+            lines = runs_to_lines(content.runs, content.width)
             own = len(" ".join(ln.text for ln in lines))
             if index >= len(pages_lines) or own < SCANNED_PAGE_CHARS:
                 continue
@@ -160,49 +193,49 @@ def extract_pdf_pages(
     else:
         assert doc is not None
         contents = _contents(doc, errors)
-        pages_lines = [runs_to_lines(contents[i].runs) for i in sorted(contents)]
+        pages_lines = [runs_to_lines(contents[i].runs, contents[i].width) for i in sorted(contents)]
         source = "text_layer"
 
-    if ocr_provider is None and auto_extract:
-        from .ml_providers import auto_detect_ocr_provider
+    # The OCR engine is resolved on the first page that needs it (loading one imports a
+    # deep-learning runtime: seconds and hundreds of MB that a born-digital PDF never needs).
+    ocr: dict[str, Any] = {"provider": ocr_provider, "resolved": ocr_provider is not None}
 
-        try:
-            ocr_provider = auto_detect_ocr_provider()
-        except Exception:
-            ocr_provider = None
+    def provider() -> Any:
+        if not ocr["resolved"] and auto_extract:
+            ocr["resolved"] = True
+            from .ml_providers import auto_detect_ocr_provider
 
+            try:
+                ocr["provider"] = auto_detect_ocr_provider()
+            except Exception:
+                ocr["provider"] = None
+        return ocr["provider"]
+
+    locked = doc is not None and doc.needs_password
     pages_lines, removed = remove_running_lines(pages_lines)
     _body, levels = heading_sizes(pages_lines)
+    compounds = hyphenated_words(pages_lines)
     out: list[PdfPageText] = []
     path: list[tuple[int, str]] = []
     for index, lines in enumerate(pages_lines):
         content = contents.get(index)
         width, height = (content.width, content.height) if content else (612.0, 792.0)
-        text, headings = page_markdown(lines, levels)
+        text, headings = page_markdown(lines, levels, compounds)
         page_source = "text_layer" if external is not None and index in recovered else source
         page = PdfPageText(index + 1, text, page_source, width, height, [t for _, t in path])
         if len(text.strip()) < SCANNED_PAGE_CHARS:
             page.text = text.strip()
             page.source = "empty" if not text.strip() else page_source
-            if doc is not None and content is not None:
-                scan = page_image(doc, content.images, width * height)
-                if scan is not None:
-                    if scan.data is None:
-                        page.source = "ocr_unsupported"
-                    elif ocr_provider is None or not auto_extract:
-                        page.source = "needs_ocr"
-                    else:
-                        try:
-                            ocr_text, confidence = ocr_image(ocr_provider, scan.data)
-                        except Exception as exc:
-                            errors.append(f"page {index + 1} ocr: {type(exc).__name__}")
-                            ocr_text, confidence = "", None
-                        if ocr_text.strip():
-                            page.text, page.source, page.ocr_confidence = (
-                                ocr_text.strip(),
-                                "ocr",
-                                confidence,
-                            )
+            if locked and not text.strip():
+                page.source = "encrypted"  # needs a password: the text is not guessed
+            elif doc is not None and content is not None:
+                _ocr_page(
+                    page,
+                    page_images(doc, content.images, width * height),
+                    provider,
+                    auto_extract,
+                    errors,
+                )
         for level, title in headings:
             path = [(lvl, t) for lvl, t in path if lvl < level] + [(level, title)]
         page.headings = headings

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -32,15 +33,27 @@ def resolve_uri(uri: str, base_dir: Path) -> Path:
 
 def append_jsonl(uri: str, base_dir: Path, record: BaseModel | dict[str, Any]) -> None:
     path = resolve_uri(uri, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = record.model_dump(mode="json") if isinstance(record, BaseModel) else record
-    with path.open("a", encoding="utf-8") as output:
-        output.write(json.dumps(payload, sort_keys=True) + "\n")
+    line = json.dumps(payload, sort_keys=True) + "\n"
+    try:  # the directory exists after the first append: no mkdir/stat per event
+        output = path.open("a", encoding="utf-8")
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        output = path.open("a", encoding="utf-8")
+    with output:
+        output.write(line)
 
 
 def read_jsonl(uri: str, base_dir: Path) -> list[dict[str, Any]]:
+    return list(iter_jsonl(uri, base_dir))
+
+
+def iter_jsonl(uri: str, base_dir: Path) -> Iterator[dict[str, Any]]:
+    """The records of a JSONL file one at a time (the file is never held in memory whole)."""
     path = resolve_uri(uri, base_dir)
     if not path.exists():
-        return []
+        return
     with path.open("r", encoding="utf-8") as input_file:
-        return [json.loads(line) for line in input_file if line.strip()]
+        for line in input_file:
+            if line.strip():
+                yield json.loads(line)

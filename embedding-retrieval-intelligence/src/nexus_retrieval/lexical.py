@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 import threading
 from collections import Counter, defaultdict
@@ -43,6 +44,12 @@ def query_terms(text: str) -> list[str]:
 
 
 class LexicalIndex:
+    """Inverted keyword index with ``share`` or BM25 scoring.
+
+    Re-adding an id replaces its old words (no stale postings); queries touch only the
+    postings of the query words and build results for the top ``limit`` only.
+    """
+
     def __init__(
         self,
         uri: str = "data/indexes/lexical_index.json",
@@ -62,49 +69,82 @@ class LexicalIndex:
         self.documents: dict[str, IndexedDocument] = {}
         self.postings: dict[str, dict[str, int]] = defaultdict(dict)
         self.lengths: dict[str, int] = {}
+        self._total_len = 0
         self._lock = threading.Lock()
+
+    def _drop_unlocked(self, doc_id: str) -> None:
+        # The stored text gives the document's words back: no per-document word list is
+        # kept in memory just for updates.
+        old = self.documents.get(doc_id)
+        for token in set(tokenize(old.text)) if old is not None else ():
+            posting = self.postings.get(token)
+            if posting is not None:
+                posting.pop(doc_id, None)
+                if not posting:
+                    del self.postings[token]
+        self._total_len -= self.lengths.pop(doc_id, 0)
+        self.documents.pop(doc_id, None)
 
     def add(self, document: IndexedDocument) -> None:
         tokens = tokenize(document.text)
-        tokens_count = Counter(tokens).items()
+        tokens_count = Counter(tokens)
         with self._lock:
+            if document.id in self.documents:
+                self._drop_unlocked(document.id)
             self.documents[document.id] = document
             self.lengths[document.id] = len(tokens)
-            for token, count in tokens_count:
+            self._total_len += len(tokens)
+            for token, count in tokens_count.items():
                 self.postings[token][document.id] = count
+
+    def remove(self, doc_id: str) -> bool:
+        """Forget ``doc_id`` and all of its words. Returns whether it was indexed."""
+        with self._lock:
+            if doc_id not in self.documents:
+                return False
+            self._drop_unlocked(doc_id)
+            return True
+
+    def _results(self, ranked: list[tuple[str, float]]) -> list[SearchResult]:
+        out = []
+        for doc_id, score in ranked:
+            document = self.documents.get(doc_id)
+            if document is not None:
+                out.append(
+                    SearchResult(
+                        id=doc_id,
+                        collection=document.collection,
+                        text=document.text,
+                        score=score,
+                        lexical_score=score,
+                        metadata=document.metadata,
+                    )
+                )
+        return out
 
     def _bm25(
         self, terms: list[str], limit: int, k1: float = 1.2, b: float = 0.75
     ) -> list[SearchResult]:
         with self._lock:
             total_docs = len(self.documents)
-            postings = {term: dict(self.postings.get(term, {})) for term in terms}
-            docs_snapshot = dict(self.documents)
-            lengths = dict(self.lengths)
-        if not total_docs:
-            return []
-        avg_len = (sum(lengths.values()) / len(lengths)) if lengths else 1.0
-        scores: dict[str, float] = defaultdict(float)
-        for docs in postings.values():
-            idf = math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
-            for doc_id, tf in docs.items():
-                norm = k1 * (1 - b + b * lengths.get(doc_id, avg_len) / (avg_len or 1.0))
-                scores[doc_id] += idf * tf * (k1 + 1) / (tf + norm)
-        top = max(scores.values(), default=0.0) or 1.0
-        results = [
-            SearchResult(
-                id=doc_id,
-                collection=docs_snapshot[doc_id].collection,
-                text=docs_snapshot[doc_id].text,
-                score=round(score / top, 6),
-                lexical_score=round(score / top, 6),
-                metadata=docs_snapshot[doc_id].metadata,
-            )
-            for doc_id, score in scores.items()
-            if doc_id in docs_snapshot
-        ]
-        results.sort(key=lambda result: result.score, reverse=True)
-        return results[:limit]
+            if not total_docs:
+                return []
+            avg_len = (self._total_len / len(self.lengths)) if self.lengths else 1.0
+            lengths = self.lengths
+            scores: dict[str, float] = defaultdict(float)
+            for term in terms:
+                docs = self.postings.get(term)
+                if not docs:
+                    continue
+                idf = math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
+                for doc_id, tf in docs.items():
+                    norm = k1 * (1 - b + b * lengths.get(doc_id, avg_len) / (avg_len or 1.0))
+                    scores[doc_id] += idf * tf * (k1 + 1) / (tf + norm)
+            top = max(scores.values(), default=0.0) or 1.0
+            # Highest score first; ties keep first-matched order (as a stable sort would).
+            keyed = ((round(s / top, 6), -n, d) for n, (d, s) in enumerate(scores.items()))
+            best = heapq.nlargest(limit, keyed)
+            return self._results([(d, s) for s, _, d in best])
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         """Keyword search scored by how much of the query matched.
@@ -115,39 +155,32 @@ class LexicalIndex:
         repeats the matched words more often.
         """
         terms = query_terms(query)
-        if not terms:
+        if not terms or limit <= 0:
             return []
         if self.scoring == "bm25":
             return self._bm25(terms, limit)
         with self._lock:
             total_docs = len(self.documents)
-            postings = {term: dict(self.postings.get(term, {})) for term in terms}
-            docs_snapshot = dict(self.documents)
-        idf = {
-            term: math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
-            for term, docs in postings.items()
-        }
-        query_weight = sum(idf.values()) or 1.0
-        matched: dict[str, float] = defaultdict(float)
-        counts: Counter[str] = Counter()
-        for term, docs in postings.items():
-            for doc_id, count in docs.items():
-                matched[doc_id] += idf[term]
-                counts[doc_id] += count
-        results = [
-            SearchResult(
-                id=doc_id,
-                collection=docs_snapshot[doc_id].collection,
-                text=docs_snapshot[doc_id].text,
-                score=round(weight / query_weight, 6),
-                lexical_score=round(weight / query_weight, 6),
-                metadata=docs_snapshot[doc_id].metadata,
+            matched: dict[str, float] = defaultdict(float)
+            counts: dict[str, int] = defaultdict(int)
+            postings = [(term, self.postings.get(term) or {}) for term in terms]
+            idf = {
+                term: math.log(1.0 + (total_docs - len(docs) + 0.5) / (len(docs) + 0.5))
+                for term, docs in postings
+            }
+            query_weight = sum(idf.values()) or 1.0
+            for term, docs in postings:
+                weight = idf[term]
+                for doc_id, count in docs.items():
+                    matched[doc_id] += weight
+                    counts[doc_id] += count
+            # Score, then repeat count, then first-matched order (HEAD's stable sort).
+            keyed = (
+                (round(w / query_weight, 6), counts[d], -n, d)
+                for n, (d, w) in enumerate(matched.items())
             )
-            for doc_id, weight in matched.items()
-            if doc_id in docs_snapshot
-        ]
-        results.sort(key=lambda result: (result.score, counts[result.id]), reverse=True)
-        return results[:limit]
+            best = heapq.nlargest(limit, keyed)
+            return self._results([(d, s) for s, _, _, d in best])
 
     def save(self) -> None:
         if self.in_memory_only:
@@ -159,6 +192,7 @@ class LexicalIndex:
                     for doc_id, document in self.documents.items()
                 },
                 "postings": {token: dict(posting) for token, posting in self.postings.items()},
+                "lengths": dict(self.lengths),
             }
         write_json(self.uri, self.base_dir, payload)
 
@@ -167,15 +201,23 @@ class LexicalIndex:
             return
         try:
             payload = read_json(self.uri, self.base_dir)
+            documents = {
+                doc_id: IndexedDocument.model_validate(document)
+                for doc_id, document in payload.get("documents", {}).items()
+            }
+            postings: dict[str, dict[str, int]] = defaultdict(dict)
+            sums: dict[str, int] = defaultdict(int)
+            for token, posting in payload.get("postings", {}).items():
+                postings[token] = dict(posting)
+                for doc_id, count in posting.items():
+                    sums[doc_id] += count
+            saved = payload.get("lengths") or {}
+            # A document's length is the sum of its word counts: no re-tokenising on load.
+            lengths = {doc_id: int(saved.get(doc_id, sums.get(doc_id, 0))) for doc_id in documents}
             with self._lock:
-                self.documents = {
-                    doc_id: IndexedDocument.model_validate(document)
-                    for doc_id, document in payload.get("documents", {}).items()
-                }
-                self.postings = defaultdict(dict, payload.get("postings", {}))
-                self.lengths = {
-                    doc_id: len(tokenize(document.text))
-                    for doc_id, document in self.documents.items()
-                }
+                self.documents = documents
+                self.postings = postings
+                self.lengths = lengths
+                self._total_len = sum(lengths.values())
         except Exception:
             pass

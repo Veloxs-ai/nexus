@@ -294,7 +294,6 @@ def process_python_source(
             narrative += f'"""{doc}"""\n'
         narrative += body
 
-
         chunks.append(
             CodeChunk(
                 chunk_id=f"{file_name}_{fn_name}_{s_line}",
@@ -371,7 +370,6 @@ def process_python_source(
             members = uncovered_blocks(class_lines, spans)
             if members:
                 cls_narrative += "Body:\n" + "\n".join(text for _s, _e, text in members) + "\n"
-
 
             chunks.append(
                 CodeChunk(
@@ -469,14 +467,122 @@ POLYGLOT_EXTENSIONS = {
 def _strip_strings_and_comments(line: str) -> str:
     """Remove string literals and single-line comments for accurate brace counting."""
     # Remove single-line comments (// style)
-    line = re.sub(r'//.*$', '', line)
+    line = re.sub(r"//.*$", "", line)
     # Remove double-quoted string contents
     line = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
     # Remove single-quoted string contents
     line = re.sub(r"'(?:[^'\\]|\\.)*'", "''", line)
     # Remove backtick template literal contents
-    line = re.sub(r'`(?:[^`\\]|\\.)*`', '``', line)
+    line = re.sub(r"`(?:[^`\\]|\\.)*`", "``", line)
     return line
+
+
+_MODIFIERS = r"(?:public|protected|private|static|final|abstract|async)"
+_JAVA_MODIFIERS = r"(?:public|protected|private|static|final|async)"
+# Polyglot definition signatures, compiled once. The Java/C# modifier prefixes match the
+# same lines as ``(?:mods|\s)+`` but without the overlap between the modifier list and
+# ``\s`` that made a long run of spaces backtrack quadratically (ReDoS).
+_POLYGLOT_PATTERNS = [
+    re.compile(p)
+    for p in (
+        # TypeScript / JavaScript function or class / interface
+        r"^(?:\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\((.*?)\)(?:\s*:\s*[^{]+)?)\s*\{",
+        r"^(?:\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+[^{]+)?(?:\s+implements\s+[^{]+)?)\s*\{",
+        r"^(?:\s*(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+[^{]+)?)\s*\{",
+        # Go func / type struct
+        r"^(?:\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z0-9_]+)\s*\((.*?)\)(?:\s*[^{]+)?)\s*\{",
+        r"^(?:\s*type\s+([A-Za-z0-9_]+)\s+struct)\s*\{",
+        # Rust fn / struct / impl
+        r"^(?:\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*(?:<[^>]+>)?\s*\((.*?)\)(?:\s*->\s*[^{]+)?)\s*\{",
+        r"^(?:\s*(?:pub\s+)?struct\s+([A-Za-z0-9_]+)(?:<[^>]+>)?)\s*\{",
+        r"^(?:\s*impl(?:<[^>]+>)?\s+([A-Za-z0-9_]+))\s*\{",
+        # Java / C# / C++ methods and classes
+        rf"^(?:(?:(?:\s*{_MODIFIERS})+\s*|\s+)(?:class|interface)\s+([A-Za-z0-9_]+))\s*\{{",
+        rf"^(?:(?:(?:\s*{_JAVA_MODIFIERS})+\s+|\s\s+)[A-Za-z0-9_<>,\[\]]+\s+([A-Za-z0-9_]+)\s*\((.*?)\)(?:\s*throws\s+[^{{]+)?)\s*\{{",
+    )
+]
+# Members inside a class body: TS/JS methods (no return type before the name) and the
+# Java/C#/Rust method shapes above.
+_MEMBER_PATTERNS = [
+    re.compile(
+        r"^\s*(?:(?:public|private|protected|static|readonly|async|override|abstract|get|set)\s+)*"
+        r"(?:\*\s*)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>\s*)?\((.*?)\)(?:\s*:\s*[^{;=]+)?\s*\{"
+    ),
+    _POLYGLOT_PATTERNS[9],
+    _POLYGLOT_PATTERNS[5],
+]
+_NOT_MEMBERS = frozenset(
+    {
+        "if", "for", "while", "switch", "catch", "return", "function", "new", "else", "do",
+        "try", "with", "typeof", "delete", "await", "yield", "throw", "case", "super", "this",
+    }
+)  # fmt: skip
+MAX_SIGNATURE_LINE = 2000  # longer lines (minified code) are not matched as signatures
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    """1-based last line of the brace block opening on 0-based line ``start``."""
+    stripped = _strip_strings_and_comments(lines[start])
+    balance = stripped.count("{") - stripped.count("}")
+    end = start + 1
+    j = start + 1
+    while j < len(lines) and balance > 0:
+        stripped = _strip_strings_and_comments(lines[j])
+        balance += stripped.count("{") - stripped.count("}")
+        end = j + 1
+        j += 1
+    return end
+
+
+def _leading_doc(lines: list[str], start: int) -> str:
+    """Comment lines directly above 0-based line ``start``."""
+    doc: list[str] = []
+    k = start - 1
+    while k >= 0:
+        prev = lines[k].strip()
+        if not prev.startswith(("//", "/*", "*", "///", "#")):
+            break
+        doc.insert(0, prev)
+        k -= 1
+    return "\n".join(doc)
+
+
+def _class_members(lines: list[str], first: int, last: int) -> list[tuple[str, str, int, int]]:
+    """``(name, signature, start, end)`` (1-based lines) of the methods directly inside a
+    class body spanning 0-based lines ``first``..``last``."""
+    members: list[tuple[str, str, int, int]] = []
+    k = first
+    while k < last:
+        line = lines[k]
+        found = None
+        if len(line) <= MAX_SIGNATURE_LINE:
+            for pattern in _MEMBER_PATTERNS:
+                m = pattern.match(line)
+                if m and m.group(1) not in _NOT_MEMBERS:
+                    found = m.group(1)
+                    break
+        if found is None:
+            k += 1
+            continue
+        end = min(_block_end(lines, k), last + 1)
+        members.append((found, line.strip().rstrip("{").strip(), k + 1, end))
+        k = end
+    return members
+
+
+_PY_DEF = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+\w+[ \t]*\(.*\)[^:{;]*:", re.M)
+_PY_IMPORT = re.compile(
+    r"^(?:from[ \t]+[\w.]+[ \t]+import[ \t]|import[ \t]+[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*$)", re.M
+)
+_JS_IMPORT = re.compile(r"^import\b.*\bfrom[ \t]+['\"]|^import[ \t]+['\"]", re.M)
+
+
+def _looks_python(text: str) -> bool:
+    """Extensionless source is Python when it has a Python ``def`` or ``import`` line, not
+    merely the word ``import`` (``import x from 'y'`` is JavaScript)."""
+    if _PY_DEF.search(text):
+        return True
+    return bool(_PY_IMPORT.search(text)) and not _JS_IMPORT.search(text)
 
 
 def process_polyglot_source(
@@ -497,24 +603,7 @@ def process_polyglot_source(
     symbols: list[CodeSymbol] = []
     chunks: list[CodeChunk] = []
 
-    # Regex patterns for polyglot definition signatures
-    patterns = [
-        # TypeScript / JavaScript function or class / interface
-        r"^(?:\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\((.*?)\)(?:\s*:\s*[^{]+)?)\s*\{",
-        r"^(?:\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+[^{]+)?(?:\s+implements\s+[^{]+)?)\s*\{",
-        r"^(?:\s*(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+[^{]+)?)\s*\{",
-        # Go func / type struct
-        r"^(?:\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z0-9_]+)\s*\((.*?)\)(?:\s*[^{]+)?)\s*\{",
-        r"^(?:\s*type\s+([A-Za-z0-9_]+)\s+struct)\s*\{",
-        # Rust fn / struct / impl
-        r"^(?:\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*(?:<[^>]+>)?\s*\((.*?)\)(?:\s*->\s*[^{]+)?)\s*\{",
-        r"^(?:\s*(?:pub\s+)?struct\s+([A-Za-z0-9_]+)(?:<[^>]+>)?)\s*\{",
-        r"^(?:\s*impl(?:<[^>]+>)?\s+([A-Za-z0-9_]+))\s*\{",
-        # Java / C# / C++ methods and classes
-        r"^(?:\s*(?:public|protected|private|static|final|abstract|async|\s)+\s*(?:class|interface)\s+([A-Za-z0-9_]+))\s*\{",
-        r"^(?:\s*(?:public|protected|private|static|final|async|\s)+\s+[A-Za-z0-9_<>,\[\]]+\s+([A-Za-z0-9_]+)\s*\((.*?)\)(?:\s*throws\s+[^{]+)?)\s*\{",
-    ]
-    compiled_patterns = [re.compile(p) for p in patterns]
+    compiled_patterns = _POLYGLOT_PATTERNS
 
     total_funcs = 0
     total_classes = 0
@@ -527,6 +616,8 @@ def process_polyglot_source(
         matched_type = "function"
 
         for _p_idx, pat in enumerate(compiled_patterns):
+            if len(line) > MAX_SIGNATURE_LINE:
+                break
             m = pat.match(line)
             if m:
                 matched_name = m.group(1)
@@ -591,7 +682,6 @@ def process_polyglot_source(
                 narrative += f"{docstring}\n"
             narrative += body_slice
 
-
             chunks.append(
                 CodeChunk(
                     chunk_id=f"{file_name}_{matched_name}_{start_line}",
@@ -608,6 +698,50 @@ def process_polyglot_source(
                     metadata={"language": lang},
                 )
             )
+            if matched_type == "class":  # methods get their own chunks, as in Python
+                members = _class_members(lines, start_line, end_line - 1)
+                if members:
+                    chunks[-1].metadata["methods"] = [name for name, _, _, _ in members]
+                for name, signature, m_start, m_end in members:
+                    total_funcs += 1
+                    qualified = f"{matched_name}.{name}"
+                    m_body = "\n".join(lines[m_start - 1 : m_end])
+                    m_doc = _leading_doc(lines, m_start - 1)
+                    symbols.append(
+                        CodeSymbol(
+                            name=qualified,
+                            symbol_type="method",
+                            language=lang,
+                            signature=signature,
+                            start_line=m_start,
+                            end_line=m_end,
+                            docstring=m_doc,
+                            parent_scope=matched_name,
+                        )
+                    )
+                    m_narrative = (
+                        f"[Code AST: {file_name} | Method: {qualified} "
+                        f"| Lines: {m_start}-{m_end}]\n"
+                        f"Language: {lang} | Signature: {signature}\n"
+                        + (f"{m_doc}\n" if m_doc else "")
+                        + m_body
+                    )
+                    chunks.append(
+                        CodeChunk(
+                            chunk_id=f"{file_name}_{qualified}_{m_start}",
+                            symbol_name=qualified,
+                            symbol_type="method",
+                            language=lang,
+                            file_name=file_name,
+                            start_line=m_start,
+                            end_line=m_end,
+                            signature=signature,
+                            docstring=m_doc,
+                            body_text=m_body,
+                            narrative_text=m_narrative,
+                            metadata={"language": lang, "parent_class": matched_name},
+                        )
+                    )
             i = end_line
         else:
             i += 1
@@ -667,6 +801,7 @@ def process_openapi_spec(
             # Try YAML parsing if pyyaml is available
             try:
                 import yaml
+
                 doc = yaml.safe_load(spec_data)
                 if not isinstance(doc, dict):
                     doc = {"info": {"title": file_name}, "paths": {}}
@@ -763,7 +898,6 @@ def process_openapi_spec(
             )
             symbols.append(sym)
 
-
             chunks.append(
                 CodeChunk(
                     chunk_id=f"{api_title}_{op_id}",
@@ -823,7 +957,6 @@ def process_openapi_spec(
                 docstring=s_desc,
             )
             symbols.append(sym)
-
 
             chunks.append(
                 CodeChunk(
@@ -886,7 +1019,7 @@ def process_code(
             pass
 
     # Detect Python
-    if ext == ".py" or (not ext and (language == "python" or "def " in text or "import " in text)):
+    if ext == ".py" or (not ext and (language == "python" or _looks_python(text))):
         return process_python_source(text, file_name=file_name)
 
     # Detect Polyglot

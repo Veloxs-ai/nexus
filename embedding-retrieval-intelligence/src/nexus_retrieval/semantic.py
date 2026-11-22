@@ -32,7 +32,16 @@ Configuration (environment):
     NEXUS_RERANK_MODEL         FastEmbed cross-encoder id      (default: Xenova/ms-marco-MiniLM-L-6-v2)
     NEXUS_MODEL_CACHE_DIR      Model cache directory           (default: FastEmbed default)
     NEXUS_QUERY_MODEL          separate | shared: query-only model instance (default: separate)
-    NEXUS_ONNX_THREADS         ONNX intra-op threads per instance (default: ONNX Runtime default)
+    NEXUS_ONNX_THREADS         ONNX intra-op threads of the passage model and re-ranker
+                               (default: half the CPUs)
+    NEXUS_ONNX_QUERY_THREADS   ONNX intra-op threads of the query-only model (default: 2)
+    NEXUS_TOKENIZER_THREADS    threads of the batched token counter (Rust ``tokenizers``
+                               pool; default: all CPUs). Read before the first batched count;
+                               RAYON_NUM_THREADS, when set, wins. Lower it on hosts that run
+                               several workers.
+
+The ONNX defaults keep the query session from competing with passage ingest for every
+core: queries stay fast while a pipeline embeds.
 
 ``openai`` calls the OpenAI embeddings API (OPENAI_API_KEY; model via
 NEXUS_OPENAI_EMBEDDING_MODEL, default text-embedding-3-small) with
@@ -59,6 +68,7 @@ DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 _lock = threading.Lock()
 _embedders: dict[str, Any] = {}
 _rerankers: dict[str, Any] = {}
+_key_locks: dict[str, threading.Lock] = {}
 
 
 class TextEmbedder(Protocol):
@@ -92,19 +102,45 @@ def estimate_tokens(text: str) -> int:
     return max(1, -(-len(text or "") // 3))
 
 
-def _onnx_threads() -> int | None:
-    raw = (os.environ.get("NEXUS_ONNX_THREADS") or "").strip()
+def _whitespace_additive(counter: Any) -> bool:
+    """True when ``counter`` (a ``tokenizers.Tokenizer``) counts a text as the sum of its
+    whitespace-separated words: BERT normalisation and pre-tokenisation (bge, MiniLM, e5)."""
+    if counter is None:
+        return False
+    normalizer = type(getattr(counter, "normalizer", None)).__name__
+    pre = type(getattr(counter, "pre_tokenizer", None)).__name__
+    return pre == "BertPreTokenizer" and normalizer in ("BertNormalizer", "NoneType")
+
+
+def _env_threads(name: str) -> int | None:
+    raw = (os.environ.get(name) or "").strip()
     return int(raw) if raw.isdigit() and int(raw) > 0 else None
 
 
-def _fastembed_kwargs(model_name: str) -> dict[str, Any]:
+def _half_cpus() -> int:
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+def _onnx_threads(query: bool = False) -> int:
+    """Intra-op threads for one ONNX session: passage model / re-ranker, or the query model."""
+    if query:
+        return _env_threads("NEXUS_ONNX_QUERY_THREADS") or min(2, _onnx_threads())
+    return _env_threads("NEXUS_ONNX_THREADS") or _half_cpus()
+
+
+def _budget_tokenizer_threads() -> None:
+    """Size the Rust tokenizer pool (Rayon reads RAYON_NUM_THREADS once, at first use)."""
+    threads = _env_threads("NEXUS_TOKENIZER_THREADS")
+    if threads and not os.environ.get("RAYON_NUM_THREADS"):
+        os.environ["RAYON_NUM_THREADS"] = str(threads)
+
+
+def _fastembed_kwargs(model_name: str, query: bool = False) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"model_name": model_name}
     cache_dir = os.environ.get("NEXUS_MODEL_CACHE_DIR")
     if cache_dir:
         kwargs["cache_dir"] = cache_dir
-    threads = _onnx_threads()
-    if threads:
-        kwargs["threads"] = threads
+    kwargs["threads"] = _onnx_threads(query)
     return kwargs
 
 
@@ -131,9 +167,12 @@ class SemanticEmbedder:
         batch_size: int = 64,
         separate_query_model: bool | None = None,
     ) -> None:
+        _budget_tokenizer_threads()
         from fastembed import TextEmbedding
 
-        self.model_name = model_name or os.environ.get("NEXUS_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+        self.model_name = (
+            model_name or os.environ.get("NEXUS_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+        )
         self.batch_size = max(1, batch_size)
         if separate_query_model is None:
             choice = (os.environ.get("NEXUS_QUERY_MODEL") or "separate").strip().lower()
@@ -141,13 +180,16 @@ class SemanticEmbedder:
         self._model = TextEmbedding(**_fastembed_kwargs(self.model_name))
         self._passage_lock = threading.Lock()
         if separate_query_model:
-            self._query_model = TextEmbedding(**_fastembed_kwargs(self.model_name))
+            self._query_model = TextEmbedding(**_fastembed_kwargs(self.model_name, query=True))
             self._query_lock = threading.Lock()
         else:
             self._query_model = self._model
             self._query_lock = self._passage_lock
         self.separate_query_model = bool(separate_query_model)
         self._counter = self._token_counter()
+        # Token counts add up across whitespace (WordPiece after a whitespace/punctuation
+        # pre-tokenizer): text splitters may then trust the sum of the parts' counts.
+        self.additive_counts = _whitespace_additive(self._counter)
         self.window = self._window()
         self.max_tokens = max_chunk_tokens(self.window)
         self.dimensions = len(self.embed_query("dimension probe"))
@@ -189,7 +231,8 @@ class SemanticEmbedder:
 
     @staticmethod
     def _to_list(vec: Any) -> list[float]:
-        return [float(x) for x in vec]
+        tolist = getattr(vec, "tolist", None)  # numpy: one C call, same float values
+        return tolist() if tolist is not None else [float(x) for x in vec]
 
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
@@ -280,10 +323,7 @@ def create_text_embedder(provider: str | None = None, model_name: str | None = N
         factory = lambda: SemanticEmbedder(model_name=model)  # noqa: E731
     else:
         raise ValueError(f"unsupported embedding provider '{choice}' (use 'fastembed' or 'openai')")
-    with _lock:
-        if key not in _embedders:
-            _embedders[key] = factory()
-        return _embedders[key]
+    return _cached(_embedders, key, factory)
 
 
 def embedder_for(config) -> TextEmbedder:
@@ -304,6 +344,7 @@ class CrossEncoderReranker:
     batch_size = 32
 
     def __init__(self, model_name: str | None = None) -> None:
+        _budget_tokenizer_threads()
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
         self.model_name = model_name or os.environ.get("NEXUS_RERANK_MODEL") or DEFAULT_RERANK_MODEL
@@ -320,13 +361,35 @@ class CrossEncoderReranker:
                 scores = self._model.rerank(query, batch, batch_size=len(batch))
                 raw.extend(float(s) for s in scores)
         # Logits -> (0, 1) so callers can apply absolute relevance thresholds.
-        return [1.0 / (1.0 + math.exp(-s)) for s in raw]
+        return [_sigmoid(s) for s in raw]
+
+
+def _sigmoid(x: float) -> float:
+    """Logistic function that cannot overflow for large negative or positive logits."""
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+def _cached(cache: dict[str, Any], key: str, factory: Any) -> Any:
+    """Process-wide instance per ``key``. A per-key lock: loading (or downloading) one model
+    does not block callers that want another one."""
+    with _lock:
+        if key in cache:
+            return cache[key]
+        key_lock = _key_locks.setdefault(f"{id(cache)}:{key}", threading.Lock())
+    with key_lock:
+        with _lock:
+            if key in cache:
+                return cache[key]
+        instance = factory()
+        with _lock:
+            cache[key] = instance
+        return instance
 
 
 def create_reranker(model_name: str | None = None) -> CrossEncoderReranker:
     """Process-wide cached cross-encoder re-ranker."""
     model = model_name or os.environ.get("NEXUS_RERANK_MODEL") or DEFAULT_RERANK_MODEL
-    with _lock:
-        if model not in _rerankers:
-            _rerankers[model] = CrossEncoderReranker(model_name=model)
-        return _rerankers[model]
+    return _cached(_rerankers, model, lambda: CrossEncoderReranker(model_name=model))

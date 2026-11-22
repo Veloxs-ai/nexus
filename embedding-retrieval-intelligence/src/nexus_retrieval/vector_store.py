@@ -16,16 +16,36 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
-from .embeddings import cosine_similarity, normalize_vector
 from .io import read_json, write_json
 from .models import SearchResult, VectorEntry
 
+# Dot product of two equal-length vectors: math.sumprod (3.12+, extended-precision
+# accumulation) or the 3.11 fallback.
+_dot = getattr(math, "sumprod", None) or (lambda a, b: sum(map(float.__mul__, a, b)))
+
+
+def _unit(vector: list[float]) -> list[float]:
+    """``vector`` scaled to unit length (zero vectors unchanged)."""
+    norm = math.sqrt(_dot(vector, vector)) if vector else 0.0
+    if norm > 0 and norm != 1.0:
+        return [value / norm for value in vector]
+    return vector
+
 
 class LocalVectorStore:
+    """Brute-force cosine search over unit-length vectors held in memory.
+
+    Vectors are normalised once on insert, so a query scores each entry with one dot
+    product, the top ``limit`` are picked with a heap (ties keep insertion order) and only
+    those become :class:`SearchResult` objects.
+    """
+
     def __init__(
         self,
         uri: str = "data/indexes/vector_index.json",
@@ -36,42 +56,72 @@ class LocalVectorStore:
         self.base_dir = base_dir or Path.cwd()
         self.in_memory_only = in_memory_only
         self.entries: list[VectorEntry] = []
+        self._positions: dict[str, int] = {}
         self._lock = threading.Lock()
 
-    def add(self, entry: VectorEntry) -> None:
-        # Defensive vector normalization check on insertion
-        norm = math.sqrt(sum(x * x for x in entry.embedding))
-        if norm > 0 and abs(norm - 1.0) > 1e-7:
-            entry.embedding = normalize_vector(entry.embedding)
+    def _position_unlocked(self, entry_id: str) -> int | None:
+        pos = self._positions.get(entry_id)
+        if pos is not None and pos < len(self.entries) and self.entries[pos].id == entry_id:
+            return pos
+        # ``entries`` was changed directly: rebuild the id -> position map.
+        self._positions = {e.id: i for i, e in enumerate(self.entries)}
+        return self._positions.get(entry_id)
 
+    def add(self, entry: VectorEntry) -> None:
+        """Add ``entry``; an entry with the same id is replaced (a re-index never leaves
+        the old vector behind to be found twice)."""
+        entry.embedding = _unit([float(x) for x in entry.embedding])
         with self._lock:
-            self.entries.append(entry)
+            if len(self._positions) != len(self.entries):
+                self._positions = {e.id: i for i, e in enumerate(self.entries)}
+            pos = self._positions.get(entry.id)
+            if pos is not None:
+                pos = self._position_unlocked(entry.id)
+            if pos is None:
+                self._positions[entry.id] = len(self.entries)
+                self.entries.append(entry)
+            else:
+                self.entries[pos] = entry
+
+    def remove(self, entry_id: str) -> bool:
+        """Remove the entry with ``entry_id``. Returns whether it was stored."""
+        with self._lock:
+            pos = self._position_unlocked(entry_id)
+            if pos is None:
+                return False
+            del self.entries[pos]
+            self._positions = {e.id: i for i, e in enumerate(self.entries)}
+            return True
 
     def search(self, embedding: list[float], limit: int = 10) -> list[SearchResult]:
-        if not embedding:
+        if not embedding or limit <= 0:
             return []
-
-        # Defensive vector normalization check on incoming query
-        norm = math.sqrt(sum(x * x for x in embedding))
-        query_vec = (
-            normalize_vector(embedding) if (norm > 0 and abs(norm - 1.0) > 1e-7) else embedding
-        )
-
+        query = _unit([float(x) for x in embedding])
+        query_ok = any(query)
         with self._lock:
-            entries_snapshot = list(self.entries)
+            entries = list(self.entries)
+        dims = len(query)
 
-        results = [
+        def scored() -> Iterator[tuple[float, int]]:
+            for i, entry in enumerate(entries):
+                vec = entry.embedding
+                if query_ok and len(vec) == dims:
+                    yield _dot(query, vec), -i
+                else:
+                    yield 0.0, -i
+
+        top = heapq.nlargest(limit, scored())
+        return [
             SearchResult(
-                id=entry.id,
-                collection=entry.collection,
-                text=entry.text,
-                score=cosine_similarity(query_vec, entry.embedding),
-                semantic_score=cosine_similarity(query_vec, entry.embedding),
-                metadata=entry.metadata,
+                id=entries[-i].id,
+                collection=entries[-i].collection,
+                text=entries[-i].text,
+                score=score,
+                semantic_score=score,
+                metadata=entries[-i].metadata,
             )
-            for entry in entries_snapshot
+            for score, i in top
         ]
-        return sorted(results, key=lambda result: result.score, reverse=True)[:limit]
 
     def save(self) -> None:
         if self.in_memory_only:
@@ -86,8 +136,12 @@ class LocalVectorStore:
         try:
             payload = read_json(self.uri, self.base_dir)
             with self._lock:
-                self.entries = [
-                    VectorEntry.model_validate(entry) for entry in payload.get("entries", [])
-                ]
+                latest: dict[str, VectorEntry] = {}
+                for raw in payload.get("entries", []):
+                    entry = VectorEntry.model_validate(raw)
+                    entry.embedding = _unit([float(x) for x in entry.embedding])
+                    latest[entry.id] = entry  # an older index may hold an id twice
+                self.entries = list(latest.values())
+                self._positions = {e.id: i for i, e in enumerate(self.entries)}
         except Exception:
             pass

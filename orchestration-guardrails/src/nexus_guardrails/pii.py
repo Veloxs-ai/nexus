@@ -17,13 +17,15 @@
 from __future__ import annotations
 
 import re
-import unicodedata
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .config import PiiConfig
 from .models import Finding
-from .normalization import is_invisible, luhn_valid, normalize_text, strip_invisible
+from .normalization import luhn_valid, strip_invisible
+from .pii_ids import ID_PATTERNS, ID_VALIDATORS
+from .pii_scan import MAYBE_PII, email_matches, shadow
 
 PATTERNS = {
     # Secrets first: they may contain digit runs the generic patterns would split.
@@ -33,6 +35,9 @@ PATTERNS = {
         r"|gh[pousr]_[A-Za-z0-9]{36}|xox[abprs]-[A-Za-z0-9-]{10,}|sk_(?:live|test)_[A-Za-z0-9]{16,})"
     ),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    # Opt-in national ids (aadhaar, pan, iban), each confirmed by its checksum or format
+    # rules (``pii_ids``); before the generic number detectors so they keep the whole value.
+    **ID_PATTERNS,
     "ssn": re.compile(r"(?<![\w-])\d{3}-\d{2}-\d{4}(?![\w-])"),
     "credit_card": re.compile(r"\b(?:\d[ -]?){13,19}\b"),
     "phone": re.compile(
@@ -40,6 +45,14 @@ PATTERNS = {
         r"|\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
     ),
     "ip_address": re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
+    # Opt-in (not a default detector): a street address, house number + 1-4 capitalised
+    # words + a street type, with an optional unit ("221B Baker Street", "12 Gandhi Marg, Flat 4").
+    "address": re.compile(
+        r"\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+\s){1,4}"
+        r"(?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Boulevard|Blvd|Drive|Dr|Court|Ct|Way|Place|Pl"
+        r"|Marg|Nagar|Colony)\b\.?"
+        r"(?:,?\s*(?:Apt|Suite|Unit|Flat)\s*#?\s*\w+)?"
+    ),
 }
 
 MASKS = {
@@ -50,10 +63,29 @@ MASKS = {
     "credit_card": "[CREDIT_CARD]",
     "phone": "[PHONE]",
     "ip_address": "[IP_ADDRESS]",
+    "address": "[ADDRESS]",
+    "aadhaar": "[AADHAAR]",
+    "pan": "[PAN]",
+    "iban": "[IBAN]",
 }
 
 # Detectors are always applied in PATTERNS order (specific formats before generic numbers).
 _ORDER = list(PATTERNS)
+# The detectors as shipped: the fast paths below apply only while a detector still uses
+# its built-in pattern (PATTERNS is a public dict and may be customised).
+_BUILTIN = dict(PATTERNS)
+_EMAIL = PATTERNS["email"]
+# Literal text every match of a built-in detector contains: without one, the regex is
+# not run at all (a substring search is ~50x cheaper than scanning the text with it).
+_REQUIRED = {
+    "jwt": ("eyJ",),
+    "api_key": ("sk-", "sk_", "AKIA", "AIza", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xox"),
+    "email": ("@",),
+    "ssn": ("-",),
+}
+_DIGITS = re.compile(r"\d+")
+# Every context cue needs a letter or a currency sign: without one the cue regexes are skipped.
+_CUE_CHAR = re.compile(r"[^\W\d_]|[$€£₹¥]")
 
 # --- context rules for the number detectors ---------------------------------------
 # A formatted number (separators, parentheses, a leading "+") is a phone number unless it
@@ -64,12 +96,14 @@ _ORDER = list(PATTERNS)
 # identifier, amount or date. Table columns are masked by column (``pii_columns``), so
 # id and amount columns never reach this free-text rule.
 _CONTEXT_CHARS = 32
-_PHONE_CUE = re.compile(
+_CUE_WORDS = (
     r"(?i)(?:(?:\b|_)(?:phone|ph|tel|telephone|mobile|mob|cell|cellphone|call|calls|called|calling"
-    r"|contact|whatsapp|fax|sms|dial|reach|text|texts|texting|ping|ring|message|msg)(?:\b|_)"
+    r"|contact|whatsapp|fax|sms|dial|reach|text|texts|texting|ping|ring|message|msg"
+    r"|kontakt|telefon|handy|movil|móvil|celular|portable|téléphone)(?:\b|_)"
     r"|\b(?:my|our|his|her|their|your|personal|home|work|office|landline)\s+(?:number|no\.?|#)"
-    r"(?:\s+is)?\b)[^\n|;]{0,24}$"
+    r"(?:\s+is)?\b)"
 )
+_PHONE_CUE = re.compile(_CUE_WORDS + r"[^\n|;]{0,24}$")
 _AMOUNT_CUE = re.compile(
     r"(?i)(?:(?:\b|_)(?:amount|amt|total|subtotal|price|cost|balance|sum|qty|quantity|count|value"
     r"|revenue|salary|fee|fees|paid|usd|inr|eur|gbp|rs|\w+_amount|\w+_total|\w+_count)(?:\b|_)"
@@ -103,7 +137,7 @@ def _attached(text: str, start: int, end: int, cued: bool = False) -> bool:
     if after and (after.isalnum() or after in "_@"):
         return True
     if after == ",":
-        tail = re.match(r"\d+", text[end + 1 :])
+        tail = _DIGITS.match(text, end + 1)
         return bool(tail) and len(tail.group(0)) <= 3
     after2 = text[end + 1] if end + 1 < len(text) else ""
     return after in "-./" and after2.isdigit()
@@ -113,12 +147,13 @@ def _phone_ok(text: str, match: re.Match[str]) -> bool:
     value = match.group(0)
     start, end = match.span()
     context = text[max(0, start - _CONTEXT_CHARS) : start]
-    cued = bool(_PHONE_CUE.search(context))
+    words = bool(_CUE_CHAR.search(context))
+    cued = words and bool(_PHONE_CUE.search(context))
     if _attached(text, start, end, cued):
         return False
     if cued:
         return True
-    if _ID_CUE.search(context) or _AMOUNT_CUE.search(context):
+    if words and (_ID_CUE.search(context) or _AMOUNT_CUE.search(context)):
         return False
     if value.startswith("+") or not value.isdigit():
         return True
@@ -136,60 +171,138 @@ def _card_ok(text: str, match: re.Match[str]) -> bool:
     start, end = _span(match)
     value = text[start:end]
     context = text[max(0, start - _CONTEXT_CHARS) : start]
-    cued = bool(_CARD_CUE.search(context))
+    words = bool(_CUE_CHAR.search(context))
+    cued = words and bool(_CARD_CUE.search(context))
     if not luhn_valid(value) or _attached(text, start, end, cued):
         return False
     if cued:
         return True
-    if _ID_CUE.search(context):
+    if words and _ID_CUE.search(context):
         return False
     digits = "".join(ch for ch in value if ch.isdigit())
     return bool(_CARD_PREFIX.match(digits))
 
 
-_VALIDATORS = {"phone": _phone_ok, "credit_card": _card_ok}
+_VALIDATORS = {"phone": _phone_ok, "credit_card": _card_ok, **ID_VALIDATORS}
+
+# National phone formats the main pattern misses ("98765 43210", "044-2345 6789",
+# "030 12345678", "020 7946 0958", "+33 1 23 45 67 89"). A national number needs a phone
+# cue ("call", "mobile", "my number is"): digit groups alone are too often amounts; one
+# with a "+" country code is accepted like the main pattern's, unless an id/amount cue
+# precedes it.
+_NATIONAL_PHONE = re.compile(
+    # The lookahead (10+ digits ahead, at most two separators apart) skips dates, amounts
+    # and short ids inside the regex engine; the validator counts the digits exactly.
+    r"(?<![\w+\-/.@#])(?=(?:[-.\s()+]{0,2}\d){10})\+?\(?\d{1,5}\)?(?:[-.\s]\d{1,8}){1,5}(?!\w)"
+)
+# Exact prefilter: ``_NATIONAL_PHONE``'s lookahead needs ten digits, each at most two
+# separators after the previous one; text without such a run cannot match, and this scan
+# (it starts on a digit) skips digit-free stretches in C.
+_TEN_DIGIT_RUN = re.compile(r"\d(?:[-.\s()+]{0,2}\d){9}")
+_DATE_LIKE = re.compile(
+    r"(?:19|20)\d{2}[-./](?:0?[1-9]|1[0-2])[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{4}"
+)
+
+
+def _national_phone_ok(text: str, match: re.Match[str]) -> bool:
+    start, end = _span(match)
+    value = text[start:end]
+    if not 10 <= sum(ch.isdigit() for ch in value) <= 12 or _DATE_LIKE.search(value):
+        return False
+    if text.startswith(":", end) and text[end + 1 : end + 2].isdigit():
+        return False  # a time ("... 10:30")
+    context = text[max(0, start - _CONTEXT_CHARS) : start]
+    words = bool(_CUE_CHAR.search(context))
+    cued = words and bool(_PHONE_CUE.search(context))
+    if _attached(text, start, end, cued):
+        return False
+    if cued:
+        return True
+    if not text.startswith("+", start):
+        return False
+    return not (words and (_ID_CUE.search(context) or _AMOUNT_CUE.search(context)))
+
+
+def _phone_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """A phone span with the "+" of a country code or the "(" of an area code that the
+    pattern's word boundary leaves outside ("+1 (415) ...", "(212) 555-0199")."""
+    if start > 0:
+        before = text[start - 1]
+        value = text[start:end]
+        if before == "+" and value[:1].isdigit():
+            return start - 1, end
+        closes = value.find(")")
+        if before == "(" and closes != -1 and not 0 <= value.find("(") < closes:
+            return start - 1, end
+    return start, end
 
 
 def _accept(detector: str, text: str, match: re.Match[str], strict: bool = False) -> bool:
-    if strict:  # every pattern match counts; cards still need a valid Luhn checksum
+    if strict:  # every pattern match counts; cards and ids still need a valid checksum
+        if detector in ID_VALIDATORS:
+            return ID_VALIDATORS[detector](text, match)
         return detector != "credit_card" or luhn_valid(text[slice(*_span(match))])
     validator = _VALIDATORS.get(detector)
     return validator(text, match) if validator else True
 
 
-def _detector_findings(detector: str, text: str) -> bool:
-    pattern = PATTERNS.get(detector)
-    if not pattern:
+def _finditer(detector: str, pattern: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """``pattern.finditer(text)``; the built-in e-mail pattern runs as a linear scan on
+    texts long enough for the regex's worst case (quadratic) to matter."""
+    if pattern is _EMAIL and len(text) > _SHORT_TEXT:
+        return email_matches(text)  # type: ignore[return-value]
+    return pattern.finditer(text)
+
+
+_SHORT_TEXT = 512
+
+
+def _contains_any(text: str, literals: tuple[str, ...]) -> bool:
+    return any(literal in text for literal in literals)
+
+
+def _cannot_match(text: str, detectors: Iterable[str]) -> bool:
+    """True when ``text`` is ASCII with no digit, ``@`` or secret prefix and every detector
+    is a built-in one: no detector can then find anything."""
+    if not text.isascii() or MAYBE_PII.search(text):
         return False
-    return any(_accept(detector, text, match) for match in pattern.finditer(text))
+    return all(PATTERNS.get(d) is _BUILTIN.get(d) for d in detectors)
 
 
 def detect_pii(text: str, config: PiiConfig) -> list[Finding]:
+    """One finding per enabled detector that found a value in ``text``.
+
+    Uses the same detection as masking (:func:`detect_pii_spans`), so a finding always
+    corresponds to a value ``mask_pii`` replaces.
+    """
     if not config.enabled:
         return []
-    normalized = normalize_text(text)
-    findings: list[Finding] = []
-    for detector in config.detectors:
-        if _detector_findings(detector, normalized):
-            findings.append(
-                Finding(category="pii", message=f"Detected {detector}", severity="warn")
-            )
-    return findings
+    return findings_for(detect_pii_spans(text, config), config)
+
+
+def findings_for(spans: Iterable[PiiSpan], config: PiiConfig) -> list[Finding]:
+    """``detect_pii`` findings for spans already detected (in ``config.detectors`` order)."""
+    found = {span.entity for span in spans}
+    return [
+        Finding(category="pii", message=f"Detected {detector}", severity="warn")
+        for detector in dict.fromkeys(config.detectors)
+        if detector in found
+    ]
 
 
 def mask_detector(text: str, detector: str) -> str:
     """Mask the values one detector accepts in ``text`` (already normalized)."""
     pattern = PATTERNS.get(detector)
-    if not pattern:
+    if not pattern or not text or _cannot_match(text, (detector,)):
         return text
-    mask_value = MASKS[detector]
-    if detector not in _VALIDATORS:
+    mask_value = MASKS.get(detector, f"[{detector.upper()}]")
+    if detector not in _VALIDATORS and pattern is not _EMAIL:
         return pattern.sub(mask_value, text)
     pieces: list[str] = []
     last = 0
-    for match in pattern.finditer(text):
+    for match in _finditer(detector, pattern, text):
         if _accept(detector, text, match):
-            start, end = _span(match)
+            start, end = _span(match) if detector in _VALIDATORS else match.span()
             pieces.append(text[last:start])
             pieces.append(mask_value)
             last = end
@@ -209,26 +322,19 @@ class PiiSpan:
 
 
 _BLANK = "\ue000"  # private-use filler: not alphanumeric, never matched by a detector
+# The detection view of a text and its map back to the original (see ``pii_scan.shadow``).
+_shadow = shadow
+_DEFAULT_CONFIG = PiiConfig()
 
 
-def _shadow(text: str) -> tuple[str, list[int] | None]:
-    """The detection view of ``text`` (NFKC, invisible characters removed) and, unless it
-    is identical to ``text``, the original index of each of its characters."""
-    if text.isascii():
-        return text, None
-    chars: list[str] = []
-    offsets: list[int] = []
-    for i, char in enumerate(text):
-        if is_invisible(char):
-            continue
-        for piece in unicodedata.normalize("NFKC", char):
-            chars.append(piece)
-            offsets.append(i)
-    return "".join(chars), offsets
+@lru_cache(maxsize=256)
+def _ordered_tuple(detectors: tuple[str, ...]) -> tuple[str, ...]:
+    rank = {d: i for i, d in enumerate(_ORDER)}
+    return tuple(sorted(detectors, key=lambda d: rank.get(d, len(_ORDER))))
 
 
 def _ordered(detectors: Iterable[str]) -> list[str]:
-    return sorted(detectors, key=lambda d: _ORDER.index(d) if d in _ORDER else len(_ORDER))
+    return list(_ordered_tuple(tuple(detectors)))
 
 
 def detect_pii_spans(
@@ -249,31 +355,36 @@ def detect_pii_spans(
     and specific formats before generic numbers); a later detector never re-detects
     inside an earlier one's span. ``entities`` defaults to ``config.detectors``.
     """
-    config = config or PiiConfig()
-    wanted = list(entities) if entities is not None else list(config.detectors)
-    if not text or not wanted:
+    config = config or _DEFAULT_CONFIG
+    wanted = tuple(entities) if entities is not None else tuple(config.detectors)
+    if not text or not wanted or _cannot_match(text, wanted):
         return []
-    shadow, offsets = _shadow(text)
+    view, offsets = _shadow(text)
     found: list[tuple[int, int, str]] = []
-    for detector in _ordered(wanted):
+    for detector in _ordered_tuple(wanted):
         pattern = PATTERNS.get(detector)
         if not pattern:
             continue
+        required = _REQUIRED.get(detector)
+        if required and pattern is _BUILTIN[detector] and not _contains_any(view, required):
+            continue
         hits: list[tuple[int, int]] = []
-        for match in pattern.finditer(shadow):
-            if _accept(detector, shadow, match, strict):
+        for match in _finditer(detector, pattern, view):
+            if _accept(detector, view, match, strict):
                 hits.append(_span(match) if detector in _VALIDATORS else match.span())
+        if detector == "phone" and pattern is _BUILTIN["phone"]:
+            hits = _phone_hits(view, hits, strict)
         if hits:
             for start, end in hits:
                 found.append((start, end, detector))
             # Later detectors see the earlier values as neutral filler of the same length.
             pieces, last = [], 0
             for start, end in hits:
-                pieces.append(shadow[last:start])
+                pieces.append(view[last:start])
                 pieces.append(_BLANK * (end - start))
                 last = end
-            pieces.append(shadow[last:])
-            shadow = "".join(pieces)
+            pieces.append(view[last:])
+            view = "".join(pieces)
     spans = []
     for start, end, detector in sorted(found):
         if end <= start:
@@ -283,6 +394,31 @@ def detect_pii_spans(
         else:
             spans.append(PiiSpan(offsets[start], offsets[end - 1] + 1, detector))
     return spans
+
+
+def _phone_hits(
+    view: str, hits: list[tuple[int, int]], strict: bool
+) -> list[tuple[int, int]]:
+    """Phone hits with their "+" / "(" prefix, plus cued national formats between them."""
+    if hits:
+        hits = [_phone_span(view, start, end) for start, end in hits]
+        pieces, last = [], 0
+        for start, end in hits:
+            pieces.append(view[last:start])
+            pieces.append(_BLANK * (end - start))
+            last = end
+        pieces.append(view[last:])
+        rest = "".join(pieces)
+    else:
+        rest = view
+    if not _TEN_DIGIT_RUN.search(rest):
+        return hits
+    extra = [
+        _phone_span(rest, *_span(match))
+        for match in _NATIONAL_PHONE.finditer(rest)
+        if _national_phone_ok(rest, match)  # cue-gated in strict mode too
+    ]
+    return sorted(hits + extra) if extra else hits
 
 
 def mask_spans(

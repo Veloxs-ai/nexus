@@ -47,6 +47,7 @@ __all__ = [
 MIN_ROWS = 2
 MAX_FLATTEN_DEPTH = 4
 MAX_CONTEXT_LINES = 200
+_SCALARS = (str, int, float, bool)
 
 
 @dataclass
@@ -114,27 +115,44 @@ def flatten_json(
     """Nested objects -> dotted keys; lists of scalars are joined with ", "; deeper or
     mixed structures are kept as compact JSON text."""
     out: dict[str, Any] = {}
-
-    def walk(node: Any, key: str, depth: int) -> None:
-        if isinstance(node, dict) and node and depth < max_depth:
-            for k, v in node.items():
-                walk(v, f"{key}.{k}" if key else str(k), depth + 1)
+    # One explicit stack instead of a call per node; children are pushed in reverse so
+    # keys come out in document order, exactly as the recursive walk produced them.
+    stack: list[tuple[Any, str, int]] = [(value, prefix, 0)]
+    pop, push = stack.pop, stack.append
+    while stack:
+        node, key, depth = pop()
+        if isinstance(node, dict):
+            if node and depth < max_depth:
+                base = key + "." if key else ""
+                for k, v in reversed(node.items()):
+                    push((v, f"{base}{k}", depth + 1))
+            else:
+                out[key] = compact_json(node) if node else None
         elif isinstance(node, list):
-            if all(v is None or isinstance(v, str | int | float | bool) for v in node):
+            if all(v is None or isinstance(v, _SCALARS) for v in node):
                 out[key] = ", ".join(str(v) for v in node if v is not None)
             else:
                 out[key] = compact_json(node)
-        elif isinstance(node, dict):
-            out[key] = compact_json(node) if node else None
         else:
             out[key] = node
+    return out
 
-    walk(value, prefix, 0)
+
+def _record_lines(items: list[Any], key: str) -> list[str]:
+    out = [f"{key}: {len(items)} records"]
+    for number, item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            fields = flatten_json(item)
+            body = " | ".join(f"{k}: {v}" for k, v in fields.items() if v is not None and v != "")
+        else:
+            body = compact_json(item)
+        out.append(f"{key}[{number}] {body}")
     return out
 
 
 def _context_lines(data: Any, skip_path: str) -> list[str]:
     lines: list[str] = []
+    records: list[str] = []  # other record arrays, after the scalar fields
 
     def walk(node: Any, key: str) -> None:
         if len(lines) >= MAX_CONTEXT_LINES:
@@ -145,16 +163,20 @@ def _context_lines(data: Any, skip_path: str) -> list[str]:
             for k, v in node.items():
                 walk(v, f"{key}.{k}" if key else str(k))
         elif isinstance(node, list):
-            if all(v is None or isinstance(v, str | int | float | bool) for v in node):
+            if all(v is None or isinstance(v, _SCALARS) for v in node):
                 if node:
                     lines.append(f"{key}: {', '.join(str(v) for v in node if v is not None)}")
+            elif _is_record_array(node):
+                # Another record array: one readable line per record (never one multi-MB
+                # JSON line), every record kept.
+                records.extend(_record_lines(node, key))
             else:
                 lines.append(f"{key}: {compact_json(node)}")
         elif node is not None and node != "":
             lines.append(f"{key}: {node}")
 
     walk(data, "")
-    return lines
+    return lines + records
 
 
 def json_table(source: str | Any, min_rows: int = MIN_ROWS) -> JsonTable | None:

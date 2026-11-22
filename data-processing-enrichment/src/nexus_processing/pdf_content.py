@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from functools import reduce
+from operator import add
 from typing import Any
 
 from .pdf_fonts import PdfFont
@@ -41,6 +43,7 @@ __all__ = ["PageContent", "PdfImage", "TextRun", "page_content"]
 
 MAX_FORM_DEPTH = 8
 MAX_OPERATIONS = 2_000_000  # per page, guards pathological streams
+_FORM_CACHE_BYTES = 4 << 20  # forms larger than this are decoded each time they are drawn
 
 
 @dataclass
@@ -58,6 +61,8 @@ class PdfImage:
     stream: PdfStream
     area: float  # page-space area the image covers
     ref: int | None = None
+    top: float = 0.0  # page-space y of the image's upper edge (reading order: larger first)
+    left: float = 0.0
 
 
 @dataclass
@@ -85,10 +90,11 @@ def _mul(m: Matrix, n: Matrix) -> Matrix:
     )
 
 
+_NUMBER = (int, float)
+
+
 def _num(value: Any, default: float = 0.0) -> float:
-    return (
-        float(value) if isinstance(value, int | float) and not isinstance(value, bool) else default
-    )
+    return float(value) if isinstance(value, _NUMBER) and not isinstance(value, bool) else default
 
 
 def _matrix(values: list[Any]) -> Matrix:
@@ -98,12 +104,47 @@ def _matrix(values: list[Any]) -> Matrix:
     return (nums[0], nums[1], nums[2], nums[3], nums[4], nums[5])
 
 
+def _advance(
+    tm: Matrix,
+    widths: tuple[float, ...],
+    spaces: tuple[bool, ...],
+    size: float,
+    tc: float,
+    tw: float,
+    th: float,
+) -> Matrix:
+    """The text matrix after showing glyphs of these widths (ISO 32000-1 §9.4.4).
+
+    Each glyph translates the matrix by ``(advance, 0)``: ``e`` and ``f`` grow by
+    ``advance*a`` and ``advance*b`` and nothing else changes. The increments are summed
+    glyph by glyph in order (``reduce``), so positions are bit-for-bit those of one matrix
+    product per glyph, with the per-glyph work done by C-level ``map``/``reduce`` over the
+    few distinct glyph widths of the string."""
+    a, b, c, d, e, f = tm
+    if not (math.isfinite(c) and math.isfinite(d)):  # 0*c would not vanish: exact path
+        for width, is_space in zip(widths, spaces, strict=True):
+            advance = (width * size + tc + (tw if is_space else 0.0)) * th
+            tm = _mul((1.0, 0.0, 0.0, 1.0, advance, 0.0), tm)
+        return tm
+    if tw == 0.0 or True not in spaces:
+        keys: Any = widths
+        steps = {w: (w * size + tc + 0.0) * th for w in set(widths)}
+    else:
+        keys = list(zip(widths, spaces, strict=True))
+        steps = {k: (k[0] * size + tc + (tw if k[1] else 0.0)) * th for k in set(keys)}
+    e = reduce(add, map({k: v * a for k, v in steps.items()}.__getitem__, keys), e)
+    if b != 0.0:
+        f = reduce(add, map({k: v * b for k, v in steps.items()}.__getitem__, keys), f)
+    return (a, b, c, d, e, f)
+
+
 class _Interpreter:
     def __init__(self, doc: PdfDocument, fonts_cache: dict[int, PdfFont]) -> None:
         self.doc = doc
         self.fonts_cache = fonts_cache
         self.content = PageContent()
         self.ops = 0
+        self.form_cache: dict[int, bytes] = doc.form_cache  # shared by the document's pages
 
     # ---- resources ----------------------------------------------------------------
     def _font(self, resources: dict[str, Any], name: str) -> PdfFont:
@@ -209,26 +250,41 @@ class _Interpreter:
     def _show(self, items: list[Any], ts: dict[str, Any], tm: Matrix, ctm: Matrix) -> Matrix:
         font: PdfFont | None = ts["font"]
         size, th = ts["size"], ts["Th"]
+        tc, tw = ts["Tc"], ts["Tw"]
         for item in items:
-            if isinstance(item, int | float) and not isinstance(item, bool):
+            if isinstance(item, _NUMBER) and not isinstance(item, bool):
                 tm = _mul((1.0, 0.0, 0.0, 1.0, -item / 1000.0 * size * th, 0.0), tm)
                 continue
             if not isinstance(item, bytes) or font is None:
                 continue
             start = _mul((size * th, 0.0, 0.0, size, 0.0, ts["Ts"]), _mul(tm, ctm))
-            chars: list[str] = []
-            for text, width, is_space in font.decode(item):
-                advance = (width * size + ts["Tc"] + (ts["Tw"] if is_space else 0.0)) * th
-                tm = _mul((1.0, 0.0, 0.0, 1.0, advance, 0.0), tm)
-                chars.append(text)
+            text, widths, spaces = font.decode_run(item)
+            # Each glyph advance moves the text matrix by (advance, 0): only e and f change,
+            # by advance*a and advance*b, which is exactly what the matrix product gives
+            # (the other terms are 0*c and 0*d), glyph by glyph in the same order.
+            tm = _advance(tm, widths, spaces, size, tc, tw, th)
             end = _mul(tm, ctm)
-            text = "".join(chars)
             if text:
                 scale = math.hypot(start[2], start[3]) or abs(size)
                 self.content.runs.append(
                     TextRun(text, start[4], start[5], end[4], abs(scale), font.name)
                 )
         return tm
+
+    def _form_data(self, ref: Any, obj: PdfStream) -> bytes | None:
+        """Decoded Form XObject content, cached per document: a letterhead or footer form
+        drawn on every page is inflated once, not once per page."""
+        cache = self.form_cache
+        key = ref.num if isinstance(ref, PdfRef) else None
+        if key is not None and key in cache:
+            return cache[key]
+        try:
+            data = decode_stream(obj, self.doc.resolve)
+        except Exception:
+            data = None
+        if key is not None and data is not None and len(data) <= _FORM_CACHE_BYTES:
+            cache[key] = data
+        return data
 
     def _do(self, name: str, resources: dict[str, Any], ctm: Matrix, depth: int) -> None:
         doc = self.doc
@@ -242,16 +298,17 @@ class _Interpreter:
         subtype = str(doc.resolve(obj.get("Subtype")) or "")
         if subtype == "Image":
             area = abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])
+            ys = (ctm[5], ctm[5] + ctm[1], ctm[5] + ctm[3], ctm[5] + ctm[1] + ctm[3])
+            xs = (ctm[4], ctm[4] + ctm[0], ctm[4] + ctm[2], ctm[4] + ctm[0] + ctm[2])
             self.content.images.append(
-                PdfImage(obj, area, ref.num if isinstance(ref, PdfRef) else None)
+                PdfImage(obj, area, ref.num if isinstance(ref, PdfRef) else None, max(ys), min(xs))
             )
         elif subtype == "Form":
             matrix = doc.resolve(obj.get("Matrix"))
             form_ctm = _mul(_matrix(matrix), ctm) if isinstance(matrix, list) else ctm
             form_resources = doc.resolve(obj.get("Resources"))
-            try:
-                data = decode_stream(obj, doc.resolve)
-            except Exception:
+            data = self._form_data(ref, obj)
+            if data is None:
                 return
             self.run(
                 data,

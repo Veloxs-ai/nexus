@@ -470,6 +470,9 @@ def extract_visual_features(
     )
 
 
+_OCR_MIN_SIDE = 32  # images narrower than this (or under a third of it tall) are not OCR'd
+
+
 def process_image_binary(
     data: bytes,
     format_hint: str | None = None,
@@ -533,7 +536,9 @@ def process_image_binary(
     # --- ML-Powered Content Extraction (Pluggable) ---
     # Priority: 1) Explicit pre-computed text  2) Pluggable provider  3) Auto-detect
     auto_ocr = ""
-    if not ocr_text and not caption:
+    # Icons, bullets and spacers hold no readable text: skip the OCR model for them.
+    too_small = 0 < meta.width < _OCR_MIN_SIDE or 0 < meta.height < _OCR_MIN_SIDE // 3
+    if not ocr_text and not caption and not too_small:
         provider = ocr_provider
         if provider is None and auto_extract:
             from .ml_providers import auto_detect_ocr_provider

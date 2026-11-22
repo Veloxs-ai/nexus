@@ -190,5 +190,24 @@ def adf_to_markdown(doc: Any) -> str:
         return ""
     if isinstance(doc, str):
         return doc.strip()
-    text = "\n".join(_blocks(doc.get("content") if isinstance(doc, dict) else doc))
+    try:
+        text = "\n".join(_blocks(doc.get("content") if isinstance(doc, dict) else doc))
+    except RecursionError:  # pathologically deep nesting: keep every text, lose the layout
+        text = _flat_text(doc)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _flat_text(doc: Any) -> str:
+    """Every ``text`` of an ADF tree in document order, one block per line (iterative)."""
+    lines: list[str] = []
+    stack: list[Any] = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+        elif isinstance(node, dict):
+            if isinstance(node.get("text"), str) and node["text"].strip():
+                lines.append(node["text"].strip())
+            if node.get("content"):
+                stack.append(node["content"])
+    return "\n".join(lines)

@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class PlatformInfo(BaseModel):
@@ -81,6 +81,9 @@ class ProcessedChunk(BaseModel):
     chunk_index: int
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Upper bound of the text's tokens when the producer already counted its parts (a
+    # packed row group): ``ChunkLimiter`` then need not tokenize it again. Not serialized.
+    _token_bound: int | None = PrivateAttr(default=None)
 
 
 class ProcessingStageTrace(BaseModel):

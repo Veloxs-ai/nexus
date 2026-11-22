@@ -27,25 +27,31 @@ _ZERO_WIDTH_CODEPOINTS = {
 }
 
 
+class _FormatChars(dict):
+    """``str.translate`` table: format/bidi characters (category Cf, which includes the
+    zero-width characters) map to ``None``, every other character to itself. Filled per
+    code point on first sight."""
+
+    def __missing__(self, code: int) -> str | None:
+        char = chr(code)
+        value = None if is_invisible(char) else char
+        self[code] = value
+        return value
+
+
+_FORMAT_CHARS = _FormatChars()
+
+
 def normalize_text(text: str) -> str:
     """Apply NFKC normalization and strip zero-width / bidi control characters.
 
     Defends against common prompt-injection bypasses that rely on confusables,
     full-width lookalikes, or invisible characters inserted between letters.
+    ASCII text is returned as is (NFKC does not change it and it has no format characters).
     """
-    if not text:
+    if not text or text.isascii():
         return text
-    normalized = unicodedata.normalize("NFKC", text)
-    cleaned_chars: list[str] = []
-    for char in normalized:
-        if char in _ZERO_WIDTH_CODEPOINTS:
-            continue
-        category = unicodedata.category(char)
-        # Strip bidi/format control characters (Cf) that don't render visibly.
-        if category == "Cf":
-            continue
-        cleaned_chars.append(char)
-    return "".join(cleaned_chars)
+    return unicodedata.normalize("NFKC", text).translate(_FORMAT_CHARS)
 
 
 # Characters removed from STORED text: invisible and able to hide or reorder what a reader

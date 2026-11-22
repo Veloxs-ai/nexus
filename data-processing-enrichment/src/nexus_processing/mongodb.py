@@ -92,7 +92,8 @@ def flatten_mongo_document(
     for k, v in cleaned_doc.items():
         new_key = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict) and v:
-            items.update(flatten_mongo_document(v, prefix=new_key, _pre_cleaned=_pre_cleaned))
+            # The whole tree was cleaned above: sub-documents are not re-serialised per level.
+            items.update(flatten_mongo_document(v, prefix=new_key, _pre_cleaned=True))
         elif isinstance(v, list):
             # If list of simple scalar elements, preserve as string array
             if v and all(isinstance(elem, str | int | float | bool) for elem in v):
@@ -105,7 +106,7 @@ def flatten_mongo_document(
                         flatten_mongo_document(
                             subdoc,
                             prefix=f"{new_key}[{idx}]",
-                            _pre_cleaned=_pre_cleaned,
+                            _pre_cleaned=True,
                         )
                     )
             else:

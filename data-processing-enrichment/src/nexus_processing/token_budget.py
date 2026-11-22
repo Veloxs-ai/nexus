@@ -60,7 +60,10 @@ _SEPARATORS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r" "), " "),
 )
 _TABLE_SEPARATOR = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$")
-_WORDISH = re.compile(r"[A-Za-z]+|\d+|[^\sA-Za-z\d]")
+# One match per estimated token: a letter run costs one per 4 letters, a digit run one per
+# 2 digits, any other visible character one. Same counts as walking whole words, in C.
+_TOKENISH = re.compile(r"[A-Za-z]{1,4}|\d{1,2}|[^\sA-Za-z\d]")
+CountMany = Callable[[list[str]], list[int]]
 
 
 def estimate_tokens(text: str) -> int:
@@ -69,19 +72,29 @@ def estimate_tokens(text: str) -> int:
     Letters: one token per 4 characters of a word (common words are one token);
     digits: one per 2 (number vocabularies split long runs); every other visible
     character (punctuation, non-Latin script) counts as one; plus a 20% margin for
-    words a vocabulary splits further.
+    words a vocabulary splits further. The estimate is subadditive over whitespace
+    boundaries (the parts' estimates never sum to less than the whole's).
     """
-    total = 0
-    for match in _WORDISH.finditer(text or ""):
-        piece = match.group(0)
-        first = piece[0]
-        if first.isdigit():
-            total += -(-len(piece) // 2)
-        elif first.isascii() and first.isalpha():
-            total += -(-len(piece) // 4)
-        else:
-            total += 1
-    return -(-total * 6 // 5)
+    if not text:
+        return 0
+    return -(-len(_TOKENISH.findall(text)) * 6 // 5)
+
+
+def _additive(count: TokenCounter) -> bool:
+    """The counter never counts a whitespace-joined text above the sum of its parts:
+    ``estimate_tokens``, or a bound method of a counter object that declares
+    ``additive_counts`` (an embedder whose tokenizer splits words at whitespace first)."""
+    if count is estimate_tokens:
+        return True
+    return getattr(getattr(count, "__self__", None), "additive_counts", False) is True
+
+
+def _counts(texts: list[str], count: TokenCounter, count_many: CountMany | None) -> list[int]:
+    if not texts:
+        return []
+    if count_many is not None and len(texts) > 1:
+        return list(count_many(texts))
+    return [count(t) for t in texts]
 
 
 def _table_header(text: str) -> tuple[str, str] | None:
@@ -136,8 +149,16 @@ def _hard_split(text: str, budget: int, count: TokenCounter) -> list[str]:
     return pieces
 
 
-def _split(text: str, budget: int, count: TokenCounter, level: int) -> list[str]:
-    if count(text) <= budget:
+def _split(
+    text: str,
+    budget: int,
+    count: TokenCounter,
+    level: int,
+    known: int | None = None,
+    count_many: CountMany | None = None,
+) -> list[str]:
+    cost = count(text) if known is None else known
+    if cost <= budget:
         return [text]
     while level < len(_SEPARATORS) and not _SEPARATORS[level][0].search(text):
         level += 1
@@ -145,36 +166,48 @@ def _split(text: str, budget: int, count: TokenCounter, level: int) -> list[str]
         return _hard_split(text, budget, count)
     pattern, sep = _SEPARATORS[level]
     sep_cost = count(sep.strip()) if sep.strip() else 0
-    pieces: list[str] = []
+    parts = pattern.split(text)
+    costs = _counts(parts, count, count_many)
+    # (text, verified): a piece of one part, or a piece from a deeper split, is known to fit.
+    pieces: list[tuple[str, bool]] = []
     current: list[str] = []
     used = 0
 
     def flush() -> None:
         nonlocal current, used
         if current:
-            pieces.append(sep.join(current))
+            pieces.append((sep.join(current), len(current) == 1))
         current, used = [], 0
 
-    for part in pattern.split(text):
-        cost = count(part)
-        if cost > budget:
+    for part, part_cost in zip(parts, costs, strict=True):
+        if part_cost > budget:
             flush()
-            pieces.extend(_split(part, budget, count, level + 1))
+            deeper = _split(part, budget, count, level + 1, part_cost, count_many)
+            pieces.extend((p, True) for p in deeper)
             continue
-        extra = cost + (sep_cost if current else 0)
+        extra = part_cost + (sep_cost if current else 0)
         if current and used + extra > budget:
             flush()
-            extra = cost
+            extra = part_cost
         current.append(part)
         used += extra
     flush()
-    # Token counts are not always additive across a joined boundary: re-check.
+    # Token counts are not always additive across a joined boundary: re-check joined
+    # pieces, unless the counter is (sub)additive (the sum of the parts then bounds the whole).
+    if _additive(count):
+        return [p for p, _ in pieces]
+    unverified = [p for p, ok in pieces if not ok]
+    rechecked = iter(_counts(unverified, count, count_many))
     checked: list[str] = []
-    for piece in pieces:
-        if count(piece) <= budget:
+    for piece, ok in pieces:
+        if ok:
+            checked.append(piece)
+            continue
+        piece_cost = next(rechecked)
+        if piece_cost <= budget:
             checked.append(piece)
         else:
-            checked.extend(_split(piece, budget, count, level + 1))
+            checked.extend(_split(piece, budget, count, level + 1, piece_cost, count_many))
     return checked
 
 
@@ -182,20 +215,33 @@ def fit_text(
     text: str,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     count: TokenCounter | None = None,
+    *,
+    known: int | None = None,
+    count_many: CountMany | None = None,
 ) -> list[str]:
     """Return ``text`` as pieces of at most ``max_tokens`` tokens each.
 
     Text that already fits is returned unchanged as a single piece. Otherwise the
     context header is repeated on every piece and the body is split at the most
     natural boundary; joining the bodies back gives the original body (no loss).
+
+    ``known`` is ``count(text)`` when the caller already has it, and ``count_many`` a
+    batched form of ``count`` (one tokenizer call for many texts); both only save work.
     """
     count = count or estimate_tokens
-    if not text or len(text) <= max_tokens or count(text) <= max_tokens:
+    if not text or len(text) <= max_tokens:
+        return [text]
+    total = count(text) if known is None else known
+    if total <= max_tokens:
         return [text]
     header, sep, body = split_header(text)
     budget = max_tokens - (count(header) + 1 if header else 0)
+    body_cost: int | None = None
     if budget < max(16, max_tokens // 4):  # a header that eats the window is not repeated
         header, sep, body = "", "", text
         budget = max_tokens
-    pieces = [p for p in _split(body, budget, count, 0) if p.strip()]
+        body_cost = total
+    elif not header:
+        body_cost = total
+    pieces = [p for p in _split(body, budget, count, 0, body_cost, count_many) if p.strip()]
     return [f"{header}{sep}{p}" if header else p for p in pieces] or [text]

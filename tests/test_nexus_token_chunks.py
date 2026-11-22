@@ -101,3 +101,41 @@ def test_cap_can_be_lowered_or_turned_off():
     off = NexusClient(chunk_max_tokens=0).process_document("t", "n.txt", text)
     assert all(NexusClient().count_tokens(c.text) <= 100 for c in small.chunks)
     assert len(off.chunks) < len(small.chunks)
+
+
+def test_bge_tokenizer_counts_are_declared_additive_and_split_once():
+    client = NexusClient()
+    embedder = client.text_embedder
+    assert getattr(embedder, "additive_counts", False) is True
+    limiter = client.chunk_limiter
+    text = "Section: Notes\n" + "\n\n".join(
+        "Invoices are payable within thirty days of receipt. " * 12 for _ in range(12)
+    )
+    calls: list[int] = []
+
+    def counting(t: str) -> int:  # a plain function: never trusted as additive
+        calls.append(1)
+        return embedder.count_tokens(t)
+
+    expected = fit_text(text, limiter.max_tokens, counting)
+    assert limiter.fit(text, embedder.count_tokens(text)) == expected
+    assert all(embedder.count_tokens(p) <= limiter.max_tokens for p in expected)
+
+
+def test_client_prepare_chunks_batches_token_counts(monkeypatch):
+    client = NexusClient()
+    limiter = client.chunk_limiter
+    batches: list[int] = []
+    original = limiter.count_many
+
+    def count_many(texts):
+        batches.append(len(texts))
+        return original(texts)
+
+    monkeypatch.setattr(limiter, "count_many", count_many)
+    rows = [
+        {"text": f"row {i} " + "detail " * 200, "metadata": {"record": {"id": i}}} for i in range(5)
+    ]
+    out = client.prepare_chunks(rows, title="Orders")
+    assert batches and batches[0] == 5
+    assert sum(1 for c in out if "record" in c["metadata"]) == 5

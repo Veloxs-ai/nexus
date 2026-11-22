@@ -21,21 +21,23 @@ import re
 from .config import PolicyRuleConfig
 from .models import Citation, Finding
 from .normalization import luhn_valid, normalize_text
+from .pii import detect_pii_spans
 
-_EMAIL_OR_SSN = re.compile(
-    r"(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\b\d{3}-\d{2}-\d{4}\b)"
-)
+_SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
 _CREDIT_CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+# Output policy: any value of these, with the context rules off (a miss is worse than a
+# false alarm here). The masking detectors cover international phone formats too.
+_RAW_PII = ("api_key", "jwt", "email", "ssn", "credit_card", "phone")
 
 
 def _raw_pii_present(text: str) -> bool:
     normalized = normalize_text(text)
-    if _EMAIL_OR_SSN.search(normalized):
+    if _SSN.search(normalized) or _PHONE.search(normalized):
         return True
-    if _PHONE.search(normalized):
+    if any(luhn_valid(match.group(0)) for match in _CREDIT_CARD.finditer(normalized)):
         return True
-    return any(luhn_valid(match.group(0)) for match in _CREDIT_CARD.finditer(normalized))
+    return bool(detect_pii_spans(normalized, entities=_RAW_PII, strict=True))
 
 
 def enforce_input_policies(text: str, policies: list[PolicyRuleConfig]) -> list[Finding]:

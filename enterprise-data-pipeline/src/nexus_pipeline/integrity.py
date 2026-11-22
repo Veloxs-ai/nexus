@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +30,14 @@ def validate_records(
     source: SourceConfig,
     records: Iterable[dict[str, Any]],
 ) -> ValidationResult:
+    """Valid events, one per primary key, and the rejected records.
+
+    When a key appears more than once, the newest record wins (latest event time; on a
+    tie, the one that came later), so an update in the same batch as its insert is kept.
+    Events keep the order in which their keys first appeared.
+    """
     result = ValidationResult()
-    seen_keys: set[Any] = set()
+    latest: dict[Any, tuple[datetime, Any, dict[str, Any]]] = {}
 
     for record in records:
         missing = [
@@ -42,30 +48,36 @@ def validate_records(
             continue
 
         primary_value = record.get(source.primary_key)
-        if primary_value in seen_keys:
-            continue
-        seen_keys.add(primary_value)
-
         event_time = parse_event_time(record[source.event_time_field])
-        result.valid.append(
-            DataEvent(
-                source=source_name,
-                destination=source.destination,
-                primary_key=str(primary_value),
-                event_time=event_time,
-                payload=record,
-            )
-        )
+        kept = latest.get(primary_value)
+        if kept is not None and event_time < kept[0]:
+            continue  # an older version of a record already seen
+        latest[primary_value] = (event_time, primary_value, record)
 
+    # Events are built for the surviving records only.
+    result.valid.extend(
+        DataEvent(
+            source=source_name,
+            destination=source.destination,
+            primary_key=str(primary_value),
+            event_time=event_time,
+            payload=record,
+        )
+        for event_time, primary_value, record in latest.values()
+    )
     return result
 
 
 def parse_event_time(value: Any) -> datetime:
+    """An event time as a timezone-aware datetime (UTC when the value names no zone), so
+    epoch numbers, ISO strings with "Z" or an offset, and naive values always compare."""
     if isinstance(value, datetime):
-        return value
-    if isinstance(value, int | float):
-        return datetime.fromtimestamp(value / 1000 if value > 10_000_000_000 else value)
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = value
+    elif isinstance(value, int | float):
+        return datetime.fromtimestamp(value / 1000 if value > 10_000_000_000 else value, tz=UTC)
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 class CheckpointStore:

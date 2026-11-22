@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .alerts import AlertRecorder, evaluate_ai_alerts, evaluate_metric_alerts
 from .config import ObservabilityConfig
-from .io import append_jsonl, read_jsonl
+from .io import append_jsonl, iter_jsonl
 from .logging import StructuredLogger
 from .metrics import MetricRecorder
 from .models import AiInteractionEvent, MetricEvent, MetricKind, Severity
@@ -91,17 +91,30 @@ class ObservabilityService:
         return event
 
     def evaluate_existing_alerts(self) -> int:
+        """Write the alerts that stored metrics and AI interactions call for and that are
+        not written yet; returns how many were written. Re-running it is idempotent: an
+        alert already recorded for the same source event is not written again."""
+        storage = self.config.storage
+        written = {
+            (raw.get("name"), raw.get("source_event_id"))
+            for raw in iter_jsonl(storage.alerts_uri, self.base_dir)
+        }
         count = 0
-        for raw_metric in read_jsonl(self.config.storage.metrics_uri, self.base_dir):
-            for alert in evaluate_metric_alerts(
-                MetricEvent.model_validate(raw_metric), self.config.alerts
-            ):
+
+        def emit(alerts: list) -> None:
+            nonlocal count
+            for alert in alerts:
+                key = (alert.name, alert.source_event_id)
+                if key in written:
+                    continue
+                written.add(key)
                 self.alerts.write(alert)
                 count += 1
-        for raw_event in read_jsonl(self.config.storage.ai_interactions_uri, self.base_dir):
-            for alert in evaluate_ai_alerts(
-                AiInteractionEvent.model_validate(raw_event), self.config.alerts
-            ):
-                self.alerts.write(alert)
-                count += 1
+
+        for raw_metric in iter_jsonl(storage.metrics_uri, self.base_dir):
+            emit(evaluate_metric_alerts(MetricEvent.model_validate(raw_metric), self.config.alerts))
+        for raw_event in iter_jsonl(storage.ai_interactions_uri, self.base_dir):
+            emit(
+                evaluate_ai_alerts(AiInteractionEvent.model_validate(raw_event), self.config.alerts)
+            )
         return count

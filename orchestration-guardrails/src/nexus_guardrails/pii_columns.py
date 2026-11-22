@@ -37,6 +37,7 @@ import hmac
 import re
 from collections.abc import Iterable
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any
 
 from .config import PiiConfig
@@ -121,6 +122,7 @@ _SAMPLE = 200
 _VALUE_SHARE = 0.6
 
 
+@lru_cache(maxsize=4096)
 def _norm_name(name: str) -> str:
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name))
     return re.sub(r"[^a-z0-9]+", "_", spaced.lower()).strip("_")
@@ -233,15 +235,33 @@ def _token(kind: str, value: Any, secret: str) -> str:
     return f"{_KIND_MASKS[kind][:-1]}:{digest[:10]}]"
 
 
+# Values that say "no value" in a PII column. They hold no PII, and masking them would
+# turn "no phone on file" into "[PHONE]". Secret columns are always masked.
+_PLACEHOLDERS = frozenset(
+    ("n/a", "na", "n.a.", "none", "null", "nil", "-", "--", "---", "unknown", "not available",
+     "not provided", "not applicable", "tbd", "tba")
+)  # fmt: skip
+
+
+def _placeholder(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= 16 and value.strip().lower() in _PLACEHOLDERS
+
+
 def mask_value(value: Any, kind: str, config: PiiConfig, token_secret: str | None = None) -> Any:
-    """Mask one value of a column of ``kind``."""
+    """Mask one value of a column of ``kind``.
+
+    Nested values (dicts and lists) are always searched for PII, whatever the column kind:
+    an id or timestamp column can still hold ``{"by": "sam@x.com"}``.
+    """
     if value is None or value == "":
         return value
+    if isinstance(value, dict | list):
+        return _mask_text_value(value, config, token_secret)
     if kind in _KIND_MASKS:
         if _KIND_DETECTOR[kind] not in config.detectors and kind != "secret":
             return _mask_text_value(value, config, token_secret)
-        if isinstance(value, dict | list):
-            return _mask_text_value(value, config, token_secret)
+        if kind != "secret" and _placeholder(value):
+            return value
         return _token(kind, value, token_secret) if token_secret else _KIND_MASKS[kind]
     if kind == "text":
         return _mask_text_value(value, config, token_secret)
@@ -257,15 +277,29 @@ def mask_value(value: Any, kind: str, config: PiiConfig, token_secret: str | Non
 _ALWAYS_MASKED = ("jwt", "api_key", "email")
 
 
+@lru_cache(maxsize=65536)
+def _classify_scalar(name: str, value: Any, kind_of_value: type) -> str:
+    return classify_column(name, [value])
+
+
+def _nested_kind(name: Any, value: Any) -> str:
+    """Kind of one nested key from its name and its single value (memoised for scalars)."""
+    if isinstance(value, dict | list):
+        return "text"  # containers are always searched (see mask_value)
+    if isinstance(value, str) and len(value) > 256:
+        return classify_column(name, [value])
+    try:
+        return _classify_scalar(name, value, type(value))
+    except TypeError:  # unhashable scalar
+        return classify_column(name, [value])
+
+
 def _mask_text_value(value: Any, config: PiiConfig, token_secret: str | None) -> Any:
     if isinstance(value, str):
         return mask_pii(value, config)
     if isinstance(value, dict):  # nested document: classify its keys by name and value
         return {
-            k: mask_value(
-                v, classify_column(k, v if isinstance(v, list) else [v]), config, token_secret
-            )
-            for k, v in value.items()
+            k: mask_value(v, _nested_kind(k, v), config, token_secret) for k, v in value.items()
         }
     if isinstance(value, list):
         return [_mask_text_value(v, config, token_secret) for v in value]
@@ -293,6 +327,31 @@ def mask_records(
     column_kinds: dict[str, str] | None = None,
     token_secret: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Mask a table: classify columns once (unless given), then mask every row by column."""
+    """Mask a table: classify columns once (unless given), then mask every row by column.
+
+    Repeated short values of a column (statuses, cities, names) are masked once per call.
+    """
     kinds = column_kinds if column_kinds is not None else classify_columns(rows)
-    return [mask_record(r, kinds, config, token_secret) for r in rows], kinds
+    if not config.enabled or not config.mask:
+        return [dict(r) for r in rows], kinds
+    memo: dict[tuple[str, str], Any] = {}
+
+    def one(value: Any, kind: str) -> Any:
+        if type(value) is not str or len(value) > _MEMO_VALUE_CHARS:
+            return mask_value(value, kind, config, token_secret)
+        key = (kind, value)
+        hit = memo.get(key, memo)
+        if hit is memo:
+            if len(memo) >= _MEMO_ENTRIES:
+                memo.clear()  # bounded: a table of unique values must not double its memory
+            hit = memo[key] = mask_value(value, kind, config, token_secret)
+        return hit
+
+    masked = [
+        {key: one(value, kinds.get(str(key), "text")) for key, value in row.items()} for row in rows
+    ]
+    return masked, kinds
+
+
+_MEMO_VALUE_CHARS = 256
+_MEMO_ENTRIES = 100_000

@@ -19,12 +19,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import RetrievalConfig
-from .embeddings import tokenize
-from .semantic import embedder_for
 from .graph import KnowledgeGraph
-from .lexical import LexicalIndex
+from .lexical import LexicalIndex, query_terms
 from .models import SearchResult
 from .ranking import combine_scores
+from .semantic import embedder_for
 from .vector_store import LocalVectorStore
 
 
@@ -43,7 +42,7 @@ def search(
 
     semantic = vector_store.search(embedder.embed_query(query), limit=limit * 3)
     lexical = lexical_index.search(query, limit=limit * 3)
-    candidate_ids = {result.id for result in semantic + lexical}
-    query_terms = tokenize(query)
-    graph_scores = {doc_id: graph.score(doc_id, query_terms) for doc_id in candidate_ids}
+    candidate_ids = dict.fromkeys(result.id for result in semantic + lexical)
+    terms = query_terms(query)
+    graph_scores = {doc_id: graph.score(doc_id, terms) for doc_id in candidate_ids}
     return combine_scores(semantic, lexical, graph_scores, config.ranking, limit=limit)

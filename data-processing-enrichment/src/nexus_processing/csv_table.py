@@ -16,8 +16,9 @@
 
 """CSV files as typed tables.
 
-``parse_csv_table`` reads a CSV with ``csv.DictReader`` (delimiter sniffed among
-``, ; | tab``; leading title lines skipped) and types each column once: a column whose
+``parse_csv_table`` reads a CSV with one ``csv.reader`` pass (delimiter sniffed among
+``, ; | tab``; leading title lines skipped, even a title that contains the delimiter,
+while a header above ragged rows is kept) and types each column once: a column whose
 every value is a plain number becomes ``int``/``float`` (``1,234.50`` -> ``1234.5``),
 except identifier-like columns (leading zeros, or names such as ``id``, ``zip``,
 ``phone``) which keep their text. ``group_rows`` packs row narratives into row-group
@@ -75,8 +76,9 @@ def _numeric_column(name: str, values: list[str]) -> bool:
 
 def _to_number(value: str) -> int | float:
     clean = value.replace(",", "")
-    number = float(clean)
-    return int(number) if "." not in clean and abs(number) < 2**53 else number
+    if "." not in clean:
+        return int(clean)  # exact at any size (float would round past 2**53)
+    return float(clean)
 
 
 def _sniff(sample: str) -> str:
@@ -87,32 +89,114 @@ def _sniff(sample: str) -> str:
         return max(counts, key=lambda d: counts[d]) if any(counts.values()) else ","
 
 
+def _first_lines(text: str, count: int) -> list[str]:
+    """The first ``count`` non-blank lines, without splitting the whole text."""
+    lines: list[str] = []
+    pos, size = 0, len(text)
+    while pos < size and len(lines) < count:
+        end = text.find("\n", pos)
+        end = size if end < 0 else end
+        line = text[pos:end]
+        if line.strip():
+            lines.append(line)
+        pos = end + 1
+    return lines
+
+
+def _looks_header(record: list[str]) -> bool:
+    cells = [c.strip() for c in record]
+    return (
+        len(cells) > 1
+        and all(cells)
+        and len(set(cells)) == len(cells)
+        and not any(_PLAIN_NUMBER.match(c) for c in cells)
+    )
+
+
+def _header_index(records: list[tuple[list[str], bool]]) -> int:
+    """Position of the header among the leading records ``(fields, blank_line_after)``.
+
+    Lines without the delimiter are titles. A line with the delimiter is still a title
+    when the next line looks like a header (text names, no numbers) and either it is a
+    short line (``Report, Q3``) above a wider header with data of the same width below
+    it, or a blank line separates them and data follows. A header above ragged data rows
+    is never skipped, because the data row below it does not look like a header."""
+    start = 0
+    while start < len(records) - 1 and len(records[start][0]) < 2:
+        start += 1
+    while start < min(len(records) - 1, 10):
+        fields, blank_after = records[start]
+        nxt = records[start + 1][0]
+        if not _looks_header(nxt):
+            break
+        after = records[start + 2][0] if start + 2 < len(records) else None
+        # A short title (one or two fields) above a wider header whose width the data
+        # below repeats; a wider all-text *data* row under a real header is not this.
+        wider = (
+            len(fields) <= 2
+            and len(nxt) > len(fields)
+            and after is not None
+            and len(after) == len(nxt)
+            and not _looks_header(after)
+        )
+        separated = blank_after and after is not None and not _looks_header(after)
+        if not (wider or separated):
+            break
+        start += 1
+    return start
+
+
 def parse_csv_table(text: str) -> CsvTable | None:
     """Parse CSV text into a typed table (``None`` when it has no header and data row)."""
-    clean = text.replace("\r\n", "\n").replace("\r", "\n").strip().lstrip("﻿")
-    lines = [line for line in clean.split("\n") if line.strip()]
-    if len(lines) < 2:
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    clean = text.strip().lstrip("\ufeff")
+    sample = _first_lines(clean, 20)
+    if len(sample) < 2:
         return None
-    delimiter = _sniff("\n".join(lines[:20]))
-    # Skip title lines above the header: the header is the first line with the delimiter.
-    start = next((i for i, line in enumerate(lines) if delimiter in line), None)
-    if start is None or start >= len(lines) - 1:
+    delimiter = _sniff("\n".join(sample))
+    if delimiter not in clean:
         return None
-    reader = csv.DictReader(io.StringIO("\n".join(lines[start:])), delimiter=delimiter)
-    columns = [c.strip() for c in (reader.fieldnames or []) if c and c.strip()]
-    if len(columns) < 1:
+    reader = csv.reader(io.StringIO(clean), delimiter=delimiter)
+    # Leading records (up to 25) decide where the header is; blank lines are skipped
+    # but remembered, since a blank line after a title separates it from the table.
+    head: list[tuple[list[str], bool]] = []
+    for record in reader:
+        if not any(v.strip() for v in record):
+            if head and len(record) <= 1:  # a blank line, not a row of empty cells
+                head[-1] = (head[-1][0], True)
+            continue
+        head.append((record, False))
+        if len(head) >= 25:
+            break
+    start = _header_index(head)
+    if start >= len(head) - 1 and len(head) < 25:
         return None
+    fieldnames = head[start][0]
+    width = len(fieldnames)
+    keep = [(i, name.strip()) for i, name in enumerate(fieldnames) if name and name.strip()]
+    columns = [name for _, name in keep]
+    if not columns:
+        return None
+    names = [name for _, name in keep]
+    direct = len(keep) == width  # no blank header names: zip straight
     rows: list[dict[str, str]] = []
-    for raw in reader:
-        row = {
-            k.strip(): (v.strip() if isinstance(v, str) else "")
-            for k, v in raw.items()
-            if k and k.strip()
-        }
-        extra = raw.get(None)  # values past the header width are kept, never dropped
-        if extra:
-            row["_extra"] = delimiter.join(str(x) for x in extra)
-        if any(v for v in row.values()):
+
+    def records():
+        for record, _blank in head[start + 1 :]:
+            yield record
+        yield from reader
+
+    for record in records():
+        if len(record) < width:
+            record = record + [""] * (width - len(record))
+        if direct:
+            row = dict(zip(names, map(str.strip, record[:width]), strict=False))
+        else:
+            row = {name: record[i].strip() for i, name in keep}
+        if len(record) > width:  # values past the header width are kept, never dropped
+            row["_extra"] = delimiter.join(record[width:])
+        if any(row.values()):
             rows.append(row)
     if not rows:
         return None

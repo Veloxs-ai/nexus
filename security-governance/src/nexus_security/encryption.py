@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import os
+from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -47,7 +48,12 @@ def _derive_fernet_key(
     # cross-tenant correlation attacks.
     tid = tenant_id or getattr(config, "tenant_id", None) or "default"
     salt = f"nexus-salt-{tid}-{config.key_id}".encode()
+    return _hkdf_key(secret, salt)
 
+
+@lru_cache(maxsize=64)
+def _hkdf_key(secret: str, salt: bytes) -> bytes:
+    """HKDF-SHA256 key for ``(secret, salt)``: derived once per process, not per call."""
     derived = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -55,6 +61,11 @@ def _derive_fernet_key(
         info=_HKDF_INFO,
     ).derive(secret.encode("utf-8"))
     return base64.urlsafe_b64encode(derived)
+
+
+@lru_cache(maxsize=64)
+def _fernet(key: bytes) -> Fernet:
+    return Fernet(key)  # stateless (a fresh IV per message): safe to share across threads
 
 
 def encrypt_text(
@@ -65,7 +76,7 @@ def encrypt_text(
 ) -> str:
     if not config.enabled:
         return plaintext
-    cipher = Fernet(_derive_fernet_key(config, secret_key=secret_key, tenant_id=tenant_id))
+    cipher = _fernet(_derive_fernet_key(config, secret_key=secret_key, tenant_id=tenant_id))
     token = cipher.encrypt(plaintext.encode("utf-8"))
     return token.decode("ascii")
 
@@ -78,7 +89,7 @@ def decrypt_text(
 ) -> str:
     if not config.enabled:
         return ciphertext
-    cipher = Fernet(_derive_fernet_key(config, secret_key=secret_key, tenant_id=tenant_id))
+    cipher = _fernet(_derive_fernet_key(config, secret_key=secret_key, tenant_id=tenant_id))
     try:
         plaintext = cipher.decrypt(ciphertext.encode("ascii"))
     except InvalidToken as exc:

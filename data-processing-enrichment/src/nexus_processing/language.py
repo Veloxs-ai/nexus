@@ -76,11 +76,79 @@ _STOPWORDS = {
     "sv": "och i att det som en på är av för med till den har de inte om ett men var jag",
     "id": "yang dan di ini itu dengan untuk dari dalam tidak akan pada juga ke adalah ada oleh",
     "tr": "ve bir bu da de için ile ne olarak daha çok gibi ama en mi sonra kadar her",
+    "pl": "i w na z do się nie że to jest o jak ale po co od za przez dla oraz a jego",
+    "cs": "a v se na je že to s z do o k jak ale by jsou pro jsem od po tak jeho který",
+    "ro": "și în de la a cu că nu o pe un din se este mai care pentru ca al sau dar fost",
+    "da": "og i at det en den til er som på de med han af for ikke der var mig sig men et",
+    "no": "og i det som en på er av for med til den har de ikke om et men var jeg seg fra",
+    "fi": "ja on ei se että oli hän mutta kun niin myös tai ovat joka sen vain mitä olla",
+    "hu": "a az és hogy nem egy is van meg de ez csak már volt mint ki el azt még sem",
+    "vi": "và của là có không được cho các những một người trong với này đã để khi từ",
 }
 _WORD = re.compile(r"[^\W\d_]+")
+_LATIN_MARKERS = {
+    lang: frozenset(marks)
+    for lang, marks in {
+        "pl": "łąęśźżćń",
+        "cs": "ěřůťď",
+        "ro": "ășțş",
+        "hu": "őű",
+        "tr": "ğı",
+        "vi": "ơưđạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ",
+        "pt": "ãõ",
+        "es": "ñ¿¡",
+        "de": "ß",
+        "da": "ø",
+        "no": "ø",
+    }.items()
+}
+MIN_STOPWORD_SHARE = 0.05  # below this share of stopword hits the language is unknown
+
+# Letters that single out one language of a shared script.
+_CYRILLIC_MARKERS = (
+    ("kk", "әғқңөұүһ"),
+    ("sr", "ђјљњћџ"),
+    ("mk", "ѓќѕ"),
+    ("be", "ў"),
+    ("uk", "іїєґ"),
+)
+_ARABIC_MARKERS = (("ur", "ٹڈڑںے"), ("fa", "پچژگکی"))
+_MARATHI_WORDS = frozenset(["आणि", "आहे", "आहेत", "होते", "च्या", "केले", "झाले", "नाही"])
+_HINDI_WORDS = frozenset(["और", "है", "हैं", "के", "की", "में", "को", "से", "का", "था", "थे", "नहीं"])
+# Kanji forms used in Japanese but not in Chinese (shinjitai and kokuji).
+_JAPANESE_KANJI = frozenset(
+    "営様駅円図広売読変楽発検険験剤済渋浅歩転伝価徳辺隠帰戦拡払単弁応恵悪戻斎黒県権絵続総縦労"
+    "励圧囲壊塩桜歳枠稲蔵込峠畑働匂栃雫芸賛巻覚箇関姫"
+)
+
+
+def _cyrillic_language(sample: str) -> str:
+    letters = set(sample.lower())
+    for lang, marks in _CYRILLIC_MARKERS:
+        if letters & set(marks):
+            return lang
+    if "ъ" in letters and not letters & set("ыэё"):
+        return "bg"  # Bulgarian writes ъ as a vowel and has no ы/э/ё
+    return "ru"
+
+
+def _arabic_language(sample: str) -> str:
+    for lang, marks in _ARABIC_MARKERS:
+        found = sum(sample.count(m) for m in marks)
+        if found >= 2:
+            return lang
+    return "ar"
+
+
+def _devanagari_language(sample: str) -> str:
+    words = sample.split()
+    marathi = sum(w in _MARATHI_WORDS for w in words) + 2 * sample.count("ळ")
+    hindi = sum(w in _HINDI_WORDS for w in words)
+    return "mr" if marathi > hindi else "hi"
 
 
 @lru_cache(maxsize=4096)
+@lru_cache(maxsize=8192)
 def _script_of(char: str) -> str:
     try:
         name = unicodedata.name(char)
@@ -111,6 +179,16 @@ def _profiles() -> dict[str, frozenset[str]]:
     return {lang: frozenset(words.split()) for lang, words in _STOPWORDS.items()}
 
 
+@lru_cache(maxsize=1)
+def _stopword_index() -> dict[str, tuple[str, ...]]:
+    """Stopword -> the languages whose profile lists it (one lookup per word)."""
+    index: dict[str, list[str]] = {}
+    for lang, stop in _profiles().items():
+        for word in stop:
+            index.setdefault(word, []).append(lang)
+    return {word: tuple(langs) for word, langs in index.items()}
+
+
 def detect_language(text: str) -> tuple[str, float]:
     """``(ISO 639-1 code, confidence)`` of ``text``; ``("und", 0.0)`` when undetermined."""
     scripts = detect_script(text)
@@ -123,15 +201,33 @@ def detect_language(text: str) -> tuple[str, float]:
             return "ja", round(min(1.0, share + kana), 3)
     if top != "LATIN":
         lang = _SCRIPT_LANGUAGE.get(top)
-        return (lang, round(share, 3)) if lang else ("und", 0.0)
+        if not lang:
+            return "und", 0.0
+        sample = text[:_SAMPLE_CHARS]
+        if top == "CYRILLIC":
+            lang = _cyrillic_language(sample)
+        elif top == "ARABIC":
+            lang = _arabic_language(sample)
+        elif top == "DEVANAGARI":
+            lang = _devanagari_language(sample)
+        elif top == "CJK" and any(ch in _JAPANESE_KANJI for ch in sample):
+            return "ja", round(share * 0.8, 3)  # kanji only, but in Japanese forms
+        return lang, round(share, 3)
     words = [w.casefold() for w in _WORD.findall(text[:_SAMPLE_CHARS])]
     if len(words) < 3:
         return "und", 0.0
-    scores = {lang: sum(1 for w in words if w in stop) for lang, stop in _profiles().items()}
+    scores = dict.fromkeys(_profiles(), 0)  # profile order: ties resolve as before
+    index = _stopword_index()
+    for word in words:
+        for lang in index.get(word, ()):
+            scores[lang] += 1
+    if not any(scores.values()) or max(scores.values()) < MIN_STOPWORD_SHARE * len(words):
+        return "und", 0.0
+    letters = set(text[:_SAMPLE_CHARS].lower())
+    for lang, marks in _LATIN_MARKERS.items():  # letters only one language writes
+        scores[lang] += len(letters & marks)
     best = max(scores, key=lambda lang: scores[lang])
     hits = scores[best]
-    if hits == 0:
-        return "und", 0.0
     runner_up = max((v for k, v in scores.items() if k != best), default=0)
     confidence = min(1.0, (hits / len(words)) * 3) * (1 - runner_up / (hits + runner_up))
     return best, round(max(0.05, confidence) * share, 3)

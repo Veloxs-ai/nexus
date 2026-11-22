@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from functools import lru_cache
 
 # Words in any script: letters, digits, "_", "-" and the combining marks of scripts whose
 # vowel signs and viramas are marks (Indic, Thai, Arabic, Hebrew...; ``\w`` alone would cut
@@ -36,6 +37,7 @@ TOKEN_PATTERN = re.compile(
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+")
 
 
+@lru_cache(maxsize=65536)
 def _fold(token: str) -> str:
     """Casefold; Latin letters also lose their accents (``Café`` -> ``cafe``). Other scripts
     keep their combining marks: Devanagari vowel signs are letters of the word."""

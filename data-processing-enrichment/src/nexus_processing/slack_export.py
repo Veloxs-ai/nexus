@@ -41,13 +41,16 @@ import re
 import time
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 MAX_CHUNK_CHARS = 1500
 _NOISE_SUBTYPES = {"channel_join", "channel_leave", "channel_purpose", "channel_topic", "bot_add", "bot_remove"}
 _MENTION = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 _LINK = re.compile(r"<(https?://[^|>]+)\|([^>]+)>")
+_BARE_LINK = re.compile(r"<((?:https?|mailto):[^|>]+)>")
+_CHANNEL = re.compile(r"<#[A-Z0-9]+\|([^>]+)>")
+_SPECIAL = re.compile(r"<!(here|channel|everyone)(?:\|[^>]*)?>|<!subteam\^[A-Z0-9]+\|(@?[^>]+)>")
 
 
 @dataclass
@@ -97,6 +100,10 @@ def _time(ts: str) -> str:
 def _clean(text: str, users: dict[str, str]) -> str:
     text = _MENTION.sub(lambda m: "@" + users.get(m.group(1), m.group(1)), text or "")
     text = _LINK.sub(lambda m: f"{m.group(2)} ({m.group(1)})", text)
+    if "<" in text:  # channel links, @here/@channel, user groups, bare links
+        text = _CHANNEL.sub(lambda m: "#" + m.group(1), text)
+        text = _SPECIAL.sub(lambda m: "@" + (m.group(1) or m.group(2).lstrip("@")), text)
+        text = _BARE_LINK.sub(lambda m: m.group(1).removeprefix("mailto:"), text)
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").strip()
 
 
@@ -128,12 +135,30 @@ def messages_to_chunks(
         else:
             top_level.append(m)
 
+    # Each message is rendered once and its day computed once (both were per use).
+    rendered_cache: dict[int, tuple[str, str]] = {}
+
+    def render(m: dict[str, Any]) -> tuple[str, str]:
+        hit = rendered_cache.get(id(m))
+        if hit is None:
+            ts = m.get("ts")
+            try:
+                moment = datetime.fromtimestamp(float(ts), tz=UTC)  # type: ignore[arg-type]
+                day, clock = moment.strftime("%Y-%m-%d"), f"{moment.hour:02d}:{moment.minute:02d}"
+            except (TypeError, ValueError, OverflowError, OSError):
+                day, clock = "", ""
+            body = _clean(m.get("text", ""), users)
+            attached = [f.get("name", "file") for f in m.get("files") or [] if isinstance(f, dict)]
+            if attached:
+                body = f"{body} [files: {', '.join(attached)}]".strip()
+            hit = rendered_cache[id(m)] = (day, f"{clock} {_speaker(m, users)}: {body}")
+        return hit
+
     def line(m: dict[str, Any]) -> str:
-        body = _clean(m.get("text", ""), users)
-        files = ", ".join(f.get("name", "file") for f in m.get("files") or [] if isinstance(f, dict))
-        if files:
-            body = f"{body} [files: {files}]".strip()
-        return f"{_time(m.get('ts'))} {_speaker(m, users)}: {body}"
+        return render(m)[1]
+
+    def day_of(m: dict[str, Any]) -> str:
+        return render(m)[0]
 
     chunks: list[SlackChunk] = []
     for thread_ts, items in threads.items():
@@ -164,14 +189,14 @@ def messages_to_chunks(
     def flush() -> None:
         nonlocal window, size
         if window:
-            day = _day(window[0].get("ts"))
+            day = day_of(window[0])
             text = f"[Slack #{channel} | {day}]\n" + "\n".join(line(m) for m in window)
             chunks.append(SlackChunk(channel, "window", day, text, sorted({_speaker(m, users) for m in window}), len(window)))
         window, size = [], 0
 
     for m in top_level:
         rendered = len(line(m))
-        if window and (_day(m.get("ts")) != _day(window[0].get("ts")) or size + rendered > MAX_CHUNK_CHARS):
+        if window and (day_of(m) != day_of(window[0]) or size + rendered > MAX_CHUNK_CHARS):
             flush()
         window.append(m)
         size += rendered + 1

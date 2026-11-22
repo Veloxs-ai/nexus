@@ -41,9 +41,12 @@ def normalize_debezium_event(message: dict[str, Any]) -> dict[str, Any]:
     if not record:
         return {}
 
-    record["source_ts_ms"] = payload.get("ts_ms") or source.get("ts_ms")
-    record["_cdc_operation"] = operation
-    return record
+    # A copy: the caller's message is never changed.
+    return {
+        **record,
+        "source_ts_ms": payload.get("ts_ms") or source.get("ts_ms"),
+        "_cdc_operation": operation,
+    }
 
 
 def run_cdc(

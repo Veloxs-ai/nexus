@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from .config import GraphMappingConfig
+from .embeddings import tokenize
 from .io import get_path, read_json, write_json
+from .lexical import STOPWORDS
 from .models import IndexedDocument
 
 
@@ -75,21 +78,25 @@ class KnowledgeGraph:
             self._add_edge_unlocked(source, relationship, target)
 
     def score(self, document_id: str, query_terms: list[str]) -> float:
+        """Share of the document's graph neighbours (entities, tags, parent) named by the query.
+
+        A neighbour matches when one of its values contains a query word as a whole token
+        (so "an" does not match "parent"). Stopwords in ``query_terms`` are ignored.
+        """
         document_node = f"document:{document_id}"
         with self._lock:
-            neighbors = set(self.adjacency.get(document_node, set()))
-            nodes_snapshot = {n: dict(self.nodes[n]) for n in neighbors if n in self.nodes}
+            neighbors = list(self.adjacency.get(document_node, ()))
+            values = [_node_text(self.nodes.get(n)) for n in neighbors]
 
         if not neighbors:
             return 0.0
 
-        normalized_terms = [term.lower() for term in query_terms]
-        matches = 0
-        for neighbor in neighbors:
-            node = nodes_snapshot.get(neighbor, {})
-            haystack = " ".join(str(value).lower() for value in node.values())
-            if any(term in haystack for term in normalized_terms):
-                matches += 1
+        terms = {
+            token for term in query_terms for token in tokenize(str(term)) if token not in STOPWORDS
+        }
+        if not terms:
+            return 0.0
+        matches = sum(1 for text in values if text and not terms.isdisjoint(_tokens_of(text)))
         return matches / len(neighbors)
 
     def save(self) -> None:
@@ -113,6 +120,22 @@ class KnowledgeGraph:
                     self.adjacency[edge["target"]].add(edge["source"])
         except Exception:
             pass
+
+
+def _node_text(node: dict[str, Any] | None) -> str:
+    """The searchable values of a graph node (its ``type`` label is not content)."""
+    if not node:
+        return ""
+    return " ".join(str(value) for key, value in node.items() if key != "type")
+
+
+@lru_cache(maxsize=65536)
+def _tokens_of(text: str) -> frozenset[str]:
+    """Words of a node value; hyphenated names also match their parts ("invoice-guide")."""
+    tokens = set(tokenize(text))
+    tokens.update(part for token in list(tokens) if "-" in token for part in token.split("-"))
+    tokens.discard("")
+    return frozenset(tokens)
 
 
 def ensure_list(value: Any) -> list[Any]:

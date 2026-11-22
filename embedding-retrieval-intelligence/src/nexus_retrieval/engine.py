@@ -20,12 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import EmbeddingConfig, RankingConfig, RetrievalConfig, StoreConfig
-from .embeddings import tokenize
-from .semantic import embedder_for
 from .graph import KnowledgeGraph
-from .lexical import LexicalIndex
+from .lexical import LexicalIndex, query_terms
 from .models import IndexedDocument, SearchResult, VectorEntry
 from .ranking import combine_scores
+from .semantic import embedder_for
 from .vector_store import LocalVectorStore
 
 
@@ -130,8 +129,8 @@ class RetrievalEngine:
         semantic = self.vector_store.search(query_vector, limit=limit * 3)
         lexical = self.lexical_index.search(query, limit=limit * 3)
 
-        candidate_ids = {result.id for result in semantic + lexical}
-        query_terms = tokenize(query)
-        graph_scores = {doc_id: self.graph.score(doc_id, query_terms) for doc_id in candidate_ids}
+        candidate_ids = dict.fromkeys(result.id for result in semantic + lexical)
+        terms = query_terms(query)
+        graph_scores = {doc_id: self.graph.score(doc_id, terms) for doc_id in candidate_ids}
 
         return combine_scores(semantic, lexical, graph_scores, self.config.ranking, limit=limit)

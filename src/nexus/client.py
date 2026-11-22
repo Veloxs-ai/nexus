@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import unicodedata
 from pathlib import Path
@@ -123,6 +124,23 @@ except (ImportError, ModuleNotFoundError):
 
 # Routed to process_audio; compressed formats are decoded with PyAV when installed.
 _AUDIO_FORMATS = ("wav", "aiff", "aif", "mp3", "m4a", "aac", "ogg", "oga", "opus", "flac")
+
+
+# A mask the guardrails wrote ("[EMAIL]", "[PHONE:3f9a1c2b7d]", a custom "[ENTITY]").
+_MASK_TOKEN = re.compile(r"\[[A-Z][A-Z_]*(?::[0-9a-f]{10})?\]")
+
+
+def _json_like(file_type: str, text: str) -> bool:
+    """True when the text is chunked as JSON (by format, or by the chunker's own sniffing)."""
+    if file_type in ("json", "jsonl"):
+        return True
+    stripped = text.strip()
+    return (stripped[:1], stripped[-1:]) in (("{", "}"), ("[", "]"))
+
+
+def _display(value: Any) -> str:
+    """A masked table cell as row text (``""`` for an empty value)."""
+    return "" if value is None else str(value)
 
 
 def _is_existing_file(value: str) -> bool:
@@ -562,8 +580,10 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
         )
         # NFC keeps what the source wrote (x², ﬁ, ①); detection works on its own NFKC view.
         normalized_text = unicodedata.normalize("NFC", clean_text)
-        file_size_bytes = len(normalized_text.encode("utf-8"))
-        content_hash = hashlib.md5(normalized_text.encode("utf-8")).hexdigest()
+        encoded = normalized_text.encode("utf-8")
+        file_size_bytes = len(encoded)
+        content_hash = hashlib.md5(encoded).hexdigest()
+        del encoded
         dt_step1 = (time.perf_counter() - t0) * 1000.0
 
         traces.append(
@@ -591,20 +611,33 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
         csv_records: list[tuple[list[dict[str, Any]], int, int]] | None = None
-        if detected_format == "csv":
-            csv_chunks = self._csv_record_chunks(normalized_text, apply_guardrails)
-            if csv_chunks:
-                raw_chunks = [text for text, _records, _first, _last in csv_chunks]
-                csv_records = [(records, first, last) for _text, records, first, last in csv_chunks]
-        if detected_format == "json":
-            json_chunks = self._json_record_chunks(normalized_text, apply_guardrails)
-            if json_chunks:
-                raw_chunks = [text for text, _records, _first, _last in json_chunks]
-                csv_records = [(records, first, last) for _text, records, first, last in json_chunks]
+        token_bounds: list[int | None] = []
+        if detected_format in ("csv", "json"):
+            record_chunks = (
+                self._csv_record_chunks(normalized_text, apply_guardrails)
+                if detected_format == "csv"
+                else self._json_record_chunks(normalized_text, apply_guardrails)
+            )
+            if record_chunks:
+                raw_chunks = [item[0] for item in record_chunks]
+                csv_records = [(item[1], item[2], item[3]) for item in record_chunks]
+                token_bounds = [item[4] if len(item) > 4 else None for item in record_chunks]
+        # Free text is masked once, as a whole, before chunking: a value cut at a chunk
+        # boundary (or repeated in an overlap) can then never escape the detectors, and
+        # overlapping text is not scanned twice. Table rows are masked by column above;
+        # JSON is masked per chunk, after it is parsed (a mask would break a bare number).
+        masked_text = normalized_text
+        mask_whole = (
+            apply_guardrails
+            and csv_records is None
+            and not _json_like(detected_format, normalized_text)
+        )
+        if mask_whole:
+            masked_text = self.guardrails.mask_pii(normalized_text)
         if csv_records is None:
-            raw_chunks = self.processing.chunk_document(normalized_text, file_type=detected_format)
+            raw_chunks = self.processing.chunk_document(masked_text, file_type=detected_format)
         if not raw_chunks:
-            raw_chunks = [normalized_text] if normalized_text.strip() else []
+            raw_chunks = [masked_text] if masked_text.strip() else []
         dt_step2 = (time.perf_counter() - t0) * 1000.0
 
         chunk_desc = (
@@ -627,7 +660,14 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
         # Step 3: Document Metadata & Classification Extraction (40% - 60%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        doc_metadata = self.processing.extract_metadata(normalized_text)
+        # Metadata of what is stored: with guardrails on, the masked text (no raw e-mail
+        # addresses in ``metadata.emails``); table rows, from their masked chunks.
+        # Rows and JSON chunks are masked after this step: their e-mail list is taken from
+        # the masked chunks in step 5.
+        rows_masked = apply_guardrails and not mask_whole
+        doc_metadata = self.processing.extract_metadata(
+            normalized_text if rows_masked else masked_text
+        )
         if metadata:
             doc_metadata.update(metadata)
         doc_metadata["file_type"] = detected_format
@@ -660,16 +700,17 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
         # Step 4: Safety Guardrails & PII Masking (60% - 80%)
         # -------------------------------------------------------------------------
         t0 = time.perf_counter()
-        cleaned_chunks_text: list[str] = []
+        # Rows were masked by column and free text as a whole (step 2): count the chunks
+        # that carry a mask. JSON chunks are masked here.
+        cleaned_chunks_text: list[str] = list(raw_chunks)
         total_redacted = 0
-        for chunk_txt in raw_chunks:
-            if not apply_guardrails or csv_records is not None:  # CSV rows: masked by column
-                cleaned_chunks_text.append(chunk_txt)
-            else:
+        if mask_whole and masked_text != normalized_text:
+            total_redacted = sum(1 for c in cleaned_chunks_text if _MASK_TOKEN.search(c))
+        elif apply_guardrails and csv_records is None:
+            for i, chunk_txt in enumerate(raw_chunks):
                 masked = self.guardrails.mask_pii(chunk_txt)
-                if masked != chunk_txt:
-                    total_redacted += 1
-                cleaned_chunks_text.append(masked)
+                total_redacted += masked != chunk_txt
+                cleaned_chunks_text[i] = masked
         dt_step4 = (time.perf_counter() - t0) * 1000.0
 
         guardrails_summary = (
@@ -713,14 +754,19 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
                     chunk_meta["row_range"] = [first, last]
 
             chunk_id = f"{document_id}:{idx}"
-            processed_chunks.append(
-                ProcessedChunk(
-                    chunk_id=chunk_id,
-                    document_id=document_id,
-                    chunk_index=idx,
-                    text=cleaned_chunk,
-                    metadata=chunk_meta,
-                )
+            chunk = ProcessedChunk(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                chunk_index=idx,
+                text=cleaned_chunk,
+                metadata=chunk_meta,
+            )
+            if idx < len(token_bounds):
+                chunk._token_bound = token_bounds[idx]
+            processed_chunks.append(chunk)
+        if rows_masked:  # the e-mail addresses still visible in the masked rows
+            doc_metadata["emails"] = sorted(
+                {e for c in processed_chunks for e in c.metadata.get("emails", ())}
             )
         dt_step5 = (time.perf_counter() - t0) * 1000.0
 
@@ -756,11 +802,12 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
 
     def _csv_record_chunks(
         self, text: str, apply_guardrails: bool
-    ) -> list[tuple[str, list[dict[str, Any]], int, int]]:
+    ) -> list[tuple[str, list[dict[str, Any]], int, int, int | None]]:
         """CSV -> row-group chunks with their typed, column-masked rows.
 
-        Returns ``(text, records, first row, last row)`` per chunk (1-based rows), or an
-        empty list when the text is not a usable table.
+        Returns ``(text, records, first row, last row, token bound)`` per chunk (1-based
+        rows; the bound is the summed row costs, ``None`` without a limiter), or an empty
+        list when the text is not a usable table.
         """
         table = parse_csv_table(text)
         if table is None:
@@ -768,19 +815,39 @@ class NexusClient(IngestMixin, StoreMixin, PdfMixin):
         classify = getattr(self.guardrails, "classify_columns", None)
         kinds = classify(table.typed_rows) if (apply_guardrails and classify) else None
         typed, _ = mask_rows(self.guardrails, table.typed_rows, apply_guardrails, kinds)
-        shown, _ = mask_rows(self.guardrails, table.rows, apply_guardrails, kinds)
+        # Each cell is masked once: a display cell is its source text unless masking
+        # changed the typed value (then it is the masked value).
+        shown = (
+            [
+                {
+                    k: v if masked.get(k) == source.get(k) else _display(masked.get(k))
+                    for k, v in row.items()
+                }
+                for row, source, masked in zip(table.rows, table.typed_rows, typed, strict=True)
+            ]
+            if apply_guardrails
+            else table.rows
+        )
         texts = [csv_row_text(n, row) for n, row in enumerate(shown, start=1)]
         header = f"Columns: {', '.join(table.columns)}"
         limiter = self.chunk_limiter
+        costs = limiter.count_many(texts) if limiter else None
+        header_tokens = limiter.count(header) + 1 if limiter else 0
         groups = group_rows(
             texts,
             header=header,
             max_tokens=limiter.max_tokens if limiter else None,
-            token_costs=limiter.count_many(texts) if limiter else None,
-            header_tokens=limiter.count(header) + 1 if limiter else 0,
+            token_costs=costs,
+            header_tokens=header_tokens,
         )
         return [
-            (chunk_text, [jsonable(r) for r in typed[first : last + 1]], first + 1, last + 1)
+            (
+                chunk_text,
+                [jsonable(r) for r in typed[first : last + 1]],
+                first + 1,
+                last + 1,
+                limiter.group_bound(costs, first, last, header_tokens) if limiter else None,
+            )
             for chunk_text, first, last in groups
         ]
 

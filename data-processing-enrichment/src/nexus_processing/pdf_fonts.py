@@ -28,7 +28,10 @@
 
 from __future__ import annotations
 
+import array
+import functools
 import re
+import sys
 from typing import Any
 
 from .pdf_lexer import PdfStream, _Lexer, decode_stream
@@ -237,6 +240,16 @@ def _standard_char(code: int) -> str:
 
 
 def _base_encoding(name: str) -> list[str]:
+    """A fresh copy of a base encoding table (callers apply ``Differences`` to it)."""
+    return list(_base_table(name))
+
+
+@functools.lru_cache(maxsize=8)
+def _base_table(name: str) -> tuple[str, ...]:
+    return tuple(_build_base_encoding(name))
+
+
+def _build_base_encoding(name: str) -> list[str]:
     if name == "WinAnsiEncoding":
         table = []
         for code in range(256):
@@ -313,6 +326,22 @@ def parse_cmap(data: bytes) -> tuple[dict[int, str], list[tuple[int, int, int]]]
     return mapping, spaces
 
 
+_RUN_CACHE = 4096  # decoded strings remembered per font
+_IS_SPACE = tuple(code == 32 for code in range(256))
+_LITTLE_ENDIAN = sys.byteorder == "little"
+
+
+class _Default(dict):
+    """A dict answering a fixed default for missing keys (used through ``map``)."""
+
+    def __init__(self, items: dict, default: Any) -> None:
+        super().__init__(items)
+        self.default = default
+
+    def __missing__(self, key: Any) -> Any:
+        return self.default
+
+
 class PdfFont:
     """One font resource: ``decode(bytes)`` yields ``(text, width_in_text_space, is_space)``."""
 
@@ -347,6 +376,13 @@ class PdfFont:
             self._simple_widths(font)
         if self.composite and not self.spaces:
             self.spaces = [(2, 0, 0xFFFF)]
+        self._single_byte = not self.composite and (
+            not self.spaces or all(n == 1 for n, _, _ in self.spaces)
+        )
+        self._lengths = sorted({n for n, _, _ in self.spaces}) or [2]
+        self._runs: dict[bytes, tuple[str, tuple[float, ...], tuple[bool, ...]]] = {}
+        self._tables: tuple[tuple[str, ...], tuple[float, ...]] | None = None
+        self._maps: tuple[dict[int, str], dict[int, float]] | None = None
 
     def _simple_encoding(self, font: dict[str, Any]) -> list[str]:
         enc = self.resolve(font.get("Encoding"))
@@ -424,11 +460,11 @@ class PdfFont:
 
     def _codes(self, data: bytes) -> list[tuple[int, int]]:
         """``[(code, byte length)]`` of a string shown with this font."""
-        if not self.composite and (not self.spaces or all(n == 1 for n, _, _ in self.spaces)):
+        if self._single_byte:
             return [(b, 1) for b in data]
         out = []
         i = 0
-        lengths = sorted({n for n, _, _ in self.spaces}) or [2]
+        lengths = self._lengths
         while i < len(data):
             for n in lengths:
                 if i + n > len(data):
@@ -443,6 +479,78 @@ class PdfFont:
                 out.append((int.from_bytes(data[i : i + n], "big"), n))
                 i += n
         return out
+
+    def decode_run(self, data: bytes) -> tuple[str, tuple[float, ...], tuple[bool, ...]]:
+        """``decode`` as ``(text, widths, is_space flags)``, memoised per string.
+
+        Single-byte fonts and two-byte Identity CMaps (most PDFs) decode through per-font
+        lookup tables in C-level ``map`` calls; the values are exactly ``decode``'s."""
+        hit = self._runs.get(data)
+        if hit is not None:
+            return hit
+        if self.fallback:
+            parts = self.decode(data)
+            hit = (
+                "".join(p[0] for p in parts),
+                tuple(p[1] for p in parts),
+                tuple(p[2] for p in parts),
+            )
+        elif self._single_byte:
+            texts, widths = self._byte_tables()
+            hit = (
+                "".join(map(texts.__getitem__, data)),
+                tuple(map(widths.__getitem__, data)),
+                tuple(map(_IS_SPACE.__getitem__, data)),
+            )
+        elif self._lengths == [2] and len(self.spaces) == 1 and self.spaces[0][1:] == (0, 0xFFFF):
+            even = len(data) - len(data) % 2
+            codes = array.array("H", data[:even])
+            if _LITTLE_ENDIAN:
+                codes.byteswap()
+            texts, widths = self._code_maps()
+            text = "".join(map(texts.__getitem__, codes))
+            width = tuple(map(widths.__getitem__, codes))
+            spaces = (False,) * len(codes)
+            if even < len(data):  # a trailing odd byte is read as a one-byte code
+                tail = self.decode(data[even:])
+                text += "".join(p[0] for p in tail)
+                width += tuple(p[1] for p in tail)
+                spaces += tuple(p[2] for p in tail)
+            hit = (text, width, spaces)
+        else:
+            parts = self.decode(data)
+            hit = (
+                "".join(p[0] for p in parts),
+                tuple(p[1] for p in parts),
+                tuple(p[2] for p in parts),
+            )
+        if len(self._runs) < _RUN_CACHE:
+            self._runs[data] = hit
+        return hit
+
+    def _byte_tables(self) -> tuple[tuple[str, ...], tuple[float, ...]]:
+        if self._tables is None:
+            texts = []
+            for code in range(256):
+                if code in self.to_unicode:
+                    texts.append(self.to_unicode[code])
+                elif self.composite:
+                    texts.append("")
+                else:
+                    texts.append(self.encoding[code] if code < len(self.encoding) else "")
+            widths = tuple(self.widths.get(c, self.default_width) * self.scale for c in range(256))
+            self._tables = (tuple(texts), widths)
+        return self._tables
+
+    def _code_maps(self) -> tuple[dict[int, str], dict[int, float]]:
+        if self._maps is None:
+            texts = _Default(self.to_unicode, "")  # composite: unmapped CIDs have no text
+            widths = _Default(
+                {c: w * self.scale for c, w in self.widths.items()},
+                self.default_width * self.scale,
+            )
+            self._maps = (texts, widths)
+        return self._maps
 
     def decode(self, data: bytes) -> list[tuple[str, float, bool]]:
         if self.fallback:

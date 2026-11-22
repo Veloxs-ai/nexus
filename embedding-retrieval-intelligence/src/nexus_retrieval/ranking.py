@@ -113,19 +113,30 @@ def _rrf_combine(
     merged: dict[str, SearchResult],
     limit: int,
 ) -> list[SearchResult]:
-    graph_ranked = [
-        rid for rid, _ in sorted(graph_scores.items(), key=lambda kv: kv[1], reverse=True)
-    ]
-    lists = [
-        [r.id for r in semantic],
-        [r.id for r in lexical],
-        [g for g in graph_ranked if g in merged],
-    ]
-    fused = reciprocal_rank_fusion([lst for lst in lists if lst])
-    ranked = []
-    for position, rid in enumerate(fused):
+    """RRF over the semantic, lexical and graph rankings.
+
+    Only candidates with a graph score above 0 form the graph ranking: an all-zero graph
+    list carries no order and would add noise. Ties in the graph list keep candidate order.
+    """
+    graph_ranked = sorted(
+        (rid for rid, score in graph_scores.items() if score > 0 and rid in merged),
+        key=graph_scores.__getitem__,
+        reverse=True,
+    )
+    lists = [[r.id for r in semantic], [r.id for r in lexical], graph_ranked]
+    scores: dict[str, float] = {}
+    for ranked in lists:
+        seen: set[str] = set()
+        for rank, rid in enumerate(ranked):
+            if rid in seen:
+                continue  # a list counts an item once, at its best rank
+            seen.add(rid)
+            scores[rid] = scores.get(rid, 0.0) + 1.0 / (RRF_K + rank + 1)
+    ranked_ids = sorted(scores, key=scores.__getitem__, reverse=True)[:limit]
+    out = []
+    for rid in ranked_ids:
         result = merged[rid]
         result.graph_score = graph_scores.get(rid, 0.0)
-        result.score = sum(1.0 / (RRF_K + lst.index(rid) + 1) for lst in lists if rid in lst)
-        ranked.append((position, result))
-    return [result for _, result in ranked][:limit]
+        result.score = scores[rid]
+        out.append(result)
+    return out

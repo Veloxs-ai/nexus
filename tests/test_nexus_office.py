@@ -394,3 +394,17 @@ def test_process_document_legacy_xls():
     assert "Workbook: crime.xls" in doc.chunks[0].text
     for c in doc.chunks:
         assert c.text
+
+
+def test_slide_text_outside_any_shape_is_kept():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(
+            "ppt/slides/slide1.xml",
+            '<p:sld xmlns:p="p" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            "<a:t>Quarterly goals: ship the mobile app</a:t></p:sld>",
+        )
+    doc = NexusClient().process_presentation(
+        presentation_id="loose", name="goals.pptx", presentation_bytes=buf.getvalue()
+    )
+    assert "ship the mobile app" in doc.chunks[0].text

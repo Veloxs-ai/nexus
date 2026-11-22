@@ -31,15 +31,18 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
+from operator import add
 from typing import Any
 
 from .pdf_content import PdfImage
 from .pdf_filters import apply_filters, stream_filters
 from .pdf_reader import PdfDocument
 
-__all__ = ["PageImage", "page_image"]
+__all__ = ["PageImage", "page_image", "page_images"]
 
 MIN_PAGE_SHARE = 0.25  # an image covering less of the page is a figure, not a scan
+MIN_TILE_SHARE = 0.02  # a tile of a page scanned in strips or blocks; smaller ones are icons
+MAX_TILES = 24
 
 
 @dataclass
@@ -77,11 +80,19 @@ def _png(width: int, height: int, mode: str, samples: bytes) -> bytes:
     )
 
 
+_INK = bytes(255 - min(255, s) for s in range(511))  # 255 - min(255, ink + black)
+_INVERT = bytes(range(255, -1, -1))
+
+
 def _cmyk_to_rgb(samples: bytes) -> bytes:
-    out = bytearray()
-    for i in range(0, len(samples) - 3, 4):
-        c, m, y, k = samples[i], samples[i + 1], samples[i + 2], samples[i + 3]
-        out += bytes((255 - min(255, c + k), 255 - min(255, m + k), 255 - min(255, y + k)))
+    """Naive CMYK -> RGB (``255 - min(255, c + k)`` per channel), channel by channel with
+    C-level ``map`` over strided slices instead of a Python loop per pixel."""
+    n = len(samples) // 4
+    samples = samples[: 4 * n]
+    black = samples[3::4]
+    out = bytearray(3 * n)
+    for channel in range(3):
+        out[channel::3] = bytes(map(_INK.__getitem__, map(add, samples[channel::4], black)))
     return bytes(out)
 
 
@@ -149,7 +160,7 @@ def _encode(doc: PdfDocument, image: PdfImage) -> PageImage:
         samples = data
         # 0 is black in a gray image and paints (black) in a stencil mask; [1 0] inverts.
         if isinstance(decode, list) and decode[:1] == [1]:
-            samples = bytes(255 - b for b in samples)
+            samples = bytes(samples).translate(_INVERT)
         return PageImage(_png(width, height, "1", samples), "png", width, height)
     if bpc != 8:
         return PageImage(None, "unknown", width, height)
@@ -162,6 +173,37 @@ def _encode(doc: PdfDocument, image: PdfImage) -> PageImage:
     return PageImage(None, "unknown", width, height)
 
 
+def _encoded(doc: PdfDocument, image: PdfImage) -> PageImage:
+    try:
+        return _encode(doc, image)
+    except Exception:
+        return PageImage(None, "unknown", 0, 0)
+
+
+def page_images(doc: PdfDocument, images: list[PdfImage], page_area: float) -> list[PageImage]:
+    """The images that carry a text-less page's content, in reading order.
+
+    One image covering ``MIN_PAGE_SHARE`` of the page is the scan (``page_image``). A page
+    scanned in strips or tiles has no such image; its tiles (each at least
+    ``MIN_TILE_SHARE`` of the page, together at least ``MIN_PAGE_SHARE``) are returned top
+    to bottom, left to right, each image once. ``[]`` when the page has neither.
+    """
+    single = page_image(doc, images, page_area)
+    if single is not None or not images or not page_area:
+        return [single] if single is not None else []
+    seen: set[int] = set()
+    tiles: list[PdfImage] = []
+    for image in images:
+        key = image.ref if image.ref is not None else id(image.stream)
+        if image.area >= MIN_TILE_SHARE * page_area and key not in seen:
+            seen.add(key)
+            tiles.append(image)
+    if not tiles or sum(t.area for t in tiles) < MIN_PAGE_SHARE * page_area:
+        return []
+    tiles.sort(key=lambda t: (-round(t.top, 1), t.left))
+    return [_encoded(doc, t) for t in tiles[:MAX_TILES]]
+
+
 def page_image(doc: PdfDocument, images: list[PdfImage], page_area: float) -> PageImage | None:
     """The scan image of a page (its largest image, when it covers enough of the page)."""
     if not images:
@@ -169,7 +211,4 @@ def page_image(doc: PdfDocument, images: list[PdfImage], page_area: float) -> Pa
     largest = max(images, key=lambda im: im.area)
     if page_area and largest.area < MIN_PAGE_SHARE * page_area:
         return None
-    try:
-        return _encode(doc, largest)
-    except Exception:
-        return PageImage(None, "unknown", 0, 0)
+    return _encoded(doc, largest)

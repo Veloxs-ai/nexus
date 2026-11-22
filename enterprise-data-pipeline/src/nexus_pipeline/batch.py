@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import SourceConfig
-from .integrity import CheckpointStore, latest_checkpoint, validate_records
+from .integrity import CheckpointStore, latest_checkpoint, parse_event_time, validate_records
 
 
 class FileDropConnector:
@@ -41,7 +41,26 @@ class FileDropConnector:
         records: list[dict[str, Any]] = []
         for file_path in files:
             records.extend(read_file(file_path, self.source.connection.get("file_format")))
+        return _after_checkpoint(records, self.source.event_time_field, checkpoint)
+
+
+def _after_checkpoint(
+    records: list[dict[str, Any]], field: str, checkpoint: str | None
+) -> list[dict[str, Any]]:
+    """Records newer than ``checkpoint`` (all when there is none). A record whose event time
+    is missing or unreadable is kept, so validation reports it instead of dropping it."""
+    if not checkpoint:
         return records
+    since = parse_event_time(checkpoint)
+    kept = []
+    for record in records:
+        try:
+            if parse_event_time(record[field]) <= since:
+                continue
+        except (KeyError, TypeError, ValueError):
+            pass
+        kept.append(record)
+    return kept
 
 
 def read_file(path: Path, file_format: str | None = None) -> list[dict[str, Any]]:

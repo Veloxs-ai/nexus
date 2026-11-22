@@ -20,7 +20,8 @@ Works on positioned text runs from ``pdf_content`` (or on plain page texts from 
 extractor, where positions and sizes are unknown):
 
 - ``runs_to_lines`` joins runs on one baseline into lines, inserting a space where the
-  gap between runs is wider than a fraction of the font size;
+  gap between runs is wider than a fraction of the font size; a two-column page is read
+  column by column (``pdf_columns``);
 - ``remove_running_lines`` drops lines that repeat in the top or bottom band of most
   pages (running headers, footers, page numbers; digits are masked when comparing, so
   "Page 3 of 10" repeats too);
@@ -37,11 +38,13 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from .pdf_columns import GUTTER_GAP, MIN_SIDE_LINES, column_lines
 from .pdf_content import TextRun
 
 __all__ = [
     "Line",
     "heading_sizes",
+    "hyphenated_words",
     "lines_from_text",
     "page_markdown",
     "remove_running_lines",
@@ -54,6 +57,9 @@ BAND_LINES = 2
 _DIGITS = re.compile(r"\d+")
 _SPACES = re.compile(r"\s+")
 _HYPHEN = re.compile(r"([^\W\d_])-\n([^\W\d_])")
+_WORD_END = re.compile(r"[^\W\d_]{1,64}$")
+_WORD_START = re.compile(r"[^\W\d_]{1,64}")
+_COMPOUND = re.compile(r"[^\W\d_]+-[^\W\d_]+")
 
 
 @dataclass
@@ -65,8 +71,28 @@ class Line:
     end_x: float = 0.0
 
 
-def runs_to_lines(runs: Iterable[TextRun]) -> list[Line]:
-    """Lines in content-stream order (see the module docstring)."""
+def runs_to_lines(runs: Iterable[TextRun], page_width: float = 0.0) -> list[Line]:
+    """Lines in reading order (see the module docstring). With ``page_width`` a two-column
+    page is read column by column (``pdf_columns``); otherwise in content-stream order."""
+    runs = list(runs)
+    lines, wide = _joined(runs, None)
+    # Only a page whose baselines hold gutter-wide gaps can have glued columns.
+    if page_width and wide >= MIN_SIDE_LINES:
+        ordered = column_lines(runs, page_width, _join)
+        if ordered is not None:
+            return ordered
+    return lines
+
+
+def _join(runs: Iterable[TextRun], max_gap: float | None = None) -> list[Line]:
+    """Runs joined into lines by baseline; ``max_gap`` (font sizes) starts a new line at a
+    wider gap between runs on the same baseline."""
+    return _joined(runs, max_gap)[0]
+
+
+def _joined(runs: Iterable[TextRun], max_gap: float | None) -> tuple[list[Line], int]:
+    """``(lines, number of joins across a gap wider than GUTTER_GAP font sizes)``."""
+    wide = 0
     lines: list[Line] = []
     cur: Line | None = None
     for run in runs:
@@ -75,9 +101,12 @@ def runs_to_lines(runs: Iterable[TextRun]) -> list[Line]:
             cur is not None
             and abs(run.y - cur.y) <= 0.5 * max(1.0, min(size, cur.size or size))
             and run.x >= cur.end_x - 0.6 * size
+            and (max_gap is None or run.x - cur.end_x <= max_gap * size)
         )
         if same_line and cur is not None:
             gap = run.x - cur.end_x
+            if gap > GUTTER_GAP * size:
+                wide += 1
             if (
                 gap > SPACE_GAP * size
                 and not cur.text.endswith(" ")
@@ -95,7 +124,7 @@ def runs_to_lines(runs: Iterable[TextRun]) -> list[Line]:
         line.text = _SPACES.sub(" ", line.text).strip()
         if line.text:
             out.append(line)
-    return out
+    return out, wide
 
 
 def lines_from_text(text: str) -> list[Line]:
@@ -211,8 +240,23 @@ def _is_heading(line: Line, levels: dict[float, int]) -> int:
     return level
 
 
-def page_markdown(lines: list[Line], levels: dict[float, int]) -> tuple[str, list[tuple[int, str]]]:
-    """``(Markdown text, [(level, heading)])`` of one page's lines."""
+def hyphenated_words(pages: Iterable[list[Line]]) -> frozenset[str]:
+    """Lower-cased hyphenated compounds written on one line anywhere in the document
+    (``user-level``): the same compound broken at its hyphen across a line keeps it."""
+    found: set[str] = set()
+    for lines in pages:
+        for line in lines:
+            if "-" in line.text:
+                found.update(m.group(0).lower() for m in _COMPOUND.finditer(line.text))
+    return frozenset(found)
+
+
+def page_markdown(
+    lines: list[Line], levels: dict[float, int], compounds: frozenset[str] = frozenset()
+) -> tuple[str, list[tuple[int, str]]]:
+    """``(Markdown text, [(level, heading)])`` of one page's lines. A word hyphenated at a
+    line end is re-joined (``infor-`` / ``mation``) unless the document writes that
+    hyphenated form elsewhere (``compounds`` from ``hyphenated_words``)."""
     out: list[str] = []
     headings: list[tuple[int, str]] = []
     prev: Line | None = None
@@ -233,7 +277,16 @@ def page_markdown(lines: list[Line], levels: dict[float, int]) -> tuple[str, lis
         out.append(line.text)
         prev = line
     text = "".join(out)
-    text = _HYPHEN.sub(
-        lambda m: m.group(1) + m.group(2) if m.group(2).islower() else m.group(0), text
-    )
+
+    def join(m: re.Match[str]) -> str:
+        if not m.group(2).islower():
+            return m.group(0)
+        if compounds:
+            left = _WORD_END.search(text, max(0, m.start() - 63), m.start() + 1)
+            right = _WORD_START.match(text, m.end() - 1)
+            if left and right and f"{left.group(0)}-{right.group(0)}".lower() in compounds:
+                return f"{m.group(1)}-{m.group(2)}"  # a real compound: keep its hyphen
+        return m.group(1) + m.group(2)
+
+    text = _HYPHEN.sub(join, text)
     return re.sub(r"\n{3,}", "\n\n", text).strip(), headings
