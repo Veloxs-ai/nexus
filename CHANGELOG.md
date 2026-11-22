@@ -7,18 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.3.0] — Unreleased
+## [3.2.0] — 2026-11-22
+
+One release with two parts: (1) processing, chunking, record, PII and performance work across every layer, and (2) exact table answers over every row, document routing, map-reduce and a grounding verifier. Standard library only: no new dependency. No public method is renamed or removed.
+
+### Part 1 — Exact table answers, routing, map-reduce and grounding
 
 Exact answers over every row of a table, computed where the rows are stored; document-level routing, map-reduce over every candidate document, and a grounding verifier for cited answers. Standard library only: no new dependency. No public method is renamed or removed.
 
-### Summary
+#### Summary
 
 - **Exact table answers over every row.** `table_profile` describes each column; `record_spec` (spec v2) resolves a planner's spec against the profile (allow-listed fields, dirty spellings matched, missing values reported with the closest stored ones); `record_sql` compiles it to one parameterised PostgreSQL JSONB / SQLite JSON1 statement that runs where the rows are stored; `record_eval` is the Python reference engine; `record_render` gives both engines the same result text. SQL equals the Python engine on 3,140 randomised specs (3 storage layouts, joins and dirty values included).
 - **Document routing and map-reduce.** `doc_routing` ranks a catalog (BM25 + weighted RRF), finds the documents a "list every / how many" question needs, and builds a bounded knowledge index; `map_reduce` plans, prompts, parses and reduces per-document map calls under a cost cap and says when coverage is partial.
 - **Grounding verifier.** `grounding.check_answer` checks every cited claim of an answer against the passages it cites (exact figures, ids and dates; content words; an optional cross-encoder), in milliseconds per answer.
 - Standard library only; no new dependency, no public API renamed or removed.
 
-### Added
+#### Added
 
 - `nexus.table_profile`: `profile_records(records)` describes each column of a table's records in one pass (type: integer / number / date / boolean / text / object / array / mixed; nulls and null %; distinct count, capped at 1,000 tracked values per column; every value when there are at most 50, else the top 10; min/max for numbers and dates; nested object fields one level down). `profile_text` renders a profile as one planner line; `link_columns(question, profiles)` keeps the columns a question is about when more than 10 tables or 40 columns are in scope (name words and value hits).
 - `nexus.record_spec`: records spec v2 and `parse_spec(spec, profile, join_profile=None, current=True)` → `RecordQuery`. Adds `and`/`or`/`not` conditions, `is_null`, `count_distinct`, several metrics with names, `order_by` + `limit` (top N), `date_trunc` groups (day, week, month, quarter, year), `having`, list projection (`fields`), nested fields (`"address.city"`) and one join with a second table on a declared key (`inner` or `left`). v1 specs (`filters`, `metric`, `field`, `group_by`, `limit`) are unchanged. Field names are allow-listed from the profile. With a complete value list, a text value matches every stored spelling that normalises the same (`"mid market"` = `"Mid-Market"` = `"MID_MARKET "`), and a value that is not stored is reported with the closest stored values (`RecordQuery.not_found`, `impossible`) instead of computing 0.
@@ -32,7 +36,7 @@ Exact answers over every row of a table, computed where the rows are stored; doc
 - `nexus.text_terms`: the shared word, stem, number and id helpers of the three modules above (`terms`, `question_terms`, `query_words`, `numbers`, `key_tokens`).
 - `nexus.figure_text`: `spell_figures(text)` writes English number words (`"one hundred and twenty"` → `120`, `"twenty-one"` → `21`) and long-form dates (`"March 5, 2026"`, `"5th of March 2026"` → `2026-03-05`) as digits; number words inside hyphenated names (`priority-one`) are kept. Grounding compares figures through it.
 
-### Performance
+#### Performance
 
 Measured on the same 8-core machine (SQLite 3.53, one row per chunk, best of 3), 200,000 rows:
 
@@ -63,13 +67,13 @@ Grounding quality on Nexora's offline evaluation (fixtures S and M): no supporte
 
 The SQL engine needs no rows in application memory. PostgreSQL reads JSONB without parsing it, so it is expected to be faster than these SQLite numbers; it was not measured here.
 
-### Fixed (before release)
+#### Fixed (before release)
 
 - Records SQL: groups tied on the ordering metric now put the empty group last, as the Python engine does (the empty group's label was `''`, which sorted first and could change which groups a `limit` kept).
 - `parse_spec`: a `limit` that is not a whole number raises `RecordQueryError` with the reason instead of `ValueError`.
 - Grounding: a correct claim whose figure is written another way than in its passage (`30 days` / `thirty days`, `120` / `one hundred and twenty`, `5 March 2026` / `2026-03-05`, a year inside an ISO date, `FY2025` / `fiscal year 2025`) is no longer marked unsupported; a changed figure still is.
 
-### Known limits
+#### Known limits
 
 - On PostgreSQL, a `week` bucket of an impossible calendar date (`2025-02-30`) fails the statement; the other buckets only read the text.
 - SQLite's built-in `lower()` folds ASCII only; call `unicode_lower(connection)` for parity on non-ASCII text.
@@ -77,11 +81,11 @@ The SQL engine needs no rows in application memory. PostgreSQL reads JSONB witho
 - On SQLite, a field whose name contains a double quote cannot be read (the query says so); a list without `fields` over such a table fails. PostgreSQL binds the path as an array and is not affected.
 - Grounding does not convert units: `24 months` against `two years` is still reported unsupported. The cross-encoder measures relevance, not entailment.
 
-## [3.2.0] — 2026-11-22
+### Part 2 — Processing, chunking, records, PII and performance
 
 Data-loss, chunk-size, record and PII fixes for retrieval over everything a customer uploads or connects. No public method is renamed or removed; the outputs below change, as described under **Changed**.
 
-### Performance
+#### Performance
 
 Measured against 3.2.0-pre (commit 8dc3371) on the same 8-core machine, run back to back with nothing else running; CPU p50 unless noted. Outputs are identical except where **Changed** / **Fixed** say otherwise. Benchmarks: `bench.py` per layer (processing parsers, client/pipeline/tables, guardrails/PII, chunking/retrieval), re-runnable against any checkout with `--repo`.
 
@@ -109,7 +113,7 @@ Search quality: hybrid RRF MRR@10 0.695 -> 0.739 (weighted fusion unchanged at 0
 
 Costs paid for accuracy: English `mask_pii` is 5-9% slower (cued national phone formats; phone recall 0.63 -> 0.73 at precision 1.0); `detect_pii` is about 1.7x slower because it now uses the masking spans; `validate_records` compares every duplicate's event time (50k records: 10 -> 36 ms); well-formed HTML is 4-5% slower (HTML5 implied end tags); a non-UTF-8 file pays about 0.2 ms for code-page detection; polyglot code emits five times as many chunks (one per method).
 
-### Added
+#### Added
 - **Encrypted PDFs are read** (`nexus.processing.pdf_crypt`, standard library only): the standard security handler with RC4 (40-128 bit, revisions 2-3), AES-128 (`AESV2`, revision 4) and AES-256 (`AESV3`, revisions 5-6), crypt filters and `Identity`; the empty user password, then the empty owner password, is tried (most "secured" statements and forms). Streams are decrypted lazily, on first use. A file that needs a real password reports `PdfDocument.needs_password` and its pages `source="encrypted"` (they were `empty` with no reason). On the test files encrypted with pypdf (5 algorithms x 2 documents) the text is identical to the unencrypted file (word recall 1.0; was 0.0).
 - **Two-column pages are read column by column** (`nexus.processing.pdf_columns`): when a page's baselines hold gutter-wide gaps and a vertical gutter separates two prose columns (each with a fifth of the text, lines filling their column, almost nothing crossing), the left column is read before the right, with full-width lines (titles, footers) in place. Tables and single-column pages keep stream order. Word-bigram recall on a row-wise two-column file: 0.872 -> 0.983 (pypdf 0.889). Pages without such gaps pay nothing (the detector is not run).
 - **Pages scanned in strips or tiles are OCR'd** (`pdf_scan.page_images`): a text-less page with no single image covering a quarter of it, but whose image tiles (each at least 2% of the page) together do, is OCR'd tile by tile, top to bottom.
@@ -153,7 +157,7 @@ Costs paid for accuracy: English `mask_pii` is 5-9% slower (cued national phone 
 - `NEXUS_ONNX_THREADS` / `NEXUS_ONNX_QUERY_THREADS` (ONNX threads for passage/re-rank and query models) and opt-in `NEXUS_TOKENIZER_THREADS`.
 - `iter_jsonl` (streaming JSONL reader) in `nexus_observability.io` and `nexus_security.io`.
 
-### Changed
+#### Changed
 - **Token budgeting counts each text once** (output identical, checked against 3.2.0-pre on 4 corpora x 5 counters): `estimate_tokens` counts with one regular expression in C (same values; 1.7x faster); `prepare_chunks` counts only chunks longer than the budget in characters, in one batch (`NexusClient.prepare_chunks` passes the tokenizer's batch call), and reuses the counts for row packing; `fit_text` and its splitter take the count the caller already has, count each level's parts in one batch and skip the re-check of joined pieces when the counter is additive (`estimate_tokens`; the bge tokenizer, fuzz-checked). Nexora's offline RAG eval (M) table ingest, wall p50 of 5: `public.cases` 3.02 s -> 1.40 s, `public.accounts` 0.41 s -> 0.25 s, `public.orders` 1.51 s -> 1.42 s (3.1.1: 0.41 / 0.10 / 0.66 s; the rest is token-accurate splitting and packing that 3.1.1 did by characters). With the bge tokenizer, `prepare_chunks` on 600 rows of ~3.4k characters: 6.5 s -> 2.2 s wall (batched, tokenizer threads) or 3.5 s CPU with `TOKENIZERS_PARALLELISM=false`.
 - The OCR engine is loaded on the first page that needs OCR, not for every PDF: a born-digital PDF no longer imports the deep-learning runtime (about 2.4 s and 165 MB per worker process with EasyOCR installed). Output is identical.
 - **Audio with a transcript is chunked by transcript segments** (whole segments, at most ~60 s or ~180 words per chunk), and the acoustic numbers (RMS, ZCR, centroid, bands) are no longer in the chunk text (they stay in metadata). Audio without a transcript is still framed into fixed windows. An untimed `transcript=` is split by sentences instead of being repeated on every window.
@@ -192,7 +196,7 @@ Costs paid for accuracy: English `mask_pii` is 5-9% slower (cued national phone 
 - Placeholders (`N/A`, `none`, `-`, ...) stay visible in PII columns; secrets are always masked.
 - Code-page detection scores each distinct word once, language ID looks each word up once in a stopword index, and the national phone scan is skipped when no ten-digit run exists (all three with identical results, checked by equivalence tests).
 
-### Fixed
+#### Fixed
 - PowerPoint: text placed directly on a slide, outside any shape, was dropped; it is kept as the slide's text.
 - **MP3 transcripts lost ~95% of their words**: the duration was estimated from the compressed bytes (a 72.5 s file measured 1.03 s), so only the transcript of the first second survived. All 146 of 146 words are now kept on the test recording.
 - Silent truncations removed: Slack threads over 4,500 characters (now split into parts with the thread header), video scene dialogue cut at 140 characters, Python class bodies and script-only modules cut at 2,000 characters, unparseable snippets at 500. Module-level code between functions (imports, constants, `__main__` blocks) and class attributes, previously dropped, are now chunked for Python and the other languages.
