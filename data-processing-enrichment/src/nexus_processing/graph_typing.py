@@ -52,6 +52,8 @@ from .graph_lexicon import (
     ambiguous_places,
     given_names,
     places,
+    plain,
+    surnames,
 )
 from .graph_resolve import key_from_base
 from .graph_tokens import JOIN, Tokens
@@ -66,6 +68,10 @@ __all__ = [
     "span_votes",
 ]
 
+_VERSION = re.compile(r"^[vV]?\d+(?:\.\d+)+[a-z]?$")  # "3.8.1", "v2.14", "4.2"
+_VERSION_START = frozenset("0123456789vV")
+# a model or version number at the end of a name ("X2", "300", "3.8"), not "Log4j"
+_PURE_MODEL = re.compile(r"^[A-Za-z]{0,3}[-/]?\d[\d.]*[A-Za-z]{0,2}$")
 _MODEL = re.compile(r"^(?:[A-Z]{1,3}-?\d{1,4}[a-z]{0,2}|\d{1,4}[A-Za-z]{0,2})$")
 _NOT_MODEL = re.compile(r"^(?:(?:1[89]|20)\d\d|Q[1-4]|H[12]|FY\d*|\d{1,2}(?:am|pm|st|nd|rd|th))$")
 _COORD = re.compile(r"^\s*(?:,|,?\s*(?:and|or|&|/))\s*$")
@@ -87,6 +93,29 @@ _DETERMINERS = frozenset(
     }
 )
 _PROJECT_FINALS = frozenset({"initiative", "programme", "program", "project"})
+_PARTICLES = frozenset(
+    {
+        "de",
+        "van",
+        "von",
+        "der",
+        "da",
+        "la",
+        "le",
+        "du",
+        "del",
+        "di",
+        "bin",
+        "bint",
+        "binti",
+        "ibn",
+        "al",
+        "el",
+        "dos",
+        "das",
+    }
+)
+_PROJECT_LEADS = frozenset({"project", "operation", "programme", "program", "initiative"})
 _OF_ORG = frozenset({"acquisition", "ceo", "cfo", "founder", "subsidiary", "employees"})
 _PRIORITY = ("person", "org", "place", "product", "project", "concept", "record")
 _CONF = {"org": 0.8, "person": 0.75, "place": 0.75, "product": 0.7, "project": 0.7}
@@ -137,12 +166,12 @@ def base_type(folds: Sequence[str], honorific: bool = False) -> tuple[str, int]:
         return "person", 3
     lex = lexicon()
     core = list(folds)
-    while len(core) > 1 and any(c.isdigit() for c in core[-1]):
+    while len(core) > 1 and _PURE_MODEL.match(core[-1]) and any(c.isdigit() for c in core[-1]):
         core.pop()
     model = len(core) < len(folds)
     last = core[-1].rstrip(".")
     multi = len(core) > 1
-    if multi and core[0] in ("project", "operation", "programme", "program", "initiative"):
+    if multi and core[0] in _PROJECT_LEADS:
         return "project", 3
     if last in ORG_LEGAL_SUFFIXES or last in ORG_HEAD_WORDS:
         return "org", 3
@@ -164,13 +193,27 @@ def base_type(folds: Sequence[str], honorific: bool = False) -> tuple[str, int]:
     if multi and last in _PROJECT_FINALS:
         return "project", 3  # "Orion Initiative", "Apollo Programme" (not a person "Orion ...")
     names = given_names()
-    if 2 <= len(core) <= 3 and core[0] in names and not any(f in COMMON_WORDS for f in core[1:]):
+    lead = core[0] if core[0] in names else plain(core[0])
+    rest = [f for f in core[1:] if f not in _PARTICLES]  # "Ana de la Cruz", "Mohammed bin Rashid"
+    if 1 <= len(rest) <= 2 and lead in names and not any(f in COMMON_WORDS for f in rest):
         return "person", 3
+    if (
+        2 <= len(core) <= 3
+        and plain(last) in surnames()
+        and not any(f in COMMON_WORDS or f in lex.known for f in core)
+    ):
+        return "person", 2  # "Bartholomew Achterberg": an unlisted given name, a known surname
+    if (
+        multi
+        and (last in lex.known_orgs or core[0] in lex.known_orgs)
+        and (last in lex.known_orgs or (last in places() and last not in ambiguous_places()))
+    ):
+        return "org", 2  # "Hindustan Unilever", "Thales India": a known firm or its unit
     if multi and last in lex.product_finals:
         return "product", 2
     if multi and last in lex.concept_finals:
         return "concept", 2
-    if not multi and core[0] in names and core[0] not in ambiguous_names():
+    if not multi and lead in names and core[0] not in ambiguous_names():
         return "person", 2
     return "entity", 0
 
@@ -197,6 +240,9 @@ def context_votes(tk: Tokens, first: int, last: int) -> list[tuple[str, int]]:
                     votes.append(("org", 2))
     n = len(toks)
     k = last + 1
+    if k < n and flags[k] & JOIN and toks[k][0] in _VERSION_START and _VERSION.match(toks[k]):
+        votes.append(("product", 2))  # "Atlas Mobile 3.8.1", "Tally Prime 3.0"
+        return votes
     for step in range(3):
         if k >= n or not flags[k] & JOIN or not toks[k][0].islower():
             break
@@ -279,7 +325,7 @@ def _coordinate(tk: Tokens, hits: list) -> None:
             if len(h) <= 7:
                 if h[1] not in ("entity", "concept", "record"):
                     typed.add(h[1])
-            elif h[7].votes and max(h[7].votes.values()) >= 2:
+            elif h[7].votes:
                 typed.add(_best(h[7].votes))
         if len(typed) == 1:
             etype = typed.pop()
@@ -308,7 +354,13 @@ def finalise_document(tokenised: Sequence[tuple[str, Tokens]], found: list[list]
             continue
         etype = _best(votes)
         words = generic.split()
-        for w in (words[0], words[-1]) if etype == "person" else (words[0],):
+        if etype == "project" and words[0] in _PROJECT_LEADS:
+            parts: tuple[str, ...] = (" ".join(words[1:]),)  # "Project Phoenix" -> "Phoenix"
+        elif etype == "person":
+            parts = (words[0], words[-1])
+        else:
+            parts = (words[0],)
+        for w in parts:
             _add(partial.setdefault(w, {}), {etype: 2})
     final: dict[str, tuple[str, str]] = {}
     for generic, votes in totals.items():
@@ -316,6 +368,11 @@ def finalise_document(tokenised: Sequence[tuple[str, Tokens]], found: list[list]
         if extra:
             votes = dict(votes)
             _add(votes, extra)
+        if not votes and " " in generic:
+            words = generic.split()
+            head = totals.get(words[0])
+            if head and _best(head) == "org" and words[-1] in places():
+                votes = {"org": 2}  # "Thales India" after "Thales" (an org) in the document
         etype = _best(votes)
         final[generic] = (etype, key_from_base(generic, etype))
     type_votes = acc.type_votes

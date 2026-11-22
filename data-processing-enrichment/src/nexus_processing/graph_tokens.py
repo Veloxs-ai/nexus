@@ -34,16 +34,20 @@ import re
 from bisect import bisect_left
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import accumulate
 
 from .graph_lexicon import COMMON_WORDS, HONORIFICS, ORG_LEGAL_SUFFIXES
 
 __all__ = ["BREAK", "JOIN", "START", "Gazetteer", "Tokens", "tokenise"]
 
-TOKEN = re.compile(r"[^\W_]+(?:[-'’.&][^\W_]+)*")
+TOKEN = re.compile(r"[^\W_]+(?:(?:[-'’.&]|/(?=\d))[^\W_]+)*")  # "S/4HANA", "AS/400"
+_SPLIT = re.compile(f"({TOKEN.pattern})")
 MASK = re.compile(r"\[[A-Z][A-Z0-9_]*(?::[0-9a-f]{4,})?\]|<[A-Z][A-Z0-9_]*>|\*{3,}|█+")
 HEADING_LINE = re.compile(r"^[^a-z\n]*[A-Z][^a-z\n]*$", re.MULTILINE)
 JOIN, START, BREAK = 1, 2, 4
 _ABBREV_JOIN = frozenset({"st", "mt", "ft", "jr", "sr"})  # "St. Mary's Hospital"
+# Abbreviated legal words: "Pvt. Ltd." stays one name; "Inc., the licensor" one sentence.
+_LEGAL_ABBREV = frozenset({"pvt", "co", "corp", "inc", "ltd", "pte", "pty", "bros", "intl", "llc"})
 _GAP_CACHE: dict[str, int] = {"": START | BREAK, " ": JOIN}
 
 
@@ -51,6 +55,8 @@ def _gap_flags(gap: str) -> int:
     flags = _GAP_CACHE.get(gap)
     if flags is not None:
         return flags
+    if gap[:1] == "." and gap[1:2] in (",", ";", ")"):
+        gap = gap[1:]  # an abbreviation's full stop before a comma ("Inc., ...")
     if "\n" in gap or any(c in gap for c in ".!?"):
         flags = START | BREAK
     elif any(c in gap for c in ":;>|•·–—"):
@@ -83,34 +89,32 @@ class Tokens:
 
 
 def tokenise(text: str) -> Tokens:
-    toks: list[str] = []
-    starts: list[int] = []
-    ends: list[int] = []
-    flags: list[int] = []
-    sentence: list[int] = []
-    prev_end = 0
-    sent = 0
-    prev_fold = ""
-    for m in TOKEN.finditer(text):
-        s, e = m.span()
-        gap = text[prev_end:s]
-        f = _GAP_CACHE.get(gap)
-        if f is None:
-            f = _gap_flags(gap)
-        if f & BREAK and toks:
-            if gap == ". " and (prev_fold in HONORIFICS or prev_fold in _ABBREV_JOIN):
-                f = JOIN
-            else:
-                sent += 1
-        tok = m.group()
-        toks.append(tok)
-        starts.append(s)
-        ends.append(e)
-        flags.append(f)
-        sentence.append(sent)
-        prev_end = e
-        prev_fold = tok.lower()
+    parts = _SPLIT.split(text)  # gap, token, gap, token, ..., gap
+    toks = parts[1::2]
+    gaps = parts[0:-1:2]  # the gap before each token
+    offsets = list(accumulate(map(len, parts)))
+    starts = offsets[0:-1:2]
+    ends = offsets[1::2]
+    cache = _GAP_CACHE
+    flags = [cache.get(g) for g in gaps]
+    if None in flags:
+        for i in [i for i, f in enumerate(flags) if f is None]:
+            flags[i] = _gap_flags(gaps[i])
     folds = [t.lower() for t in toks]
+    step = [0] * len(toks)
+    for i in [i for i, f in enumerate(flags) if f & BREAK and i]:
+        gap, prev_fold = gaps[i], folds[i - 1]
+        if gap == ". " and (prev_fold in HONORIFICS or prev_fold in _ABBREV_JOIN):
+            flags[i] = JOIN
+        elif (
+            gap == ". "
+            and prev_fold in _LEGAL_ABBREV
+            and (toks[i][0].islower() or folds[i].rstrip(".") in ORG_LEGAL_SUFFIXES)
+        ):
+            flags[i] = JOIN if toks[i][0].isupper() else 0  # "Pvt. Ltd.", "Inc. grants ..."
+        else:
+            step[i] = 1
+    sentence = list(accumulate(step))
     blocked: set[int] = set()
     if "[" in text or "<" in text or "**" in text or "█" in text:
         spans = [m.span() for m in MASK.finditer(text)]

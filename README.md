@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![Tests](https://img.shields.io/badge/tests-966%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-981%20passing-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -356,7 +356,7 @@ rank = pagerank(csr)
 view = ego_subgraph(focus, neighbours, hops=2, limit=300, node_weight=dict(enumerate(rank)))
 ```
 
-Text entities are typed without a model: about 2,900 given names and 3,700 places (loaded on first use), org and department words, model numbers ("Zephyr X2"), context cues ("the customer X", "the X migration", "in X") and one type per name per document (typing accuracy 0.97–1.00 on the labelled sets, 0.99 on a blind set).
+Text entities are typed without a model: about 2,900 given names and 3,700 places (about 10,000 and 7,000, plus surnames, when the guardrails layer is installed; loaded on first use), org and department words, model numbers ("Zephyr X2") and versions, context cues ("the customer X", "the X migration", "in X") and one type per name per document (typing accuracy 0.97–1.00 on the labelled sets, 0.99 on a blind set). Since 3.6.0 known names written in lowercase in chat ("grafana", "ping priya") are found, title-case phrases such as "Economy Class" are rejected, and relations include typed ones (`works_for`, `acquired`, `located_in`, ...) and co-mentions with a following sentence that continues the topic ([details](docs/KNOWLEDGE_GRAPH_3.6.0.md)).
 
 `resolve` / `apply_resolution` merge spelling variants (`ACME Corporation.` = `Acme Corp`) and propose, never apply, ambiguous or risky merges (`merge_proposals(resolution)` lists them with a reason and score for review; `extract_graph(proposals=[...])` collects them); `guess_primary_key(columns, rows)` picks a table's key column; `promote_concepts` activates noun-phrase concepts seen in two or more documents that are not template boilerplate; `mention_delta` gives the rows to rewrite for changed chunks; `community_summary_inputs` and `community_summary_prompt` prepare community summaries for your model; `nexus.graph_eval.score_extraction` scores an extraction against labels.
 
@@ -707,7 +707,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
-**Status (3.5.0):** all 966 tests pass (2 skipped) — 322 in the root suite and 644 across the seven layer suites on Python 3.12.
+**Status (3.6.0):** all 981 tests pass (2 skipped) — 322 in the root suite and 659 across the seven layer suites on Python 3.12.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git
@@ -765,6 +765,7 @@ Full documentation is on the website: the **[User & Integrator Guide](https://ne
 | [Integration Guide](docs/INTEGRATION_GUIDE.md) | Installation, library vs. CLI integration patterns, environment variables |
 | [What's new in 3.2 – 3.4](docs/WHATS_NEW_3.2_TO_3.4.md) | Records SQL, routing, map-reduce, grounding, processing changes, the knowledge graph and 3.4.0's typing, review helpers and parsers, with examples |
 | [Table-scale building blocks (3.4.1)](docs/TABLE_SCALE_3.4.1.md) | Records in a one-row-per-record table with typed slots, rollups, index advice, pgvector helpers, large-cell bounds and a reusable routing index |
+| [Knowledge-graph extraction (3.6.0)](docs/KNOWLEDGE_GRAPH_3.6.0.md) | Text extraction changes in 3.6.0: span boundaries, title-case vetoes, lowercase mentions, typing, typed and cross-sentence relations, with before/after scores and throughput |
 | [Person and location PII (3.5.0)](docs/NER_PII_3.5.0.md) | Named-entity PII detection (`nexus.guardrails.ner`): a built-in lexicon detector and an optional spaCy backend behind `find_entities` and `detect_pii_spans(entities=["person", "location"])`, with accuracy figures |
 | [Processing Reference](docs/PROCESSING_REFERENCE.md) | Ingestion formats, the five processing phases, output structure, database setup |
 | [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and how chunks are embedded, specified precisely |

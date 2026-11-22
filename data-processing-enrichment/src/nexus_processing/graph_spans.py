@@ -25,7 +25,6 @@ roles, sentence-start tokens without evidence) and types a run. ``find_abbreviat
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -33,6 +32,8 @@ from .graph_lexicon import (
     ACRONYM_STOP,
     COMMON_WORDS,
     CONNECTORS,
+    DEMONYMS,
+    GENERIC_WORDS,
     HEADING_WORDS,
     HONORIFICS,
     MONTHS,
@@ -50,24 +51,50 @@ from .graph_lexicon import (
     ambiguous_places,
     given_names,
     places,
+    plain,
 )
 from .graph_resolve import normalise_name
+from .graph_shapes import (
+    HAS_DIGIT,
+    NAME_DIGIT,
+    NOT_RECORD_ID,
+    POSSESSIVE,
+    RECORD_ID,
+    and_inside,
+    camel_brand,
+    numbered,
+    of_head,
+    owner_before_name,
+    place_pair,
+    place_parts,
+    record_label,
+    shaped,
+)
 from .graph_tokens import JOIN, START, Tokens
 from .graph_typing import Pending, base_type, is_model_token, lexicon, span_votes
 
+# Words a possessive may still run into ("St. Mary's Hospital", "Moody's Investors Service").
+_OWNED_HEADS = (
+    ORG_HEAD_WORDS
+    | ORG_LEGAL_SUFFIXES
+    | frozenset(
+        {"hospital", "college", "church", "cathedral", "school", "investors", "corporation"}
+    )
+)
+
 __all__ = ["find_abbreviations", "token_pass", "type_of_span"]
 
-_ID = re.compile(r"^(?:[A-Z][A-Za-z0-9]*(?:[-_/][A-Za-z0-9]+)+|[A-Z]{2,}\d{3,})$")
-_NOT_ID = re.compile(
-    r"^(?:(?:FY|CY|Q[1-4]|H[12]|COVID|ISO|UTF|SHA|MD|TLS|SSL|IPV)[-_]?\d|(?:W|I)-\d{1,2}[A-Z]*$)"
-)  # also tax and employment forms: W-9, W-8BEN, I-9
-_HAS_DIGIT = re.compile(r"\d").search
 _LEAD_TRIM = STOPWORDS | HEADING_WORDS | SPAN_STOP | HONORIFICS
 # Full month and weekday names split a capitalised run ("Acme on Monday"); short forms and
 # months that are also given names ("May", "June") do not ("Blue Sun").
 _SPLIT = frozenset(w for w in MONTHS | WEEKDAYS if len(w) > 3) - {"may", "june", "april", "august"}
 _ROLE_WORDS = ROLE_HEADS | ROLE_FIRST | frozenset({"vp", "svp", "evp", "avp", "director"})
 _ABBR_SKIP = frozenset({"of", "and", "the", "for", "&", "in", "on", "to", "a", "an"})
+# Single capitalised words that are never a name on their own, and the plain words a
+# multi-word title-case phrase may be made of.
+_SINGLE_STOP = COMMON_WORDS | SPAN_STOP | ORG_LEGAL_SUFFIXES | DEMONYMS | GENERIC_WORDS
+_PLAIN_WORDS = COMMON_WORDS | GENERIC_WORDS
+_ROMAN = frozenset(["II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"])
 
 
 def type_of_span(folds: Sequence[str], honorific: bool = False) -> str:
@@ -89,7 +116,7 @@ def find_abbreviations(tk: Tokens, abbrs: dict[str, tuple[str, str, str]]) -> No
                 if s < i - 1 and not flags[s + 1] & JOIN:
                     break
                 span = range(s, i)
-                if _initials(folds, span) == target and toks[s][0].isupper():
+                if toks[s][0].isupper() and _abbreviates(target, folds, span):
                     _define(tk, tok, s, i, abbrs)
                     break
         elif i + 1 < n and after == "(":
@@ -97,7 +124,7 @@ def find_abbreviations(tk: Tokens, abbrs: dict[str, tuple[str, str, str]]) -> No
                 tail = tk.gap_before(k + 1) if k + 1 < n else tk.text[tk.ends[k] :]
                 if ")" in tail:
                     span = range(i + 1, k + 1)
-                    if _initials(folds, span) == target and toks[i + 1][0].isupper():
+                    if toks[i + 1][0].isupper() and _abbreviates(target, folds, span):
                         _define(tk, tok, span.start, span.stop, abbrs)
                     break
                 if k > i + 1 and not flags[k] & JOIN:
@@ -106,6 +133,34 @@ def find_abbreviations(tk: Tokens, abbrs: dict[str, tuple[str, str, str]]) -> No
 
 def _initials(folds: list[str], span: range) -> str:
     return "".join(folds[k][0] for k in span if folds[k] not in _ABBR_SKIP)
+
+
+def _abbreviates(abbr: str, folds: list[str], span: range) -> bool:
+    """``abbr`` is the initials of the span's words, or (a Schwartz-Hearst style match) every
+    content word gives its first letter and possibly more letters in order ("Hindustan
+    Unilever" -> HUL, "Bharat Petroleum" -> BPCL is not: "c" and "l" are missing)."""
+    if _initials(folds, span) == abbr:
+        return True
+    words = [folds[k] for k in span if folds[k] not in _ABBR_SKIP]
+    return len(words) < len(abbr) and _letters(abbr, 0, words, 0)
+
+
+def _letters(abbr: str, a: int, words: list[str], w: int) -> bool:
+    if w == len(words):
+        return a == len(abbr)
+    word = words[w]
+    if a >= len(abbr) or word[0] != abbr[a]:
+        return False
+    pos, take = 1, 0  # take 0, 1, 2 ... more letters of this word, in order
+    while True:
+        if _letters(abbr, a + 1 + take, words, w + 1):
+            return True
+        if a + 1 + take >= len(abbr):
+            return False
+        pos = word.find(abbr[a + 1 + take], pos) + 1
+        if not pos:
+            return False
+        take += 1
 
 
 def _define(tk: Tokens, abbr: str, s: int, e: int, abbrs: dict[str, tuple[str, str, str]]) -> None:
@@ -128,7 +183,11 @@ def token_pass(
     covered: bytearray,
     hits: list,
     acc: Any,
+    camel: set[int] | tuple[()] = (),
 ) -> None:
+    """Ids, defined abbreviations and capitalised spans of one chunk. ``camel``: indices of
+    lowercase-initial tokens with capitals ("iOS", "ideaForge"), found while the document's
+    tokens are first read; they may start or continue a name when they look like a brand."""
     toks, folds, flags, starts, ends, blocked = (
         tk.toks,
         tk.folds,
@@ -138,6 +197,10 @@ def token_pass(
         tk.blocked,
     )
     n = len(toks)
+    text = tk.text
+    if camel:
+        camel = {i for i in camel if camel_brand(tk, i)}
+    poss = "'s" in text or "’s" in text
     i = 0
     while i < n:
         if covered[i] or i in blocked:
@@ -145,20 +208,21 @@ def token_pass(
             continue
         tok = toks[i]
         c = tok[0]
-        if not c.isupper():
+        if not c.isupper() and (not camel or i not in camel):
             i += 1
             continue
-        if _HAS_DIGIT(tok):
-            if config.ids and _ID.match(tok) and not _NOT_ID.match(tok):
+        if HAS_DIGIT(tok) and not NAME_DIGIT.match(tok):
+            if config.ids and RECORD_ID.match(tok) and not NOT_RECORD_ID.match(tok):
                 key = normalise_name(tok)
                 acc.entity("record", key, tok)
                 hits.append((i, "record", key, starts[i], ends[i], "id", 0.9))
                 covered[i] = 1
             i += 1
             continue
-        if tok in abbrs and config.abbreviations:
-            etype, key, _ = abbrs[tok]
-            hits.append((i, etype, key, starts[i], ends[i], "abbrev", 0.9))
+        owner = tok[:-2] if poss and tok.endswith(POSSESSIVE) else tok  # "HUL's IT lead"
+        if owner in abbrs and config.abbreviations:
+            etype, key, _ = abbrs[owner]
+            hits.append((i, etype, key, starts[i], starts[i] + len(owner), "abbrev", 0.9))
             covered[i] = 1
             # a long form directly before "(ABBR)" is a mention too
             i += 1
@@ -166,23 +230,39 @@ def token_pass(
         if not config.capitalised:
             i += 1
             continue
+        if "-" in tok and place_pair(tok):
+            place_parts(tk, i, hits, covered)  # "Mumbai-Chennai link": two places
+            i += 1
+            continue
         j = i + 1
         while j < n and flags[j] & JOIN and not covered[j] and j not in blocked:
+            if poss and toks[j - 1].endswith(POSSESSIVE) and folds[j] not in _OWNED_HEADS:
+                break  # "HSBC's Global Banking": the possessive ends the name
             t = toks[j]
-            if (t[0].isupper() and not _HAS_DIGIT(t) and t not in abbrs) or (
+            if "-" in t and place_pair(t):
+                break  # "The Mumbai-Chennai link": the places start their own spans
+            if (
+                (t[0].isupper() and (not HAS_DIGIT(t) or NAME_DIGIT.match(t)) and t not in abbrs)
+                or (camel and j in camel)
+            ) or (
                 folds[j] in CONNECTORS
                 and j + 1 < n
                 and flags[j + 1] & JOIN
-                and toks[j + 1][0].isupper()
+                and (
+                    toks[j + 1][0].isupper()
+                    or (folds[j + 1] in CONNECTORS and toks[j + 1][0].islower())  # "de la"
+                )
                 and not covered[j + 1]
-                and not _HAS_DIGIT(toks[j + 1])
+                and not HAS_DIGIT(toks[j + 1])
             ):
                 j += 1
             else:
                 break
         # a short number ends a multi-word name ("Data Retention Policy 2", "Acme Corp 17"),
         # but not a year ("Annual Report 2025" keeps the report name)
-        if (j - i > 1 and j < n and flags[j] & JOIN and not covered[j] and toks[j].isdigit()
+        if j - i > 1 and folds[j - 1].rstrip(".") in ORG_LEGAL_SUFFIXES:
+            pass  # "Orion Pharma Oy 5 ...": nothing follows a legal suffix
+        elif (j - i > 1 and j < n and flags[j] & JOIN and not covered[j] and toks[j].isdigit()
                 and len(toks[j]) <= 3 and (j + 1 >= n or not flags[j + 1] & JOIN)):  # fmt: skip
             j += 1
         elif (j < n and flags[j] & JOIN and not covered[j] and j not in blocked
@@ -206,11 +286,14 @@ def _span(
     acc: Any,
 ) -> None:
     folds, toks, flags = tk.folds, tk.toks, tk.flags
+    n = len(toks)
     long_forms = {v[2].lower() for v in abbrs.values()} if abbrs else ()
     segments: list[list[int]] = [[]]
     for k in range(i, j):
         fold = folds[k]
-        if (
+        if fold == "and" and and_inside(tk, segments[-1], k, j):
+            segments[-1].append(k)  # "Ministry of Electronics and Information Technology"
+        elif (
             fold in _SPLIT
             or fold == "and"
             or (
@@ -227,16 +310,21 @@ def _span(
         honorific = False
         while (
             seg
-            and (folds[seg[0]] in _LEAD_TRIM or folds[seg[0]] in CONNECTORS)
+            and (
+                folds[seg[0]] in _LEAD_TRIM
+                or (folds[seg[0]] in CONNECTORS and toks[seg[0]][0].islower())
+            )
             and not _acronym(toks[seg[0]])
         ):
             honorific = honorific or folds[seg[0]] in HONORIFICS
             seg = seg[1:]
-        while (
-            seg
-            and (folds[seg[-1]] in CONNECTORS or folds[seg[-1]] in STOPWORDS)
-            and not _acronym(toks[seg[-1]])
-        ):
+        while seg and (
+            (((folds[seg[-1]] in CONNECTORS and toks[seg[-1]][0].islower())
+              or folds[seg[-1]] in STOPWORDS)
+             and not _acronym(toks[seg[-1]]))
+            or (len(seg) > 1 and toks[seg[-1]] in ACRONYM_STOP  # "Chennai MPLS"
+                and base_type([folds[k] for k in seg[:-1]])[0] in ("place", "person"))
+        ):  # fmt: skip
             seg = seg[:-1]
         while (
             len(seg) > 1
@@ -245,44 +333,60 @@ def _span(
             and not _acronym(toks[seg[0]])
         ):
             seg = seg[1:]
-        while len(seg) > 2 and folds[seg[0]] in ROLE_HEADS and folds[seg[1]] in given_names():
-            # "CFO Daniel Abernathy", "Chair Eleanor Whitfield": the role is not part of the name
-            honorific = True
-            seg = seg[1:]
-        if not seg or len(seg) > config.max_span_tokens:
+        for p in range(len(seg) - 3, -1, -1) if len(seg) > 2 else ():
+            # "CFO Daniel Abernathy", "Chief Technology Officer Alejandro Ruiz": the role is not
+            # part of the name
+            if folds[seg[p]] in ROLE_HEADS and plain(folds[seg[p + 1]]) in given_names():
+                honorific = True
+                seg = seg[p + 1 :]
+                break
+        if not seg or (len(seg) > config.max_span_tokens and (
+                len(seg) > config.max_span_tokens + 3 or not of_head(folds, seg))):  # fmt: skip
             continue
         seg_folds = [folds[k] for k in seg]
         first = seg[0]
+        if (first > 1 and folds[first - 1] == "of" and folds[first - 2] in _ROLE_WORDS
+                and " ".join(seg_folds) in lexicon().departments):  # fmt: skip
+            continue  # "Head of Procurement", "VP of Customer Success": a title, not a unit
+        if len(seg) == 2 and toks[seg[1]] in _ROMAN and seg_folds[0] in lexicon().model_stop:
+            continue  # "Type II", "Phase III", "Tier IV": a kind and a number
+        k = seg[-1] + 1
+        if k < n and flags[k] & JOIN and toks[k][0].isupper() and record_label(tk, seg, seg_folds):
+            continue  # "Purchase Order PO-55102": the label of the record id after it
         if len(seg) == 1:
             tok, fold = toks[first], seg_folds[0]
             if _department(tk, first, tok, fold):
                 pass  # "Legal will review", "approved by Finance", "HR will run"
-            elif (
-                len(tok) < 2
-                or fold in COMMON_WORDS
-                or fold in SPAN_STOP
-                or fold in ORG_LEGAL_SUFFIXES
-            ):
+            elif len(tok) < 2 or fold in _SINGLE_STOP:
                 continue
             elif tok.isupper():
                 if tok in ACRONYM_STOP or len(tok) > 6:
                     continue
-            elif (fold in lower_seen and not honorific) or (
+            elif (fold in lower_seen and not honorific and not shaped(tok)) or (
                 flags[first] & START
                 and tok not in mid_caps
                 and not honorific
-                and (fold not in given_names() or fold in ambiguous_names())
+                and not shaped(tok)
+                and not owner_before_name(tk, first)
+                and not (fold in lexicon().known and tk.gap_before(first).strip() == ":")
+                and (
+                    fold not in given_names()
+                    or fold in ambiguous_names()
+                    or fold in lexicon().known
+                )
                 and (fold not in places() or fold in ambiguous_places())
                 and not _subject(tk, first)
             ):
                 continue
         elif (
-            all(f in COMMON_WORDS for f in seg_folds)
+            _PLAIN_WORDS.issuperset(seg_folds)
             and " ".join(seg_folds) not in long_forms
             and " ".join(seg_folds) not in lexicon().departments
-            and flags[first] & START
+            and (
+                flags[first] & START or (not numbered(tk, seg[-1]) and base_type(seg_folds)[1] == 0)
+            )
         ):
-            continue  # "Contract Term", "Status Update" as headings or labels
+            continue  # "Contract Term", "Status Update", "Economy Class", "Great Weekend"
         if _is_role(seg_folds):
             continue
         s, e = tk.starts[first], tk.ends[seg[-1]]

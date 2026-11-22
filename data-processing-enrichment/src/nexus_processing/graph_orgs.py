@@ -96,7 +96,7 @@ lloyds natwest santander bbva ubs credit_suisse deutsche_bank commerzbank bnp_pa
 societe_generale ing rabobank abn_amro goldman_sachs morgan_stanley wells_fargo
 bank_of_america blackrock vanguard fidelity schwab charles_schwab state_street visa mastercard
 amex american_express paypal stripe adyen klarna revolut monzo wise transferwise razorpay
-paytm phonepe hdfc icici sbi axis_bank kotak walmart costco tesco sainsbury's asda aldi
+paytm phonepe zoho hdfc icici sbi axis_bank kotak walmart costco tesco sainsbury's asda aldi
 lidl carrefour ikea h&m inditex nike adidas puma unilever nestle procter_&_gamble p&g
 pepsico coca-cola danone kraft_heinz heinz mondelez kellogg's diageo ab_inbev heineken
 pfizer moderna novartis roche sanofi gsk glaxosmithkline astrazeneca merck bayer abbvie
@@ -139,13 +139,15 @@ segment amplitude mixpanel optimizely hotjar qualtrics surveymonkey typeform sma
 monday.com clickup basecamp airtable zapier workato mulesoft boomi informatica talend
 fivetran stitch alteryx sas spss stata matlab sap_hana sap_erp oracle_erp peoplesoft
 jd_edwards successfactors taleo greenhouse lever bamboohr gusto adp rippling deel
-expensify ramp brex bill.com tally zoho zoho_crm freshworks pipedrive gong outreach
+expensify ramp brex bill.com tally zoho_crm freshworks pipedrive gong outreach
 salesloft linkedin_sales_navigator apollo zoominfo clearbit 6sense gainsight totango
+react angular vue vue.js node.js nodejs django flask laravel spring_boot java python kotlin
+typescript javascript php golang tensorflow pytorch numpy graphql nginx log4j openssl jenkins
 """
 
 # Last word of a multi-word product name ("Learning Portal", "Insights Studio").
 PRODUCT_FINALS = """
-portal app apps suite studio cloud os edition pro max plus mini ultra lite premium
+portal app apps suite studio cloud os edition pro max plus mini ultra lite premium server
 platform dashboard console workspace toolkit sdk api engine browser reader player editor
 assistant copilot bot analytics_suite
 """
@@ -161,7 +163,8 @@ procedure handbook playbook manual principles statement
 # suggests ("the Halcyon upgrade", "the Falcon migration", "calling Blue Sun support").
 NEXT_CUES = {
     "product": """
-plan plans dashboard dashboards platform app apps application tool tools tab module modules
+plan plans dashboard dashboards platform app apps application applications tool tools tab
+module modules add-on add-ons addon addons webhook webhooks
 api apis sdk release releases upgrade upgrades version versions roadmap router routers
 tablet tablets laptop laptops phone phones handset server servers controller controllers
 device devices sensor sensors lamp lamps printer printers licence license licences

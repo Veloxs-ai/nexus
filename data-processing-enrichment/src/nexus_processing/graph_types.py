@@ -50,9 +50,9 @@ __all__ = [
 
 ENTITY_TYPES = ("person", "org", "place", "product", "project", "record", "concept", "entity")
 # How a mention was found. "field"/"fk" come from table records, the rest from text.
-METHODS = ("field", "fk", "gazetteer", "caps", "abbrev", "np", "id", "hook")
+METHODS = ("field", "fk", "gazetteer", "caps", "abbrev", "np", "id", "hook", "lower")
 # Bump when extraction output changes for the same input: stores re-extract changed chunks only.
-EXTRACTOR_VERSION = "kg1"
+EXTRACTOR_VERSION = "kg2"
 NAMESPACE = uuid.UUID("6f1c2b0e-9d43-5b7a-8e21-4c7f0a9d3e55")
 SYMMETRIC_RELATIONS = frozenset({"co_mentioned"})
 _SEP = "\x1f"

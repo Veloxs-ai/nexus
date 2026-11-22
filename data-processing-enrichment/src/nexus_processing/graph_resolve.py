@@ -446,15 +446,20 @@ def apply_resolution(extraction: GraphExtraction, resolution: Resolution) -> Gra
             )
         mentions.setdefault((t, k, m.chunk_key, m.start), m)
     relations: dict[tuple[str, ...], RelationRef] = {}
+    get = mapping.get
     for r in extraction.relations:
-        st, sk = canon(r.src_type, r.src_key)
-        dt, dk = canon(r.dst_type, r.dst_key)
+        src, dst = (r.src_type, r.src_key), (r.dst_type, r.dst_key)
+        st, sk = get(src, src)
+        dt, dk = get(dst, dst)
         if (st, sk) == (dt, dk):
             continue
         if r.type == "co_mentioned" and (dt, dk) < (st, sk):
             st, sk, dt, dk = dt, dk, st, sk
         key = (st, sk, dt, dk, r.type, r.chunk_key)
         old = relations.get(key)
+        if old is None and (st, sk, dt, dk) == (*src, *dst):
+            relations[key] = r  # unchanged: the same values as a rebuilt RelationRef
+            continue
         count = r.count + (old.count if old else 0)
         relations[key] = RelationRef(
             sk,

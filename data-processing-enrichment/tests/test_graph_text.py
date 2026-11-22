@@ -214,10 +214,19 @@ def test_noun_phrases_are_candidates_and_capped():
 # -- relations, hook, stats --------------------------------------------------------------------
 def test_co_mentions_per_sentence_with_counts():
     text = "Acme Corp hired Globex Inc. Later Acme Corp and Globex Inc signed. Initech Ltd waited."
-    x = extract_mentions([("c", text)], config=TextGraphConfig(noun_phrases=False))
+    only = TextGraphConfig(noun_phrases=False, relation_window=0)
+    x = extract_mentions([("c", text)], config=only)
     rels = {(r.src_key, r.dst_key): r.count for r in x.relations}
     assert rels == {("acme corp", "globex inc"): 2}
     assert all(r.type == "co_mentioned" and r.chunk_key == "c" for r in x.relations)
+    # default window: names of the next sentence too, once per chunk
+    x = extract_mentions([("c", text)], config=TextGraphConfig(noun_phrases=False))
+    rels = {(r.src_key, r.dst_key): r.count for r in x.relations}
+    assert rels == {
+        ("acme corp", "globex inc"): 2,
+        ("acme corp", "initech ltd"): 1,
+        ("globex inc", "initech ltd"): 1,
+    }
 
 
 def test_extra_detector_hook():

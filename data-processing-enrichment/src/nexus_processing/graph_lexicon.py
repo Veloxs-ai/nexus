@@ -24,9 +24,22 @@ from __future__ import annotations
 
 import re
 
+from .graph_words import (
+    CONTRACT_ROLES,
+    DEMONYM_WORDS,
+    GENERIC_ACRONYMS,
+    GENERIC_SPAN_WORDS,
+    RECORD_KIND_WORDS,
+    SECTOR_WORDS,
+)
+
 
 def _words(text: str) -> frozenset[str]:
     return frozenset(w.replace("_", " ") for w in text.split())
+
+
+def _words_upper(text: str) -> list[str]:
+    return [w.upper() for w in text.split()]
 
 
 # Function words: never part of a noun phrase, trimmed from the edges of capitalised spans.
@@ -71,6 +84,14 @@ general standard internal external final initial current previous following abov
 however therefore otherwise meanwhile moreover finally first second third last next
 """)
 
+# Nationalities, demonyms and languages ("Kenyan rollout", "in English"): never a name alone.
+DEMONYMS = _words(DEMONYM_WORDS)
+# Adjectives and generic nouns: a capitalised span made only of these and COMMON_WORDS is not
+# a name ("Economy Class", "Large Conference Room", "Great Weekend").
+GENERIC_WORDS = _words(GENERIC_SPAN_WORDS) | _words(CONTRACT_ROLES)
+SECTORS = _words(SECTOR_WORDS)
+RECORD_KINDS = _words(RECORD_KIND_WORDS)
+
 MONTHS = _words("""
 january february march april may june july august september october november december
 jan feb mar apr jun jul aug sep sept oct nov dec
@@ -93,7 +114,9 @@ am pm utc gmt ist est pst cet mr mrs ms dr shri smt sir madam miss prof
 )
 
 # Lowercase words allowed inside a capitalised span ("Bank of India", "Johnson & Johnson").
-CONNECTORS = _words("of and & de van von der da la le du del di y")
+CONNECTORS = _words("""
+of and & de van von der da la le du del di y bin bint binti ibn al el dos das della ter ten zu
+""")
 
 # Legal suffixes: an org-type signal, and dropped from org keys by normalisation.
 ORG_LEGAL_SUFFIXES = _words("""
@@ -112,7 +135,9 @@ enterprises services consulting software analytics media telecom energy foods re
 OF_HEADS = _words("""
 department office republic kingdom state city museum school church district county province
 """)
-HONORIFICS = _words("mr mrs ms miss dr prof professor sir madam shri smt sri kumari mx")
+HONORIFICS = _words("""
+mr mrs ms miss dr prof professor sir madam shri smt sri kumari mx sheikh sheikha
+""")
 
 _LAZY: dict[str, frozenset[str]] = {}
 
@@ -121,13 +146,65 @@ def _packed(*texts: str) -> frozenset[str]:
     return frozenset(w.replace("_", " ") for text in texts for w in text.split())
 
 
+def layer_data(module: str, *names: str) -> str:
+    """Packed word lists of the guardrails layer's PII lexicons (``ner_names_world``,
+    ``ner_places``, ...) when that layer is installed, else ``""``.
+
+    Data only: the module file is executed on its own (it holds string constants), without
+    importing the guardrails package or anything it depends on, so the graph extractor has
+    no code dependency on a higher layer and works the same without it (smaller lists)."""
+    key = f"layer:{module}"
+    cached = _LAYER.get(key)
+    if cached is None:
+        cached = _LAYER[key] = _load_layer_module(module)
+    return " ".join(str(cached.get(n, "")) for n in names)
+
+
+_LAYER: dict[str, dict[str, object]] = {}
+
+
+def _load_layer_module(module: str) -> dict[str, object]:
+    import importlib.util
+    import os
+
+    for package in ("nexus.guardrails", "nexus_guardrails"):
+        try:
+            spec = importlib.util.find_spec(package)
+        except (ImportError, ValueError):
+            continue
+        for folder in (spec.submodule_search_locations or []) if spec else []:
+            path = os.path.join(folder, f"{module}.py")
+            if not os.path.isfile(path):
+                continue
+            namespace: dict[str, object] = {"__name__": f"_nexus_graph_data_{module}"}
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    exec(compile(fh.read(), path, "exec"), namespace)
+            except Exception:
+                return {}
+            return {k: v for k, v in namespace.items() if k.isupper() and isinstance(v, str)}
+    return {}
+
+
+def plain(fold: str) -> str:
+    """``fold`` without diacritics ("josé" -> "jose") for lexicon lookups."""
+    if fold.isascii():
+        return fold
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFKD", fold) if not unicodedata.combining(c))
+
+
 def given_names() -> frozenset[str]:
-    """About 3,000 casefolded given names (``graph_names``), built on first use."""
+    """Casefolded given names: about 3,000 here (``graph_names``) plus about 7,000 more from
+    the guardrails layer's PII lists when installed (``layer_data``); built on first use."""
     names = _LAZY.get("given")
     if names is None:
         from .graph_names import PACKED
 
-        names = _LAZY["given"] = _packed(PACKED)
+        extra = layer_data("ner_names_south_asia", "PACKED")
+        extra += " " + layer_data("ner_names_world", "PACKED")
+        names = _LAZY["given"] = _packed(PACKED, extra)
     return names
 
 
@@ -137,17 +214,20 @@ def ambiguous_names() -> frozenset[str]:
     if names is None:
         from .graph_names import AMBIGUOUS
 
-        names = _LAZY["given_ambiguous"] = _packed(AMBIGUOUS)
+        extra = layer_data("ner_names_world", "AMBIGUOUS")
+        names = _LAZY["given_ambiguous"] = _packed(AMBIGUOUS, extra)
     return names
 
 
 def places() -> frozenset[str]:
-    """About 3,700 casefolded places (``graph_places``), built on first use."""
+    """Casefolded places: about 3,700 here (``graph_places``) plus the guardrails layer's
+    place list when installed; built on first use."""
     found = _LAZY.get("places")
     if found is None:
         from .graph_places import CITIES, PACKED, TOWNS
 
-        found = _LAZY["places"] = _packed(PACKED, CITIES, TOWNS)
+        extra = layer_data("ner_places", "PACKED", "AMBIGUOUS")
+        found = _LAZY["places"] = _packed(PACKED, CITIES, TOWNS, extra)
     return found
 
 
@@ -157,7 +237,25 @@ def ambiguous_places() -> frozenset[str]:
     if found is None:
         from .graph_places import AMBIGUOUS
 
-        found = _LAZY["places_ambiguous"] = _packed(AMBIGUOUS)
+        extra = layer_data("ner_places", "AMBIGUOUS")
+        found = _LAZY["places_ambiguous"] = _packed(AMBIGUOUS, extra)
+    return found
+
+
+def surnames() -> frozenset[str]:
+    """Casefolded surnames (strong ones only) from the guardrails layer when installed."""
+    found = _LAZY.get("surnames")
+    if found is None:
+        weak = _packed(layer_data("ner_surnames", "WEAK"))
+        found = _LAZY["surnames"] = _packed(layer_data("ner_surnames", "PACKED")) - weak
+    return found
+
+
+def lower_stop() -> frozenset[str]:
+    """Names and places that are also English words (guardrails layer, when installed)."""
+    found = _LAZY.get("lower_stop")
+    if found is None:
+        found = _LAZY["lower_stop"] = _packed(layer_data("ner_lowercase", "STOP"))
     return found
 
 
@@ -175,7 +273,9 @@ officer president director manager head chair chairman chairperson chairwoman le
 treasurer counsel controller administrator coordinator specialist analyst engineer architect
 consultant executive vp svp evp ceo cfo cto coo cio ciso cmo dpo partner associate intern
 """)
-ROLE_FIRST = _words("chief head vice deputy assistant associate senior junior acting interim")
+ROLE_FIRST = _words("""
+chief head vice deputy assistant associate senior junior acting interim vp svp evp avp
+""")
 
 # Words that start a sentence without being part of the name after them ("Today Acme ...").
 SENTENCE_LEAD = STOPWORDS | _words("""
@@ -188,82 +288,12 @@ tomorrow unfortunately update urgent use visit welcome yes yesterday yet
 """)
 # ALL-CAPS tokens that are not entities on their own (currencies, units, generic acronyms).
 ACRONYM_STOP = frozenset(
-    [
-        "AKA",
-        "AM",
-        "AND",
-        "API",
-        "AS",
-        "ASAP",
-        "AT",
-        "BCC",
-        "BY",
-        "CC",
-        "CRM",
-        "CSV",
-        "EOD",
-        "ERP",
-        "ETA",
-        "ETC",
-        "EUR",
-        "FAQ",
-        "FOR",
-        "FW",
-        "FYI",
-        "GBP",
-        "GMT",
-        "HR",
-        "ID",
-        "II",
-        "III",
-        "IN",
-        "INR",
-        "IS",
-        "IST",
-        "IT",
-        "IV",
-        "JPY",
-        "KPI",
-        "MFA",
-        "MOU",
-        "MTD",
-        "N/A",
-        "NA",
-        "NDA",
-        "NO",
-        "NOTE",
-        "OF",
-        "OK",
-        "ON",
-        "OR",
-        "PDF",
-        "PM",
-        "PO",
-        "PS",
-        "QA",
-        "QTD",
-        "RE",
-        "RFP",
-        "RFQ",
-        "SKU",
-        "SLA",
-        "SOW",
-        "SSO",
-        "TBD",
-        "THE",
-        "TO",
-        "TODO",
-        "UI",
-        "URL",
-        "USD",
-        "UTC",
-        "UX",
-        "VPN",
-        "VS",
-        "YES",
-        "YTD",
-    ]
-)
+    _words_upper("""
+aka am and api as asap at bcc by cc crm csv eod erp eta etc eur faq for fw fyi gbp gmt hr id
+ii iii in inr is ist it iv jpy kpi mfa mou mtd n/a na nda no note of ok on or pdf pm po ps
+qa qtd re rfp rfq sku sla sow sso tbd the to todo ui url usd utc ux vpn vs yes ytd
+""")
+) | frozenset(_words_upper(GENERIC_ACRONYMS))
 
 # Auxiliaries and frequent verbs: a noun phrase never contains one.
 VERBS = _words("""

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] — unreleased
+
+### Changed
+
+Knowledge-graph text extraction (`nexus.graph`, `nexus.processing.graph_*`): better span boundaries, fewer title-case non-entities, lowercase mentions of known names, more typing and relations beyond one sentence. Standard library only; no rule knows a customer or a domain. Guide and numbers: [docs/KNOWLEDGE_GRAPH_3.6.0.md](docs/KNOWLEDGE_GRAPH_3.6.0.md).
+
+- Span boundaries: abbreviated legal words join ("Pvt. Ltd."; "Inc., the licensor" is one sentence); nothing follows a legal suffix ("Orion Pharma Oy 5 days"); a possessive ends a name ("HSBC's Global Banking") except before an institution word ("St. Mary's Hospital"), and the owner before a name is kept at a sentence start; `/` before a digit joins a token ("SAP S/4HANA") and letters-digit-letters tokens ("Log4j") continue a name instead of being record ids; camel-case brands ("iOS 17", "eBay", "ideaForge") but not code identifiers ("userId", "getUser()"); tokens with inner capitals are kept at a sentence start ("CERT-In"); "<Ministry/Department/University> of A and B" stays one name; hyphenated known places split ("Mumbai-Chennai"); name particles ("bin", "ibn", "dos", "de la") and the title "Sheikh"; a role phrase before a name is dropped ("Chief Technology Officer Alejandro Ruiz"); a generic acronym after a place or person is trimmed ("Chennai MPLS").
+- Vetoes: title-case phrases of common words, adjectives and generic nouns ("Economy Class", "Large Conference Room", "Great Weekend") unless their own words type them or a number follows; the label before a record id ("Purchase Order PO-55102"); a department after a title ("Head of Procurement"), "VP Engineering", "Type II"; nationalities and languages; contract parties ("Licensor"); generic acronyms ("NPS", "SIM", "YoY"). New data module `graph_words`.
+- Lowercase mentions (new `graph_lower`, `TextGraphConfig(lowercase=True)`, mention method `lower`): known organisations and products that are not English words ("infosys", "grafana"), word-like ones with a version or cue ("react 17", "stripe webhooks"), given names next to a person cue ("priya: ...", "ping rahul", "rahul's on it", "(ana)").
+- Typing: a version after a name makes a product; "Server" ends product names; known firm + place or known firm as last word is an organisation ("Thales India", "Hindustan Unilever"); a known surname types a person; accent-insensitive given names; "Project X" types a lone "X" in the document; a weak cue types a whole coordinated list; abbreviations with letters inside words ("Hindustan Unilever (HUL)"); more known products (React, Java, Python, Log4j, ...); Zoho is an organisation.
+- Lexicons: given names, places and surnames also come from the guardrails layer's PII lists when that layer is installed (`graph_lexicon.layer_data`, `surnames()`, `lower_stop()`, `plain()`), read as data without importing the guardrails package; the processing layer alone works as before.
+- Relations (new `graph_relations`): `co_mentioned` also links a sentence with the next one when that one continues it (short, a label, a pronoun or "The company ...", or a repeated name word; `TextGraphConfig(relation_window=1)`, 0 restores 3.5.0), and the names of a key/value record of 2-10 lines; typed directed relations from the words between neighbouring names: `works_for`, `acquired`, `merged_with`, `part_of`, `located_in`, `leads`, `reports_to`, `makes`, `uses` (`RELATION_PATTERNS`).
+- `EXTRACTOR_VERSION` is `"kg2"` (stores keyed by it re-extract); `METHODS` includes `"lower"`.
+- Blind development set (64 passages, split before tuning): validation half precision 0.756 → 0.842, recall 0.736 → 0.861, typing 0.818 → 0.838, relation pair recall 0.553 → 0.681; the hand-labelled, held-out, independent, blind and synthetic sets keep or improve their scores. Throughput about 12% lower on a mixed corpus and still linear; `tokenise` (one `re.split`) and `np_runs` were rewritten with identical output to win back part of it. `apply_resolution` keeps unchanged relations as they are.
+- New test module `test_graph_text_rules.py` (15 tests).
+
 ## [3.5.0] — unreleased
 
 ### Added

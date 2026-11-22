@@ -33,11 +33,14 @@ Passes per document, all on one tokenisation (``graph_tokens.tokenise``):
 5. capitalised spans with ``of``/``and``/``&``/``de``... inside and the precision filters of
    the design (sentence-start single tokens need mid-sentence evidence; common words,
    months, weekdays, headings and spans of 6+ tokens dropped);
-6. noun phrases (``concept``, status ``candidate``): runs of 2-4 lowercase content words
+6. lowercase known names in chat-style text ("grafana", "ping priya"; ``graph_lower``, 0.7);
+7. noun phrases (``concept``, status ``candidate``): runs of 2-4 lowercase content words
    ending in a noun-like head, ranked by C-value in the document, at most 8 per chunk;
-7. typing: gazetteer type, org suffix/head word, honorific or given name, place list;
-8. ``co_mentioned`` relations between the active entities of a sentence (one evidence row per
-   pair and chunk, with a count).
+8. typing: gazetteer type, org suffix/head word, honorific or given name, place list;
+9. relations (``graph_relations``): ``co_mentioned`` between the active entities of a sentence
+   (one evidence row per pair and chunk, with a count), of a sentence and the next one when it
+   continues it (``relation_window``) and of a key/value record; typed relations such as
+   ``works_for`` or ``acquired`` from the words between two neighbouring names.
 
 Gazetteer hits refer to entities the caller already holds, so they produce mentions but no
 ``EntityRef``.
@@ -50,10 +53,13 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 
+from .graph_lexicon import given_names
+from .graph_lower import lowercase_pass
 from .graph_phrases import np_runs, rank_concepts
+from .graph_relations import chunk_relations
 from .graph_resolve import normalise_name
 from .graph_spans import find_abbreviations, token_pass, type_of_span
-from .graph_tokens import START, Gazetteer, Tokens, tokenise
+from .graph_tokens import JOIN, START, Gazetteer, Tokens, tokenise
 from .graph_types import Alias, EntityRef, GraphExtraction, Mention, RelationRef
 from .graph_typing import finalise_document
 
@@ -67,10 +73,12 @@ class TextGraphConfig:
     abbreviations: bool = True
     capitalised: bool = True
     noun_phrases: bool = True
+    lowercase: bool = True
     relations: bool = True
     max_span_tokens: int = 5
     max_concepts_per_chunk: int = 8
     max_entities_per_sentence: int = 12
+    relation_window: int = 1  # co-mentions also with the next N sentences
     max_chunks_per_document: int = 2000
 
 
@@ -82,6 +90,7 @@ class _Acc:
         self.status: dict[tuple[str, str], str] = {}
         self.mentions: list[Mention] = []
         self.relations: Counter[tuple[str, str, str, str, str]] = Counter()
+        self.typed: Counter[tuple[str, str, str, str, str, str]] = Counter()
         self.aliases: dict[tuple[str, str, str], Alias] = {}
         self.stats: Counter[str] = Counter()
         self.type_votes: dict[str, dict[str, int]] = {}  # generic key -> types given in documents
@@ -94,7 +103,7 @@ class _Acc:
             self.status[ref] = status
         elif status == "active":
             self.status[ref] = "active"
-        bucket[surface] += 1
+        bucket[surface] = bucket.get(surface, 0) + 1
 
     def retype(self) -> None:
         """Names left untyped in their document take the type they got in other documents."""
@@ -132,6 +141,13 @@ class _Acc:
             if a != b:
                 relations[(a[0], a[1], b[0], b[1], chunk)] += n
         self.relations = relations
+        typed: Counter[tuple[str, str, str, str, str, str]] = Counter()
+        for (st, sk, dt, dk, rel, chunk), n in self.typed.items():
+            st, sk = remap.get((st, sk), (st, sk))
+            dt, dk = remap.get((dt, dk), (dt, dk))
+            if (st, sk) != (dt, dk):
+                typed[(st, sk, dt, dk, rel, chunk)] += n
+        self.typed = typed
         aliases = {}
         for a in self.aliases.values():
             etype, key = remap.get((a.entity_type, a.entity_key), (a.entity_type, a.entity_key))
@@ -154,6 +170,9 @@ class _Acc:
         relations = tuple(
             RelationRef(sk, st, dk, dt, "co_mentioned", chunk, n, "text")
             for (st, sk, dt, dk, chunk), n in self.relations.items()
+        ) + tuple(
+            RelationRef(sk, st, dk, dt, rel, chunk, n, "text")
+            for (st, sk, dt, dk, rel, chunk), n in self.typed.items()
         )
         stats = dict(self.stats)
         stats["text_entities"] = len(entities)
@@ -204,17 +223,31 @@ def _document(
     mid_caps: set[str] = set()
     lower_seen: set[str] = set()
     abbrs: dict[str, tuple[str, str, str]] = {}  # abbreviation -> (type, key, long form)
+    camels: list[set[int]] = []  # lowercase-initial tokens with capitals ("iOS", "eBay")
+    names = given_names()
     for _, tk in tokenised:
         acc.stats["chars"] += len(tk.text)
         acc.stats["tokens"] += len(tk)
-        toks, flags = tk.toks, tk.flags
+        toks, flags, folds, n = tk.toks, tk.flags, tk.folds, len(tk)
+        camel: set[int] = set()
         for i, tok in enumerate(toks):
             c = tok[0]
             if c.isupper():
                 if not flags[i] & START:
                     mid_caps.add(tok)
+                elif (
+                    i + 1 < n
+                    and flags[i + 1] & JOIN
+                    and folds[i] in names
+                    and (toks[i + 1][0].isupper())
+                ):
+                    mid_caps.add(tok)  # "Sydney Park ...": a lone "Sydney" later is the name
             elif c.islower():
-                lower_seen.add(tk.folds[i])
+                fold = folds[i]
+                lower_seen.add(fold)
+                if tok != fold:
+                    camel.add(i)
+        camels.append(camel)
         if config.abbreviations and "(" in tk.text:
             find_abbreviations(tk, abbrs)
     for abbr, (etype, key, long_form) in abbrs.items():
@@ -224,7 +257,7 @@ def _document(
     acc.stats["chunks"] += len(tokenised)
     runs: list[list[tuple[tuple[str, ...], int, int]]] = []
     found: list[list[tuple[int, str, str, int, int, str, float]]] = []
-    for _, tk in tokenised:
+    for (_, tk), camel in zip(tokenised, camels, strict=True):
         covered = bytearray(len(tk))
         hits: list[
             tuple[int, str, str, int, int, str, float]
@@ -233,11 +266,14 @@ def _document(
             _gazetteer_pass(tk, gazetteer, covered, hits)
         if extra_detector is not None:
             _hook_pass(tk, extra_detector, covered, hits, acc)
-        token_pass(tk, config, abbrs, mid_caps, lower_seen, covered, hits, acc)
+        token_pass(tk, config, abbrs, mid_caps, lower_seen, covered, hits, acc, camel)
+        if config.lowercase:
+            lowercase_pass(tk, covered, hits, acc)
         found.append(hits)
         runs.append(np_runs(tk, covered) if config.noun_phrases else [])
     finalise_document(tokenised, found, acc)
     concepts = rank_concepts(runs, config.max_concepts_per_chunk) if config.noun_phrases else None
+    methods: dict[str, int] = {}
     for idx, (chunk_key, tk) in enumerate(tokenised):
         hits = found[idx]
         if concepts is not None:
@@ -246,20 +282,17 @@ def _document(
                 key = normalise_name(" ".join(phrase))
                 acc.entity("concept", key, surface, "candidate")
                 hits.append((s, "concept", key, tk.starts[s], tk.ends[e - 1], "np", 0.5))
-        sentences: dict[int, dict[tuple[str, str], None]] = {}
-        for tok_i, etype, key, s, e, method, conf in hits:
-            acc.mentions.append(Mention(key, etype, chunk_key, s, e, tk.text[s:e], method, conf))
-            acc.stats[f"method_{method}"] += 1
-            if config.relations and etype != "concept":
-                sentences.setdefault(tk.sentence[tok_i], {})[(etype, key)] = None
-        for refs in sentences.values():
-            if len(refs) < 2:
-                continue
-            ordered = sorted(refs)[: config.max_entities_per_sentence]
-            for a in range(len(ordered)):
-                for b in range(a + 1, len(ordered)):
-                    (t1, k1), (t2, k2) = ordered[a], ordered[b]
-                    acc.relations[(t1, k1, t2, k2, chunk_key)] += 1
+        text = tk.text
+        acc.mentions.extend(
+            [Mention(key, etype, chunk_key, s, e, text[s:e], method, conf)
+             for _tok_i, etype, key, s, e, method, conf in hits]
+        )  # fmt: skip
+        for method in [h[5] for h in hits]:
+            methods[method] = methods.get(method, 0) + 1
+        if config.relations:
+            chunk_relations(tk, hits, config, acc, chunk_key)
+    for method, count in methods.items():
+        acc.stats[f"method_{method}"] += count
 
 
 def _gazetteer_pass(tk: Tokens, gazetteer: Gazetteer, covered: bytearray, hits: list) -> None:

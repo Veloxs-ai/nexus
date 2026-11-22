@@ -40,44 +40,31 @@ def _noun_like(fold: str) -> bool:
 def np_runs(tk: Tokens, covered: bytearray) -> list[tuple[tuple[str, ...], int, int]]:
     """Maximal runs of lowercase content words (start token, end token) with their folds."""
     toks, folds, flags, blocked = tk.toks, tk.folds, tk.flags, tk.blocked
+    content = [
+        k
+        for k, t in enumerate(toks)
+        if t[0].islower()
+        and len(t) >= 3
+        and t.isalpha()
+        and not covered[k]
+        and folds[k] not in STOPWORDS
+        and folds[k] not in VERBS
+        and k not in blocked
+    ]
     runs: list[tuple[tuple[str, ...], int, int]] = []
-    start = -1
-    n = len(toks)
-    for k in range(n + 1):
-        ok = False
-        if k < n and not covered[k] and k not in blocked:
-            t = toks[k]
-            f = folds[k]
-            ok = (
-                t[0].islower()
-                and len(t) >= 3
-                and t.isalpha()
-                and f not in STOPWORDS
-                and f not in VERBS
-                and (start < 0 or flags[k] & JOIN)
-            )
-        if ok:
-            if start < 0:
-                start = k
+    if not content:
+        return runs
+    start = prev = content[0]
+    for k in [*content[1:], -1]:
+        if k == prev + 1 and flags[k] & JOIN:
+            prev = k
             continue
-        if start >= 0:
-            end = k
-            while end - start >= 2 and not _noun_like(folds[end - 1]):
-                end -= 1
-            if end - start >= 2:
-                runs.append((tuple(folds[start:end]), start, end))
-            start = -1
-        if (
-            k < n
-            and not covered[k]
-            and k not in blocked
-            and toks[k][0].islower()
-            and toks[k].isalpha()
-            and len(toks[k]) >= 3
-            and folds[k] not in STOPWORDS
-            and folds[k] not in VERBS
-        ):
-            start = k
+        end = prev + 1
+        while end - start >= 2 and not _noun_like(folds[end - 1]):
+            end -= 1
+        if end - start >= 2:
+            runs.append((tuple(folds[start:end]), start, end))
+        start = prev = k
     return runs
 
 
