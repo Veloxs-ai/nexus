@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![Tests](https://img.shields.io/badge/tests-942%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-961%20passing-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -97,6 +97,7 @@ pip install "veloxs-nexus[ocr]"        # image / slide / keyframe OCR (EasyOCR)
 pip install "veloxs-nexus[audio-ml]"   # speech transcription (faster-whisper)
 pip install "veloxs-nexus[video]"      # video demuxing (PyAV)
 pip install "veloxs-nexus[all-ml]"     # all three
+pip install "veloxs-nexus[ner]"        # spaCy person/location PII detection (then: python -m spacy download en_core_web_sm)
 ```
 
 Semantic embeddings (FastEmbed) are part of the core install. On CPU-only servers, install the CPU build of PyTorch before the ML extras to avoid multi-gigabyte CUDA wheels:
@@ -602,6 +603,12 @@ from nexus.guardrails.config import PiiConfig
 
 clean = mask_pii("Contact user@example.com", PiiConfig())
 
+# Person / location PII (lexicon detector built in; spaCy with the [ner] extra)
+from nexus.guardrails.ner import find_entities
+
+spans = find_entities("Dear Ms. Fernandes, the Pune office called.", {"person", "location"})
+# also: mask_pii(text, PiiConfig(detectors=["email", "person", "location"]))
+
 # Tenant-bound encryption
 from nexus.security.encryption import encrypt_text, decrypt_text
 from nexus.security.config import EncryptionConfig
@@ -700,7 +707,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
-**Status (3.4.2):** all 942 tests pass (1 skipped) — 322 in the root suite and 620 across the seven layer suites on Python 3.12.
+**Status (3.5.0):** all 961 tests pass (2 skipped) — 322 in the root suite and 639 across the seven layer suites on Python 3.12.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git
@@ -758,6 +765,7 @@ Full documentation is on the website: the **[User & Integrator Guide](https://ne
 | [Integration Guide](docs/INTEGRATION_GUIDE.md) | Installation, library vs. CLI integration patterns, environment variables |
 | [What's new in 3.2 – 3.4](docs/WHATS_NEW_3.2_TO_3.4.md) | Records SQL, routing, map-reduce, grounding, processing changes, the knowledge graph and 3.4.0's typing, review helpers and parsers, with examples |
 | [Table-scale building blocks (3.4.1)](docs/TABLE_SCALE_3.4.1.md) | Records in a one-row-per-record table with typed slots, rollups, index advice, pgvector helpers, large-cell bounds and a reusable routing index |
+| [Person and location PII (3.5.0)](docs/NER_PII_3.5.0.md) | Named-entity PII detection (`nexus.guardrails.ner`): a built-in lexicon detector and an optional spaCy backend behind `find_entities` and `detect_pii_spans(entities=["person", "location"])`, with accuracy figures |
 | [Processing Reference](docs/PROCESSING_REFERENCE.md) | Ingestion formats, the five processing phases, output structure, database setup |
 | [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and how chunks are embedded, specified precisely |
 

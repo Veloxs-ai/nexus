@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] — unreleased
+
+### Added
+
+- Named-entity PII for **person** and **location** in `nexus.guardrails` (guide: [docs/NER_PII_3.5.0.md](docs/NER_PII_3.5.0.md)).
+  - `nexus.guardrails.ner.find_entities(text, wanted, *, backend="auto"|"lexicon"|"spacy", model=None, max_chars=100_000)` returns sorted, non-overlapping `PiiSpan`s (`"person"`, `"location"`) on the original text. Longer texts are scanned in pieces of at most `max_chars`, cut at a line break or space.
+  - Lexicon backend (standard library only, always available): the knowledge-graph given-name, place, honorific and organisation lexicons, plus surnames and surname endings, role labels ("Customer Ravi Shankar"), honorific and context cues ("my name is", "reported by"), person verbs ("said", "visited") and compass regions ("South India"). Organisation and product names built from person or place words are left alone ("Morgan Stanley", "Johnson & Johnson").
+  - Optional spaCy backend: `pip install "veloxs-nexus[ner]"` (new extra `ner = ["spacy>=3.7,<4"]`) and a model (`python -m spacy download en_core_web_sm`). spaCy is imported lazily; the model is loaded once per process under a lock, named by the `model` argument, else `NEXUS_NER_MODEL`, else `en_core_web_sm`. `PERSON` maps to `person`; `GPE`, `LOC` and `FAC` to `location`. `backend="auto"` uses spaCy when it loads and the lexicon detector otherwise; a missing spaCy or model is logged once and never raises.
+  - `detect_pii_spans(..., entities=[..., "person", "location"], ner_backend=..., ner_model=...)`, `mask_pii` with `"person"`/`"location"` in `PiiConfig.detectors`, and masks `[PERSON]` / `[LOCATION]`. Named-entity spans never overlap a pattern detector's span (address, e-mail, phone, ...).
+  - Helpers: `ner.add_entities`, `ner.non_overlapping`, `ner.spacy_available`, `ner.backend_in_use`, `ner.reset_models`.
+- Labelled person/location sentences (220 tuning, 48 held-out) and an accuracy test for the lexicon detector.
+
 ## [3.4.2] — unreleased
 
 ### Changed

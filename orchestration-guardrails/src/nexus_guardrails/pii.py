@@ -67,7 +67,11 @@ MASKS = {
     "aadhaar": "[AADHAAR]",
     "pan": "[PAN]",
     "iban": "[IBAN]",
+    "person": "[PERSON]",
+    "location": "[LOCATION]",
 }
+# Named entities found by ``ner`` (a lexicon detector, or spaCy when installed), not by a regex.
+NER_ENTITIES = ("person", "location")
 
 # Detectors are always applied in PATTERNS order (specific formats before generic numbers).
 _ORDER = list(PATTERNS)
@@ -342,6 +346,9 @@ def detect_pii_spans(
     config: PiiConfig | None = None,
     entities: Iterable[str] | None = None,
     strict: bool = False,
+    *,
+    ner_backend: str = "auto",
+    ner_model: str | None = None,
 ) -> list[PiiSpan]:
     """Non-overlapping PII spans on the original ``text``, in text order.
 
@@ -354,9 +361,19 @@ def detect_pii_spans(
     mapped back to the original characters. Detectors run in ``PATTERNS`` order (secrets
     and specific formats before generic numbers); a later detector never re-detects
     inside an earlier one's span. ``entities`` defaults to ``config.detectors``.
+
+    ``"person"`` and ``"location"`` are named entities (``nexus.guardrails.ner``, backend
+    ``ner_backend``, spaCy model ``ner_model``); they never overlap a pattern detector's span.
     """
     config = config or _DEFAULT_CONFIG
     wanted = tuple(entities) if entities is not None else tuple(config.detectors)
+    named = [w for w in wanted if w in NER_ENTITIES]
+    if named:
+        from .ner import add_entities
+
+        rest = tuple(w for w in wanted if w not in NER_ENTITIES)
+        found = detect_pii_spans(text, config, rest, strict) if rest else []
+        return add_entities(text, found, named, backend=ner_backend, model=ner_model)
     if not text or not wanted or _cannot_match(text, wanted):
         return []
     view, offsets = _shadow(text)

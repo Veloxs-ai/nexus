@@ -44,7 +44,8 @@ class PromptSecurityConfig(BaseModel):
 class PiiConfig(BaseModel):
     enabled: bool = True
     mask: bool = True
-    # Available: email, ssn, phone, credit_card, api_key, jwt, ip_address, address
+    # Available: email, ssn, phone, credit_card, api_key, jwt, ip_address, address,
+    # aadhaar, pan, iban, person, location (named entities: nexus.guardrails.ner)
     detectors: list[str] = Field(
         default_factory=lambda: ["api_key", "jwt", "email", "ssn", "credit_card", "phone"]
     )
