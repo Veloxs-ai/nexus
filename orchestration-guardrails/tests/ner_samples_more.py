@@ -14,7 +14,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""More labelled sentences (see ``ner_samples``): records, notes and harder negatives."""
+"""More labelled sentences (see ``ner_samples``): records, notes, harder negatives and
+informal text (lowercase chat, key/value fields, signatures, landmarks, world names)."""
 
 from __future__ import annotations
 
@@ -107,4 +108,34 @@ Click Accept to continue.
 Our Platinum Card members get lounge access.
 """
 
-BLOCKS = (RECORDS, NOTES, HARD_NEGATIVES)
+INFORMAL = r"""
+hey {farhan|P} can u ask {lakshmi|P} to send the docs from {kochi|L}
+ping {gaurav|P} once u land in {ahmedabad|L}
+thanks {meghna|P}, will check with {venkat|P}
+@{harini|P} did u get the invoice?
+{tanvir|P} said he is stuck near {whitefield|L}
+can you ask the team to review it by eod
+may i know when the refund will be processed?
+grace period is over, please mark the bill as paid
+will do, thanks
+{"first_name": "{Sakura|P}", "last_name": "{Ito|P}", "city": "{Kyoto|L}"}
+cust_name={meera joshi|P}; city={nagpur|L}; status=active
+customer: {Ifeoma Nwosu|P} | origin: {Enugu|L} | plan: silver
+Warm regards,\n{Rafael Moreira|P}\nRegional Head\n{Lisbon|L}
+Thanks,\n{Anupama Hegde|P}
+{Bhattacharya|P} will share the numbers tomorrow.
+Please ask {Joglekar|P} to sign the form.
+{Lindiwe Zulu|P} drove from {Pretoria|L} to {Polokwane|L}.
+{Hyun-woo Choi|P} is based in {Daegu|L}.
+{Gabriela Rojas|P} works from our {Santiago|L} office.
+We landed at {Netaji Subhas Chandra Bose International Airport|L} after midnight.
+The team dinner is at {Hiranandani Gardens|L} on Friday.
+She rented a flat in {Rajouri Garden|L}.
+The office is on Brigade Road, {Bengaluru|L}.
+Kirloskar Brothers shipped the pumps.
+Torrent Pharmaceuticals renewed the contract.
+The Bengali version of the brochure is ready.
+The Diwali Mela stall bookings are open.
+"""
+
+BLOCKS = (RECORDS, NOTES, HARD_NEGATIVES, INFORMAL)

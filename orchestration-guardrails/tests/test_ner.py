@@ -132,6 +132,81 @@ def test_lexicon_without_processing_layer_keeps_honorific_cue_and_surname_rules(
     assert found == {"Venkatesh": "person", "Tanvir Ahmed": "person", "Meera Krishnan": "person"}
 
 
+def test_lexicon_lowercase_chat_needs_a_cue():
+    found = _found("hey farhan can u ask lakshmi to call back from kochi")
+    assert found == {"farhan": "person", "lakshmi": "person", "kochi": "location"}
+    assert _found("@harini did venkat send it?") == {"harini": "person", "venkat": "person"}
+    assert _found("anil kumar called twice") == {"anil kumar": "person"}
+    for text in (
+        "may i know the status of my refund?",
+        "grace period is over, mark the bill as paid",
+        "will do, thanks",
+        "can you bring the reading list tomorrow",
+        "abhi call karo bhai, kal milte hai",
+        "farhan",  # a lexicon name without a cue stays unmasked
+    ):
+        assert _found(text) == {}, text
+
+
+def test_lexicon_key_value_fields_and_signatures():
+    record = '{"first_name": "Sakura", "last_name": "Ito", "city": "Kyoto", "tier": "gold"}'
+    assert _found(record) == {"Sakura": "person", "Ito": "person", "Kyoto": "location"}
+    assert _found("cust_name=meera joshi; city=nagpur; status=active") == {
+        "meera joshi": "person",
+        "nagpur": "location",
+    }
+    assert _found("customer: Ifeoma Nwosu | origin: Enugu") == {
+        "Ifeoma Nwosu": "person",
+        "Enugu": "location",
+    }
+    assert _found("Owner: Unassigned\nStatus: Open\nusername: jdoe") == {}
+    signed = _found("Warm regards,\nRafael Moreira\nRegional Head\nLisbon Office")
+    assert signed == {"Rafael Moreira": "person", "Lisbon": "location"}
+
+
+def test_lexicon_place_heads_streets_and_lone_names():
+    assert _found("We landed at Netaji Subhas Chandra Bose International Airport.") == {
+        "Netaji Subhas Chandra Bose International Airport": "location"
+    }
+    assert _found("She rented a flat in Rajouri Garden near Tilak Nagar.") == {
+        "Rajouri Garden": "location",
+        "Tilak Nagar": "location",
+    }
+    assert _found("The shop is on Brigade Road, Bengaluru.") == {"Bengaluru": "location"}
+    assert _found("Hyun-woo Choi is based in Daegu.") == {
+        "Hyun-woo Choi": "person",
+        "Daegu": "location",
+    }
+    assert _found("Bhattacharya will share the numbers.") == {"Bhattacharya": "person"}
+    assert _found("Please ask Joglekar to sign, then hand it to Tanvi.") == {
+        "Joglekar": "person",
+        "Tanvi": "person",
+    }
+
+
+def test_lexicon_vetoes_organisations_brands_and_nationalities():
+    for text in (
+        "Torrent Pharmaceuticals renewed the contract.",
+        "Kirloskar Brothers shipped the pumps.",
+        "Calvin Klein jeans are on sale.",
+        "Marks & Spencer opened a store.",
+        "The Bengali version of the brochure is ready.",
+        "The Diwali Mela stall bookings are open.",
+        "Your EMI is due on Monday.",
+        "Hi Everyone, quick update.",
+        "Ping DevOps on Slack.",
+    ):
+        assert _found(text) == {}, text
+
+
+def test_lexicon_is_linear_and_safe_on_pathological_text():
+    long_word = "a" * 40_000 + ":" + "b" * 40_000
+    for text in (long_word, "ab:" * 30_000, "Ravi Kumar from Pune. " * 4000):
+        started = time.perf_counter()
+        ner.find_entities(text, backend="lexicon")
+        assert time.perf_counter() - started < 2.0
+
+
 def _score(data, backend):
     stats = {e: [0, 0, 0, 0] for e in ner.ENTITIES}  # pred, pred-hit, gold, gold-hit
     for text, gold in data:
@@ -293,7 +368,9 @@ def test_mask_pii_with_person_detector():
 
 def test_ner_modules_are_stdlib_only_and_small():
     allowed = set(sys.stdlib_module_names) | {"nexus", "nexus_guardrails", "nexus_processing"}
-    for name in ("ner", "ner_lexicon", "ner_data", "pii"):
+    names = ("ner", "ner_lexicon", "ner_rules", "ner_words", "ner_data", "ner_lowercase")
+    data = ("ner_names_south_asia", "ner_names_world", "ner_surnames", "ner_places")
+    for name in (*names, *data, "pii"):
         source = (SRC / f"{name}.py").read_text()
         assert source.count("\n") < 500, name
         for node in ast.parse(source).body:  # top level only: spaCy is imported lazily

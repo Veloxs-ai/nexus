@@ -18,53 +18,11 @@
 
 Given names, places, honorifics and organisation words are shared with the knowledge-graph
 entity typing (``nexus.processing.graph_lexicon``); this module adds only what PII detection
-needs on top: surnames, surname endings, and the role labels that precede a name in records
+needs on top: surname endings, cue words and the role labels that precede a name in records
 and tickets ("Customer Ravi Shankar", "Patient John Matthews").
 """
 
 from __future__ import annotations
-
-# Surnames that are not ordinary English words: a capitalised word before one of these is
-# taken as a given name ("Tanvir Ahmed"). Indian, English, European, African and East Asian.
-SURNAMES = """
-sharma verma gupta singh kumar patel shah mehta desai joshi kulkarni deshpande deshmukh pawar
-jadhav patil gaikwad shinde chavan iyer iyengar nair menon pillai reddy rao naidu raju
-krishnan raman subramanian narayanan venkatesan srinivasan raghavan ramachandran swaminathan
-chauhan agarwal aggarwal agrawal bansal goel goyal jain mittal malhotra kapoor khanna arora
-chopra bhatia sethi ahuja gill sandhu grewal dhillon sidhu kaur mishra tiwari pandey dubey
-trivedi chaturvedi shukla tripathi yadav prasad sinha jha thakur chatterjee banerjee mukherjee
-ghosh bose sengupta dasgupta dutta chakraborty bhattacharya saha mitra hegde shetty bhat
-kamath shenoy fernandes dsouza d'souza rodrigues pereira varghese kurian chacko qureshi
-sheikh khan ahmed ahmad hussain hussein ansari siddiqui mirza rizvi saxena srivastava mathur
-bhatt parekh thakkar chandra kohli bajaj tandon sahni saini rawat negi bisht chaudhary
-choudhary chowdhury naik gowda shankar krishnamurthy narayan venkataraman sundaram
-balasubramanian natarajan rajan murthy moorthy pillay naidoo mahajan bhardwaj dixit awasthi
-upadhyay bhagat soni lal devi rani sengar rathore rajput solanki parmar vaghela jhunjhunwala
-bhatnagar khurana luthra wadhwa sachdeva oberoi kakkar talwar puri anand sood
-mohan krishna gopal hassan ibrahim mohammed mohammad rahman chowdhury begum akhtar
-smith johnson williams jones miller davis garcia rodriguez wilson martinez anderson taylor
-thomas hernandez thompson lopez gonzalez harris lewis robinson walker perez sanchez
-campbell mitchell roberts phillips evans torres parker collins edwards stewart flores morris
-nguyen murphy rivera price rogers peterson cooper bailey kelly howard richardson watson
-bennett reyes cruz hughes myers sanders morales powell sullivan russell ortiz jenkins
-gutierrez perry butler barnes fisher henderson coleman simmons patterson reynolds
-gonzales ramos wallace griffin hayes chavez gibson bryant ellis stevens murray marshall owens
-mcdonald harrison ruiz kennedy alvarez mendoza castillo olson tucker vasquez snyder
-simpson crawford jimenez wagner romero hicks dixon robertson holmes meyer boyd ferguson
-nichols herrera medina fernandez weaver daniels stephens gardner payne kelley pierce hawkins
-hansen castro hoffman elliott cunningham bradley matthews clarke o'connor o'brien o'neill
-mccarthy fitzgerald gallagher doherty schmidt schneider fischer weber becker schulz koch
-richter neumann zimmermann krause hartmann lange werner krüger müller mueller schäfer dubois
-lefebvre moreau laurent leroy fontaine rossi russo ferrari esposito bianchi romano colombo
-ricci marino greco bruno gallo conti rinaldi novak kowalski nowak wiśniewski wisniewski
-lewandowski kowalczyk petrov ivanov smirnov popov kuznetsov sokolov popescu ionescu
-horvat dvořák nagy kovács papadopoulos andersson johansson nilsson larsson eriksson jansen
-janssen visser dekker hendriks tanaka sato suzuki takahashi watanabe yamamoto nakamura
-kobayashi kato yoshida yamada sasaki matsumoto inoue kimura hayashi wang zhang liu chen yang
-huang zhao zhou xu zhu tran pham hoang huynh vo silva santos oliveira souza costa almeida
-ferreira lima carvalho gomes ribeiro adeyemi okafor okonkwo mwangi otieno kamau njoroge
-mensah owusu boateng adebayo oyelaran nkosi dlamini
-"""
 
 # Endings that mark a surname in many naming traditions ("Bondarenko", "Kowalczyk").
 SURNAME_ENDINGS = (

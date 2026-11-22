@@ -30,7 +30,7 @@ Please loop in {Bartholomew Finch|P} before Friday.
 The rider picked up the parcel in {Kakinada|L}.
 {Lakshmanan|P} asked whether the {Madurai|L} warehouse is open.
 Spoke with {Ines Carvalho|P} about the {Porto|L} contract.
-hey priya can you check the build
+hey {priya|P} can you check the build
 {Dmitri Volkov|P} approved the change from {Saint Petersburg|L}.
 Escalated by {Parvathy Menon|P}.
 {Joaquín Herrera|P} moved to {Monterrey|L} last year.
