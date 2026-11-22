@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![Tests](https://img.shields.io/badge/tests-819%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-892%20passing-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -325,6 +325,37 @@ note = coverage_note(read, len(cands.ids), contributing)  # "complete" or "PARTI
 report = check_answer(answer, {1: passage_1, 2: passage_2}, score=client.rerank, question=question)
 report.to_dict()   # claims, supported, unsupported, unverified, faithfulness, flagged sentences
 ```
+
+### 3c. Knowledge graph: entities, mentions, communities
+
+Standard library only and free of I/O: you store the rows, Nexus computes them. Structured entities come from table rows and keys; text mentions need no NER model.
+
+```python
+from nexus.graph import (TableInput, ForeignKey, extract_graph, IncrementalGraph,
+                         CSRGraph, leiden, pagerank, ego_subgraph, entity_id)
+
+x = extract_graph(
+    tables=[TableInput("customers", [(chunk_id, row), ...], primary_key="customer_id"),
+            TableInput("orders", order_rows, foreign_keys=[ForeignKey("customer_id", "customers", "customer_id")])],
+    texts=[(chunk_id, masked_text, document_id), ...],   # run on PII-masked text
+)
+x.entities    # EntityRef(key, name, type, origin, attributes, status)
+x.mentions    # Mention(entity_key, entity_type, chunk_key, start, end, surface, method, confidence)
+x.relations   # RelationRef(src, dst, type, chunk_key, count): evidence per chunk
+x.aliases     # Alias(alias_key, alias, entity_key, entity_type, source): ids, abbreviations, merges
+entity_id(workspace_id, "org", "acme corp")   # deterministic uuid5: idempotent upserts
+
+g = IncrementalGraph()                         # or keep the same rows in your database
+g.add(x, documents=doc_of_chunk)               # re-adding a chunk replaces its rows
+g.remove_chunks(deleted_chunk_ids)
+nodes, edges = g.edges()
+csr = CSRGraph.from_edges(len(nodes), edges)
+communities = leiden(csr)[-1]                  # seeded, warm-startable (initial=)
+rank = pagerank(csr)
+view = ego_subgraph(focus, neighbours, hops=2, limit=300, node_weight=dict(enumerate(rank)))
+```
+
+`resolve` / `apply_resolution` merge spelling variants (`ACME Corporation.` = `Acme Corp`) and propose, never apply, ambiguous or risky merges; `mention_delta` gives the rows to rewrite for changed chunks; `community_summary_inputs` and `community_summary_prompt` prepare community summaries for your model; `nexus.graph_eval.score_extraction` scores an extraction against labels.
 
 ### 4. Unified Cross-Modal Search
 
@@ -667,7 +698,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
-**Status (3.2.0):** all 819 tests pass (1 skipped) — 284 in the root suite and 535 across the seven layer suites on Python 3.12.
+**Status (3.3.0):** all 892 tests pass (1 skipped) — 296 in the root suite and 596 across the seven layer suites on Python 3.12.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git

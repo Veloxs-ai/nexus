@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-11-22
+
+Knowledge graph under the knowledge base: deterministic entities and relations from table rows, entity mentions in text without an NER model, entity resolution with an alias table, incremental (per-chunk) maintenance, Leiden communities, PageRank and ego-graph selection. Pure functions, standard library only: no new dependency, no I/O (the caller owns storage). No public method is renamed or removed.
+
+### Added
+
+- `nexus.graph`: one import for the whole knowledge-graph API (re-exports below), plus `extract_graph(texts=, tables=, gazetteer_names=, known_aliases=)`: structured entities first, a gazetteer built from them (names, aliases, primary-key ids), text mentions, then resolution, in one call. `TableInput(name, records, primary_key=, profile=, column_kinds=, hints=, foreign_keys=)`; `gazetteer_from(entities, aliases)`.
+- Data shapes (`nexus.processing.graph_types`): `EntityRef` (`key`, `name`, `type`, `origin`, `attributes`, `status`), `Mention` and `RelationRef` (named tuples, keyed by the caller's opaque chunk key), `Alias`, `GraphExtraction`; `ENTITY_TYPES` (person, org, place, product, project, record, concept, entity); `EXTRACTOR_VERSION = "kg1"`; deterministic ids `entity_id(workspace, type, key)` and `relation_id(workspace, src, dst, type)` (uuid5; `co_mentioned` is symmetric) so stores upsert idempotently; `merge_extractions`.
+- Structured extraction (`graph_structured`): `infer_entity_columns(profile, column_kinds=, hints=)` picks entity columns from a 3.2.0 `table_profile` (text, distinct ratio 0.001–0.95 with no lower bound when the column name gives a type: customer, assignee, product, region, short values, no dates/numbers/enums/codes, never a PII column by name or by `column_kinds`; type from a column-name lexicon, connector `hints` override it); `infer_row_entity` (one node per row only for tables with a primary key and a name/title column); `structured_graph(records, columns, table=, row_entity=, foreign_keys=, pk_index=)` gives `field` and `fk` mentions, typed relations named after the columns, and primary-key aliases (`structured_id`); `pk_index_for`; `detect_foreign_keys(profiles, samples)` by sampled value containment. Masked values (`[EMAIL]`, `[EMAIL:hash]`, `<PERSON>`, `****`) never become entities.
+- Text extraction (`graph_text`, `graph_spans`, `graph_phrases`, `graph_tokens`, `graph_lexicon`): `extract_mentions(chunks, gazetteer=, config=TextGraphConfig(...), extra_detector=)` over `(chunk_key, text[, document_key])`: one tokenisation per chunk; `Gazetteer` (token trie, longest match, case rules: multi-word names any case, single words capitalised, short/ALL-CAPS words exact; org names also match without their legal suffix; names that point at two entities are dropped); ids (`INC0012345`, `C-1014`); abbreviation definitions both ways (`Service Level Agreement (SLA)`, `GDPR (General Data Protection Regulation)`) with document scope and `abbrev` aliases; capitalised spans with precision filters (sentence-start words need evidence, common words, months, weekdays, headings, ALL-CAPS heading lines, job titles and roles, a role word before a given name dropped ("CFO Daniel Abernathy" is Daniel Abernathy, a person), spans of 6+ words; "Boston and Chicago" and "Ravi Kumar of Acme Corp" are two names, "Bank of India" is one); typing by gazetteer, org suffix or head word, honorific or given name (word lists ship as package data), place list; noun-phrase concepts as `candidate` entities (C-value, at most 8 per chunk); `co_mentioned` relations per sentence with counts; an optional `extra_detector` hook for a caller-owned NER model.
+- Resolution (`graph_resolve`): `normalise_name(name, entity_type=)` (NFKC, casefold, diacritics, `&` → `and`; person keys token-sorted without honorifics; org keys keep one canonical legal suffix: `ACME Corporation.` = `Acme Corp`); `AliasIndex.from_rows`, `blocking_keys`; `resolve(candidates, existing, auto_merge=0.92, propose=0.80)` → `Resolution(mapping, new_aliases, merges, proposals)`: generic → specific type upgrade, alias hits, hash blocking (key, org base, first token + length, acronym) and trigram/token Jaccard inside blocks of at most 50; person and org never merge, two structured entities and two different legal suffixes are only proposed, different numbers or primary keys never merge, a name matching two entities is proposed (ambiguous), never merged; `apply_resolution`.
+- Incremental maintenance (`graph_delta`): `mention_delta(old, new)` / `touched_entities` (rows to delete and insert per chunk), `aggregate_relations` / `prune_relations` (evidence per chunk; co-mentions kept at 2+ or when one end is structured), and `IncrementalGraph` (in memory: `add(extraction, documents=)` replaces a chunk's rows, `remove_chunks(keys)`, counts per entity, `edges()` for communities; both return a `ChangeSet` with `edges_changed`).
+- Communities and ranking (`nexus.retrieval.graph_community`, `graph_rank`): `CSRGraph.from_edges` (array-backed CSR, about 12 bytes per directed entry), `leiden(g, resolution=, seed=, max_levels=, theta=, initial=, max_seconds=)` (local moving, refinement, aggregation; seeded and deterministic; warm start), `modularity`, `pagerank`, `personalized_pagerank`, `degree_centrality`, `top_entities`, `ego_subgraph(focus, neighbours, hops=, limit=, node_weight=)` (best nodes within 1–3 hops, always connected to the focus), `community_label`, `members_hash`, `community_summary_inputs` and `community_summary_prompt` / `COMMUNITY_SUMMARY_SYSTEM` (what an LLM needs to summarise a community).
+- `nexus.graph_eval.score_extraction(extraction, gold)`: entity precision, mention recall ("everything about X"), typing accuracy and a false-positive sample against `GoldEntity` labels.
+
+### Changed
+
+- The capitalised-word regex `entities` in chunk metadata (`enrichment.extract_metadata`) is now opt-in: `MetadataConfig.legacy_entities=False` by default, and the `entities` key is an empty list. Use `nexus.graph` for entities.
+
+### Quality
+
+Measured with `nexus.graph_eval` (precision over active entities; noun-phrase candidates are not scored):
+
+| Labelled set | Entities | Precision | Mention recall | Typing |
+|---|---|---|---|---|
+| 40 hand-labelled enterprise passages (text only; used during development) | 115 | 1.00 | 0.99 | 0.58 |
+| 20 held-out passages (text only; written after the rules were set) | 46 | 1.00 | 0.98 | 0.63 |
+| 15 passages written by an independent reviewer (text only; never used for tuning) | 60 | 0.97 | 0.98 | 0.68 |
+| Synthetic contracts, tickets, calls + customers/orders tables (tests) | 141 | 1.00 | 1.00 | 1.00 |
+| Nexora RAG fixture S (549 text chunks, 5,220 rows) | 1,295 | 0.997 | 1.00 (planted customer 1.00) | 1.00 |
+| Nexora RAG fixture M (6,269 text chunks, 207,520 rows) | 9,740 | 1.00 | 0.998 (planted customer 1.00) | 1.00 |
+
+Text-only typing is low because single unknown names ("Hooli", "Workday") are typed `entity`; with structured entities in the gazetteer they take the structured type.
+
+### Performance
+
+Same 8-core machine, one core, Python 3.12, best of 3:
+
+| Workload | Result |
+|---|---|
+| `structured_graph`, 200,000 rows x 2 entity columns | 0.85 s (236k rows/s); `profile_records` adds 1.4 s |
+| `extract_mentions`, 10,000 chunks (13.2 MB) with a 100,000-name gazetteer | 4.3 s: 3.1 MB/s, 0.43 s per 1,000 chunks; 58 MB peak (traced) |
+| `extract_graph` on fixture M (6,269 text chunks + 207,520 rows, with resolution) | 6.8 s |
+| `CSRGraph.from_edges` + `leiden`, 100,000 nodes / 1M edges | 2.2 s + 7.2 s (warm start 4.5 s); CSR 23 MB, process peak 283 MB |
+| `pagerank`, 100,000 nodes / 1M edges | 6.1 s |
+| `ego_subgraph`, 2 hops, 50 neighbours per node, limit 300 | 0.6 ms p95 |
+| Leiden on Zachary's karate club | modularity 0.4198 (the known optimum) |
+
+### Known limits
+
+- Text typing without a gazetteer is word-list based (honorifics, about 425 given names, about 435 places and regions, org suffixes).
+- Noun-phrase concepts are POS-free; they stay `candidate` until a store sees them in 2+ documents.
+- Names of 6+ words and lowercase brand names (`iPhone`) are not found in text unless they are in the gazetteer.
+- Warm-started Leiden is about 1.6x faster than a cold run on the 1M-edge benchmark.
+- Model numbers after a name are not part of it ("Zephyr X2" is found as "Zephyr"), and form names with a digit ("W-9") are typed `record`.
+
 ## [3.2.0] — 2026-11-22
 
 One release with two parts: (1) processing, chunking, record, PII and performance work across every layer, and (2) exact table answers over every row, document routing, map-reduce and a grounding verifier. Standard library only: no new dependency. No public method is renamed or removed.

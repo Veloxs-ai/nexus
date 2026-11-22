@@ -27,6 +27,14 @@ def test_extract_metadata_finds_tags_entities_emails_dates_and_classification(ma
     assert metadata["tags"] == ["security"]
     assert "security@example.com" in metadata["emails"]
     assert "2026-07-01" in metadata["dates"]
+    assert metadata["entities"] == []  # regex entities are opt-in since 3.3.0
+
+
+def test_extract_metadata_legacy_entities_opt_in(make_metadata_config):
+    config = make_metadata_config()
+    config.legacy_entities = True
+    metadata = extract_metadata("Acme Corp requires MFA access review.", config)
+
     assert "Acme Corp" in metadata["entities"]
 
 

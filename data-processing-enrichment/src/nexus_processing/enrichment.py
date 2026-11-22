@@ -34,7 +34,9 @@ def build_text(record: dict[str, Any], fields: list[str]) -> str:
 
 def extract_metadata(text: str, config: MetadataConfig) -> dict[str, Any]:
     tags = extract_tags(text, config.keyword_tags)
-    entities = sorted(set(CAPITALIZED_ENTITY_PATTERN.findall(text)))
+    entities = (
+        sorted(set(CAPITALIZED_ENTITY_PATTERN.findall(text))) if config.legacy_entities else []
+    )
     emails = sorted(set(EMAIL_PATTERN.findall(text)))
     dates = sorted(set(DATE_PATTERN.findall(text)))
     money = sorted(set(MONEY_PATTERN.findall(text)))
