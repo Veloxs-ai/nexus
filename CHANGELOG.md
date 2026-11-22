@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] — unreleased
+
+### Changed
+
+- Source modules split so that no library file is longer than 500 lines. Behaviour, output and public API are unchanged: every original import path still works (the old modules re-export what moved), processed payloads are identical on the benchmark corpus, and hot-path timings are unchanged.
+  - `nexus.client`: `NexusClient` is assembled from mixins, one per `process_*` family: `client_document` (`process_document`, with format sniffing and routing in `client_routing`), `client_image`, `client_video`, `client_audio`, `client_databases` (MySQL, MongoDB), `client_tabular` (spreadsheets, SQLite), `client_office` (presentations, Word), `client_email`, `client_chat` (chat, Slack export) and `client_code` (code, OpenAPI). Names that `nexus.client` exposed at module level still resolve.
+  - `nexus.record_spec`: the resolved-query dataclasses and limits moved to `nexus.record_query`.
+  - `nexus.operations.signals`: failure-mode diagnosis (`Diagnosis`, `FAILURE_PATTERNS`, `diagnose`) moved to `signals_diagnosis`.
+  - `nexus.operations.intents`: the default lexicon (`DEFAULT_LEXICON`, `Lexicon`) moved to `intents_lexicon`.
+  - `nexus.processing`: `code` (into `code_model`, `code_python`, `code_polyglot`, `code_openapi`), `email_chat` (`email_mime`), `images` (`image_decode`), `markup_html` (`markup_html_tree`), `office` (`office_zip`, `office_word`, `office_docx`, `office_pptx`, `office_sheet`, `office_xlsx`), `pdf_fonts` (`pdf_glyphs`) and `pgoutput` (`pgoutput_decode`).
+- A test fails when any source file passes 500 lines.
+- `estimate_tokens` counts ASCII text with string operations instead of the regex (identical counts, 2-3x faster); `fit_text` with the built-in estimate counts every character once however deep it splits (identical pieces; it recounted each part at every level). `prepare_chunks` leaves a text over 16,384 characters to `fit_text` instead of counting it twice.
+- `profile_records` classifies each distinct text once per column (up to 4,096) and handles plain numbers inline: identical profile, about 1.8x faster.
+- `rank_documents` keeps each term's BM25 part per catalog index and builds only the documents it returns: identical ranking, about 2.5x faster on a warm 30,000-document catalog.
+
+### Added
+
+Generic building blocks for large tables and catalogs. Nothing in them knows a schema: tables, columns and fields are the caller's. Standard library only. Guide: [docs/TABLE_SCALE_3.4.1.md](docs/TABLE_SCALE_3.4.1.md).
+
+- Records in a table with one row per record: `ChunkTable(layout="row", columns={path: (column, kind)})` (`nexus.record_sql`). The JSON column is the record; mapped fields are read from typed columns (`"text"`, `"number"`, `"date"`) and from the JSON on rows where the column is NULL, so results are the same as reading the JSON. Top-level `eq` / `in` conditions add index-friendly conditions on the source rows. The SQL building blocks moved to `nexus.record_sql_builder` (`ChunkTable` is still imported from `nexus.record_sql`); SQLite statements write the trimmed blanks as `char(32, 9, 13, 10)` (a constant, so an expression index matches).
+- `nexus.record_slots`: `plan_slots(profile, text=8, number=8, date=4, *, sample=, names=, exclude=)` → slot map; `slot_values(record, slot_map)`; `slot_columns(slot_map)` (the `ChunkTable.columns` map); `text_slot`, `number_slot`, `date_slot` (what a slot can hold exactly).
+- `nexus.table_rollups`: `build_rollups(rows, profile, max_groups=50, max_numbers=20)`, `apply_row_change(rollups, old, new)`, `answer_from_rollups(query, rollups)` → the same `RecordResult` as the engines, or None. Count / sum / avg / min / max per value of low-cardinality columns and per month of date columns, exact decimal sums, plain JSON.
+- `nexus.index_advice`: `recommend_indexes(profile, recent_specs, max_indexes=3, *, exclude=, keys=True)` → `IndexAdvice(path, name, reason, uses, score)`; `expression_index_sql(table, column, path=None, dialect="postgresql", *, where_sql=, name=, form="folded", lead=(), concurrently=False, if_not_exists=True)`; `sql_literal(value)`.
+- `nexus.vector_sql` (pgvector): `vector_index_ddl(table, column, dim, *, quantize=None|"halfvec", metric="cosine", where_sql=, m=16, ef_construction=64, name=, concurrently=False)`, `knn_sql(table, column, dim, *, exact=, quantize=, metric=, where_sql="TRUE", select="*", limit=40, placeholder="%s", strategy=, distance_alias="distance")` → `KnnQuery(sql, settings, strategy)`, `choose_strategy(scope_vectors, total_vectors=None, *, k=40, exact_limit=50000, ef_search=100, max_scan_cap=1000000)` → `Strategy(kind, ef_search, max_scan_tuples, reason)`.
+- `nexus.processing.record_caps`: `cap_record_values(record, max_chars=4000, *, marker="_truncated")` (long text values cut, the cut fields and their lengths listed under the marker) and `cap_document(chunks, max_chars)` → `(chunks, report)`. `prepare_chunks` takes `max_record_chars=`, `max_document_chars=` and `report=` (all off by default).
+- `nexus.table_records`: `row_hash(record, *, exclude=())` (40 hex characters, independent of key order), `embed_policy(profile, rows=None, *, min_text_chars=40, sample=2000)` and `needs_vector(record, policy)` (only rows with free text need an embedding; without sample rows every row does), and the record caps re-exported.
+- `nexus.table_profile.key_like(column, rows)`: a column with a different value on every row, also past the distinct cap.
+- `nexus.doc_routing.DocumentIndex`: `DocumentIndex.build(documents, *, id_key=, name_key=, summary_key=, version=)` and `.rank(question, ...)`, the same ranking as `rank_documents` without re-reading the catalog per question.
+
+### Performance
+
+One core, medians, before = this branch after the split, after = this release (scratch data, deleted after):
+
+| Case | Before | After |
+|---|---|---|
+| `estimate_tokens`, 5 MB text | 207 ms | 103 ms |
+| `fit_text`, one 5 MB cell | 716 ms | 258 ms |
+| `prepare_chunks`, 8 rows with 17 MB of cells | 3.14 s | 0.91 s |
+| ... with `max_record_chars=4000`: record metadata | 17.4 MB | 0.40 MB |
+| `profile_records`, 200k rows x 7 columns | 1.47 s | 0.80 s |
+| `prepare_chunks`, 200k row chunks | 2.76 s | 1.59 s |
+| `rank_documents`, 30k documents, 3 questions (warm) | 562 ms | 221 ms |
+| Records on SQLite, 100k rows, point lookup by order number | 767 ms (chunk JSON) | 0.4 ms (row layout, text slot, expression index) |
+| ... sum by region / best month | 671 / 728 ms | 295 / 323 ms (slots); < 0.1 ms (rollups) |
+
+Outputs are identical before and after for `fit_text`, `prepare_chunks` (both cases), `profile_records`, `rank_documents` and every records answer. The knowledge-graph quality sets score the same (hand-labelled 1.00 / 1.00 / 0.98, held-out 1.00 / 1.00 / 1.00, independent 1.00 / 1.00 / 0.97, blind 0.97 / 0.99 / 0.99, synthetic 1.00 / 1.00 / 1.00 precision / mention recall / typing). The row layout and rollups are checked against the Python engine on randomised data and specs (rollups: over 1,000 answered specs, and after 400 random inserts, updates and deletes). PostgreSQL statements are generated and parameter-checked here but were not run against a PostgreSQL server.
+
 ## [3.4.0] — 2026-11-22
 
 Text entity typing without a model, the review and key helpers a knowledge-graph product needs, and two parsers that applications were carrying themselves (GitHub Markdown, CDC DDL). Standard library only: no new dependency. No public method is renamed or removed.

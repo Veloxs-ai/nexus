@@ -29,15 +29,27 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import decimal
+import hashlib
 import json
 import uuid
+from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
+try:
+    from nexus.processing.record_caps import cap_document, cap_record_values
+except (ImportError, ModuleNotFoundError):
+    from nexus_processing.record_caps import cap_document, cap_record_values
+
 __all__ = [
+    "cap_document",
+    "cap_record_values",
     "coerce_value",
+    "embed_policy",
     "flatten_record",
     "jsonable",
     "mask_rows",
+    "needs_vector",
+    "row_hash",
     "rows_from_columns",
     "rows_to_markdown",
 ]
@@ -295,3 +307,88 @@ def flatten_record(
         else:
             out[f"{prefix}{key}"] = value
     return out
+
+
+def row_hash(record: Mapping[str, Any], *, exclude: Iterable[str] = ()) -> str:
+    """A 40-character hex digest of a record's content (keys sorted, ``exclude`` keys left
+    out): equal for equal rows whatever their key order, so a re-read table can tell changed,
+    new and vanished rows apart without comparing them field by field."""
+    skip = set(exclude)
+    body = {str(k): v for k, v in record.items() if k not in skip}
+    text = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+FREE_TEXT_CHARS = 40  # a text column whose typical value is this long is prose, not a code
+
+
+def _median_length(rows: list[Mapping[str, Any]], path: tuple[str, ...]) -> float | None:
+    lengths = []
+    for row in rows:
+        value: Any = row
+        for key in path:
+            value = value.get(key) if isinstance(value, Mapping) else None
+        if isinstance(value, str) and value.strip():
+            lengths.append(len(value))
+    if not lengths:
+        return None
+    lengths.sort()
+    return float(lengths[len(lengths) // 2])
+
+
+def embed_policy(
+    profile: Mapping[str, Any],
+    rows: Iterable[Mapping[str, Any]] | None = None,
+    *,
+    min_text_chars: int = FREE_TEXT_CHARS,
+    sample: int = 2000,
+) -> dict[str, Any]:
+    """Which rows of a table need an embedding vector.
+
+    A table whose columns are numbers, dates, booleans, categories (every value listed in the
+    profile) and short codes is answered exactly from its records and keyword search; only
+    rows carrying free text need vectors for meaning-based search. A text column is free text
+    when its values are not a small known set and (from ``rows``, at most ``sample`` of them)
+    its median value has at least ``min_text_chars`` characters; without rows every such
+    column counts as free text (any doubt: embed). Returns ``{"embed": "all" | "none" |
+    "rows_with_text", "text_columns": [paths], "reason"}``; ``needs_vector`` applies it."""
+    sampled = []
+    for row in rows or ():
+        if len(sampled) >= sample:
+            break
+        if isinstance(row, Mapping):
+            sampled.append(row)
+    free, unsure = [], False
+    for column in profile.get("columns") or []:
+        if column.get("type") not in ("text", "mixed") or column.get("values_complete"):
+            continue
+        path = tuple(str(p) for p in column.get("path") or [column["name"]])
+        if not sampled:
+            free.append(list(path))
+            unsure = True
+            continue
+        median = _median_length(sampled, path)
+        if median is not None and median >= min_text_chars:
+            free.append(list(path))
+    if not free:
+        return {"embed": "none", "text_columns": [], "reason": "no free-text column"}
+    if unsure:
+        return {"embed": "all", "text_columns": free, "reason": "text columns, no sample rows"}
+    return {"embed": "rows_with_text", "text_columns": free, "reason": "free-text columns"}
+
+
+def needs_vector(record: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    """Whether ``record`` needs an embedding under ``embed_policy``'s ``policy``: every row for
+    ``"all"``, none for ``"none"``, else rows with a non-blank value in a free-text column."""
+    mode = policy.get("embed", "all")
+    if mode == "none":
+        return False
+    if mode != "rows_with_text":
+        return True
+    for path in policy.get("text_columns") or []:
+        value: Any = record
+        for key in path:
+            value = value.get(key) if isinstance(value, Mapping) else None
+        if isinstance(value, str) and value.strip():
+            return True
+    return False

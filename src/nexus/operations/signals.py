@@ -42,6 +42,8 @@ from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
 
+from .signals_diagnosis import FAILURE_PATTERNS, Diagnosis, _kind, diagnose  # noqa: F401
+
 RECENT_POINTS = 120  # raw readings kept (about two hours at one per minute)
 HISTORY_POINTS = 288  # down-sampled baseline: one point per HISTORY_STEP (a day at 5 minutes)
 HISTORY_STEP = 300.0
@@ -420,140 +422,6 @@ def _slope(points: list[tuple[float, float]]) -> float | None:
 
 def specs_from_dict(data: dict[str, dict[str, Any]]) -> dict[str, SignalSpec]:
     return {name: SignalSpec.from_dict(name, spec or {}) for name, spec in (data or {}).items()}
-
-
-# ---------------------------------------------------------------------------
-# Diagnosis
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class Diagnosis:
-    failure_mode: str
-    confidence: float
-    evidence: list[str]
-    recommended_checks: list[str]
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "failure_mode": self.failure_mode,
-            "confidence": self.confidence,
-            "evidence": self.evidence,
-            "recommended_checks": self.recommended_checks,
-        }
-
-
-# (failure mode, required symptoms, supporting symptoms, checks).
-# Symptoms are "<metric kind>:<direction>".
-FAILURE_PATTERNS: list[tuple[str, set[str], set[str], list[str]]] = [
-    (
-        "sensor fault",
-        {"any:fault"},
-        set(),
-        [
-            "Check the sensor wiring and connector",
-            "Compare with a handheld reading",
-            "Recalibrate or replace the sensor",
-        ],
-    ),
-    (
-        "bearing wear",
-        {"vibration:up"},
-        {"temperature:up"},
-        [
-            "Measure vibration spectrum at the bearing housings",
-            "Check lubrication (quantity, contamination)",
-            "Inspect for looseness and misalignment",
-            "Plan bearing replacement if the trend continues",
-        ],
-    ),
-    (
-        "cavitation",
-        {"pressure:down", "vibration:up"},
-        set(),
-        [
-            "Check suction pressure and NPSH available",
-            "Inspect the suction strainer for blockage",
-            "Verify the pump is operating near its best efficiency point",
-        ],
-    ),
-    (
-        "electrical overload",
-        {"current:up"},
-        {"temperature:up"},
-        [
-            "Check phase currents for imbalance",
-            "Inspect terminals for heat damage",
-            "Verify the driven load",
-        ],
-    ),
-    (
-        "overheating",
-        {"temperature:up"},
-        set(),
-        [
-            "Check cooling (fan, heat exchanger, airflow)",
-            "Check lubricant level and condition",
-            "Compare against ambient temperature",
-        ],
-    ),
-    (
-        "leak or blockage",
-        {"pressure:down"},
-        set(),
-        [
-            "Inspect for leaks on the discharge side",
-            "Check valves and filters",
-            "Verify set points",
-        ],
-    ),
-]
-
-
-def _kind(metric: str) -> str:
-    m = metric.lower()
-    for kind, words in (
-        ("vibration", ("vib",)),
-        ("temperature", ("temp",)),
-        ("current", ("current", "amp")),
-        ("pressure", ("press",)),
-        ("flow", ("flow",)),
-        ("speed", ("speed", "rpm")),
-    ):
-        if any(w in m for w in words):
-            return kind
-    return m
-
-
-def diagnose(assessment: Assessment) -> Diagnosis:
-    symptoms: set[str] = set()
-    evidence: list[str] = []
-    for r in assessment.reasons:
-        metric = r.get("metric") or ""
-        kind = _kind(metric)
-        code = r["code"]
-        if code.endswith(("SENSOR_FAULT", "FLATLINE")):
-            symptoms.add("any:fault")
-        elif r.get("direction") in ("up", "down"):
-            symptoms.add(f"{kind}:{r['direction']}")
-        else:
-            continue
-        evidence.append(f"{metric}: {r.get('detail')}")
-    # Most specific pattern first (sensor faults always win: the other symptoms may be artefacts).
-    ordered = sorted(FAILURE_PATTERNS, key=lambda p: (p[0] != "sensor fault", -len(p[1])))
-    for mode, required, supporting, checks in ordered:
-        if required <= symptoms:
-            support = len(supporting & symptoms) / len(supporting) if supporting else 0.0
-            confidence = round(min(0.95, 0.55 + 0.3 * support + 0.1 * (len(required) - 1)), 2)
-            return Diagnosis(mode, confidence, evidence, checks)
-    if assessment.anomaly_score >= 0.5:
-        return Diagnosis(
-            "unclassified anomaly",
-            0.3,
-            evidence,
-            ["Review the trends of the flagged signals", "Inspect the asset on the next round"],
-        )
-    return Diagnosis("normal", 0.9, evidence, [])
 
 
 def window_stats(points: list[tuple[datetime, float]], size: timedelta) -> list[dict[str, Any]]:

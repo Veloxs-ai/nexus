@@ -46,6 +46,7 @@ from .text_terms import STOPWORDS, question_terms, stem, terms, words
 
 __all__ = [
     "Candidates",
+    "DocumentIndex",
     "RankedDocument",
     "candidate_documents",
     "knowledge_index",
@@ -59,6 +60,7 @@ LIST_WEIGHTS = {"named": 4.0, "mentions": 2.0, "catalog": 1.0, "vector": 1.0, "c
 RRF_K = 60
 _INDEX_CACHE: OrderedDict[int, _CatalogIndex] = OrderedDict()
 _INDEX_CACHE_MAX = 8
+_PARTS_MAX = 4096  # terms whose per-document BM25 parts an index keeps
 _LOCK = threading.Lock()
 
 
@@ -74,19 +76,46 @@ class _CatalogIndex:
 
     def __init__(self, docs: list[tuple[str, str, str]]) -> None:
         self.ids = [d[0] for d in docs]
+        self.order = {doc_id: i for i, doc_id in enumerate(self.ids)}  # last position wins
         self.fields: list[tuple[Counter, Counter]] = []
+        self.lengths: list[tuple[int, int]] = []  # terms in (name, summary), counted once
         self.postings: dict[str, list[int]] = {}
+        self.parts: dict[tuple[str, float, float], list[float]] = {}  # per term, on first use
         name_len = sum_len = 0
         for i, (_id, name, summary) in enumerate(docs):
             name_terms = Counter(_terms_list(re.sub(r"[._/]+", " ", name)))
             summary_terms = Counter(_terms_list(summary[:SUMMARY_CHARS]))
             self.fields.append((name_terms, summary_terms))
-            name_len += sum(name_terms.values())
-            sum_len += sum(summary_terms.values())
+            lengths = (sum(name_terms.values()), sum(summary_terms.values()))
+            self.lengths.append(lengths)
+            name_len += lengths[0]
+            sum_len += lengths[1]
             for term in set(name_terms) | set(summary_terms):
                 self.postings.setdefault(term, []).append(i)
         n = max(len(docs), 1)
         self.avg = (name_len / n or 1.0, sum_len / n or 1.0)
+
+    def _term(self, term: str, hits: list[int], k1: float, b: float) -> list[float]:
+        """The BM25 term-frequency part of ``term`` for each document of ``hits``."""
+        key = (term, k1, b)
+        parts = self.parts.get(key)
+        if parts is not None:
+            return parts
+        fields, lengths = self.fields, self.lengths
+        weights = ((0, NAME_WEIGHT, self.avg[0]), (1, 1.0, self.avg[1]))
+        parts = []
+        for i in hits:
+            total = 0.0
+            for field_at, weight, avg in weights:
+                tf = fields[i][field_at].get(term, 0)
+                if tf:
+                    length = lengths[i][field_at]
+                    total += weight * tf * (k1 + 1) / (tf + k1 * (1 - b + b * length / avg))
+            parts.append(total)
+        with _LOCK:
+            if len(self.parts) < _PARTS_MAX:
+                self.parts[key] = parts
+        return parts
 
     def scores(self, query: list[str], k1: float = 1.2, b: float = 0.75) -> dict[int, float]:
         n = len(self.ids)
@@ -96,16 +125,7 @@ class _CatalogIndex:
             if not hits:
                 continue
             idf = math.log(1.0 + (n - len(hits) + 0.5) / (len(hits) + 0.5))
-            for i in hits:
-                total = 0.0
-                for weight, counts, avg in (
-                    (NAME_WEIGHT, self.fields[i][0], self.avg[0]),
-                    (1.0, self.fields[i][1], self.avg[1]),
-                ):
-                    tf = counts.get(term, 0)
-                    if tf:
-                        length = sum(counts.values())
-                        total += weight * tf * (k1 + 1) / (tf + k1 * (1 - b + b * length / avg))
+            for i, total in zip(hits, self._term(term, hits, k1, b), strict=True):
                 out[i] = out.get(i, 0.0) + idf * total
         return out
 
@@ -129,6 +149,52 @@ def _index(docs: list[tuple[str, str, str]]) -> _CatalogIndex:
     return built
 
 
+def _documents(
+    documents: Sequence[Mapping[str, Any]], id_key: str, name_key: str, summary_key: str
+) -> list[tuple[str, str, str]]:
+    return [
+        (str(d.get(id_key) or ""), str(d.get(name_key) or ""), str(d.get(summary_key) or ""))
+        for d in documents
+    ]
+
+
+def _rank(
+    index: _CatalogIndex,
+    question: str,
+    vector: Sequence[str],
+    chunks: Sequence[str],
+    named: Iterable[str],
+    mentions: Sequence[str],
+    limit: int | None,
+    include_unmatched: bool,
+) -> list[RankedDocument]:
+    query = question_terms(question)
+    lexical = sorted(index.scores(query).items(), key=lambda kv: (-kv[1], kv[0]))
+    lists: dict[str, list[str]] = {
+        "named": list(dict.fromkeys(str(x) for x in named)),
+        "mentions": list(dict.fromkeys(str(x) for x in mentions)),
+        "catalog": [index.ids[i] for i, _ in lexical],
+        "vector": list(dict.fromkeys(str(x) for x in vector)),
+        "chunks": list(dict.fromkeys(str(x) for x in chunks)),
+    }
+    order = index.order
+    scores: dict[str, float] = {}
+    reasons: dict[str, list[str]] = {}
+    for name, ranked in lists.items():
+        weight = LIST_WEIGHTS[name]
+        for rank, doc_id in enumerate(ranked):
+            if doc_id in order:
+                scores[doc_id] = scores.get(doc_id, 0.0) + weight / (RRF_K + rank + 1)
+                reasons.setdefault(doc_id, []).append(name)
+    ranked_ids = sorted(scores, key=lambda d: (-scores[d], order[d]))
+    if limit is not None and limit >= 0:  # only the shown documents are built
+        ranked_ids = ranked_ids[:limit]
+    out = [RankedDocument(d, round(scores[d], 6), tuple(reasons[d])) for d in ranked_ids]
+    if include_unmatched:
+        out += [RankedDocument(d, 0.0) for d in index.ids if d not in scores]
+    return out[:limit] if limit is not None else out
+
+
 def rank_documents(
     question: str,
     documents: Sequence[Mapping[str, Any]],
@@ -149,36 +215,56 @@ def rank_documents(
     ids in the order of their best chunk-level keyword hit; ``named``: ids the question names;
     ``mentions``: ids of documents that mention the question's entities. The lists are fused
     with weighted RRF (named x4, mentions x2, the rest x1). Documents that no list ranks come
-    last in catalog order when ``include_unmatched`` (else they are left out)."""
-    docs = [
-        (str(d.get(id_key) or ""), str(d.get(name_key) or ""), str(d.get(summary_key) or ""))
-        for d in documents
-    ]
-    index = _index(docs)
-    query = question_terms(question)
-    lexical = sorted(index.scores(query).items(), key=lambda kv: (-kv[1], kv[0]))
-    lists: dict[str, list[str]] = {
-        "named": list(dict.fromkeys(str(x) for x in named)),
-        "mentions": list(dict.fromkeys(str(x) for x in mentions)),
-        "catalog": [index.ids[i] for i, _ in lexical],
-        "vector": list(dict.fromkeys(str(x) for x in vector)),
-        "chunks": list(dict.fromkeys(str(x) for x in chunks)),
-    }
-    known = set(index.ids)
-    scores: dict[str, float] = {}
-    reasons: dict[str, list[str]] = {}
-    for name, ranked in lists.items():
-        weight = LIST_WEIGHTS[name]
-        for rank, doc_id in enumerate(ranked):
-            if doc_id in known:
-                scores[doc_id] = scores.get(doc_id, 0.0) + weight / (RRF_K + rank + 1)
-                reasons.setdefault(doc_id, []).append(name)
-    order = {doc_id: i for i, doc_id in enumerate(index.ids)}
-    ranked_ids = sorted(scores, key=lambda d: (-scores[d], order[d]))
-    out = [RankedDocument(d, round(scores[d], 6), tuple(reasons[d])) for d in ranked_ids]
-    if include_unmatched:
-        out += [RankedDocument(d, 0.0) for d in index.ids if d not in scores]
-    return out[:limit] if limit is not None else out
+    last in catalog order when ``include_unmatched`` (else they are left out). For many
+    questions over one catalog, ``DocumentIndex`` builds the index once."""
+    index = _index(_documents(documents, id_key, name_key, summary_key))
+    return _rank(index, question, vector, chunks, named, mentions, limit, include_unmatched)
+
+
+class DocumentIndex:
+    """A catalog's routing index, built once and reused for every question until the catalog
+    changes (``rank`` gives exactly what ``rank_documents`` gives for the same catalog)."""
+
+    def __init__(self, index: _CatalogIndex, version: Any = None) -> None:
+        self._index = index
+        self.version = version
+
+    @classmethod
+    def build(
+        cls,
+        documents: Sequence[Mapping[str, Any]],
+        *,
+        id_key: str = "document_id",
+        name_key: str = "document_name",
+        summary_key: str = "summary",
+        version: Any = None,
+    ) -> DocumentIndex:
+        """The index of ``documents`` (``version``: the caller's catalog version, kept as is so
+        the caller can tell when to rebuild)."""
+        return cls(_CatalogIndex(_documents(documents, id_key, name_key, summary_key)), version)
+
+    def __len__(self) -> int:
+        return len(self._index.ids)
+
+    @property
+    def ids(self) -> list[str]:
+        return list(self._index.ids)
+
+    def rank(
+        self,
+        question: str,
+        *,
+        vector: Sequence[str] = (),
+        chunks: Sequence[str] = (),
+        named: Iterable[str] = (),
+        mentions: Sequence[str] = (),
+        limit: int | None = None,
+        include_unmatched: bool = False,
+    ) -> list[RankedDocument]:
+        """``rank_documents`` over this index's catalog."""
+        return _rank(
+            self._index, question, vector, chunks, named, mentions, limit, include_unmatched
+        )
 
 
 _QUOTED = re.compile(r"[\"“”']([^\"“”']{2,80})[\"“”']")

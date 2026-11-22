@@ -1,6 +1,6 @@
 # Nexus — Enterprise Intelligence Framework
 
-[![Tests](https://img.shields.io/badge/tests-912%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-935%20passing-brightgreen.svg)](#running-tests)
 [![PyPI](https://img.shields.io/badge/pypi-veloxs--nexus-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://pypi.org/project/veloxs-nexus/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -700,7 +700,7 @@ Secrets are never read implicitly from the environment by library code. Pass the
 
 The suite is deterministic and needs no cloud services; the first run downloads the small FastEmbed models (~100 MB) into the model cache.
 
-**Status (3.4.0):** all 912 tests pass (1 skipped) — 298 in the root suite and 614 across the seven layer suites on Python 3.12.
+**Status (3.4.1):** all 935 tests pass (1 skipped) — 315 in the root suite and 620 across the seven layer suites on Python 3.12.
 
 ```bash
 git clone https://github.com/Veloxs-ai/nexus.git
@@ -757,6 +757,7 @@ Full documentation is on the website: the **[User & Integrator Guide](https://ne
 | [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Design principles, the loose-coupling rule, and per-layer capabilities |
 | [Integration Guide](docs/INTEGRATION_GUIDE.md) | Installation, library vs. CLI integration patterns, environment variables |
 | [What's new in 3.2 – 3.4](docs/WHATS_NEW_3.2_TO_3.4.md) | Records SQL, routing, map-reduce, grounding, processing changes, the knowledge graph and 3.4.0's typing, review helpers and parsers, with examples |
+| [Table-scale building blocks (3.4.1)](docs/TABLE_SCALE_3.4.1.md) | Records in a one-row-per-record table with typed slots, rollups, index advice, pgvector helpers, large-cell bounds and a reusable routing index |
 | [Processing Reference](docs/PROCESSING_REFERENCE.md) | Ingestion formats, the five processing phases, output structure, database setup |
 | [Processing & Embedding Spec](docs/PROCESSING_AND_EMBEDDING_SPEC.md) | Chunking rules and how chunks are embedded, specified precisely |
 

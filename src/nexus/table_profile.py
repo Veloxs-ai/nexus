@@ -42,7 +42,14 @@ from typing import Any
 from .record_render import format_value
 from .record_values import ISO_DATE_RE, NUMBER_RE, WS, normalize_value, text_of
 
-__all__ = ["DISTINCT_CAP", "MAX_VALUES", "link_columns", "profile_records", "profile_text"]
+__all__ = [
+    "DISTINCT_CAP",
+    "MAX_VALUES",
+    "key_like",
+    "link_columns",
+    "profile_records",
+    "profile_text",
+]
 
 PROFILE_VERSION = 1
 DISTINCT_CAP = 1000  # distinct values tracked per column (memory bound)
@@ -51,6 +58,9 @@ TOP_VALUES = 10
 MAX_VALUE_CHARS = 120
 MAX_COLUMNS = 200
 MAJORITY = 0.95
+
+
+SEEN_CAP = 4096  # distinct texts per column whose classification is remembered
 
 
 class _Column:
@@ -65,6 +75,7 @@ class _Column:
         "overflow",
         "path",
         "present",
+        "seen",
         "values",
     )
 
@@ -73,6 +84,7 @@ class _Column:
         self.present = 0  # non-blank values
         self.kinds: dict[str, int] = {}
         self.values: dict[str, int] = {}
+        self.seen: dict[str, str] = {}  # text -> its kind ("" blank), min/max already applied
         self.overflow = False
         self.num_min: float | None = None
         self.num_max: float | None = None
@@ -80,29 +92,69 @@ class _Column:
         self.date_max: str | None = None
         self.count = 0
 
+    def _classify(self, value: str) -> str:
+        """The kind of a text value ("" when blank); updates the number or date range."""
+        if not value.strip(WS):
+            return ""
+        if NUMBER_RE.match(value):
+            self._number(float(value))
+            return "number" if "." in value else "integer"
+        day = value.strip(WS)
+        if ISO_DATE_RE.match(day):
+            if self.date_min is None or day < self.date_min:
+                self.date_min = day
+            if self.date_max is None or day > self.date_max:
+                self.date_max = day
+            return "date"
+        return "text"
+
     def add(self, value: Any) -> None:
         kind = type(value)
-        if value is None or (kind is str and not value.strip(WS)):
+        if kind is str:  # the common case: a repeated text is classified once
+            k = self.seen.get(value)
+            if k is None:
+                k = self._classify(value)
+                if len(self.seen) < SEEN_CAP:
+                    self.seen[value] = k
+            if not k:
+                return
+            self.present += 1
+            self.kinds[k] = self.kinds.get(k, 0) + 1
+            counts = self.values
+            if value in counts:
+                counts[value] += 1
+            elif len(counts) < DISTINCT_CAP and len(value) <= MAX_VALUE_CHARS:
+                counts[value] = 1
+            else:
+                self.overflow = True
+            return
+        if value is None:
             return
         self.present += 1
+        if kind is int or kind is float:  # inline text_of / _number for plain numbers
+            k = "integer" if kind is int else "number"
+            self.kinds[k] = self.kinds.get(k, 0) + 1
+            number = float(value)
+            if self.num_min is None or number < self.num_min:
+                self.num_min = number
+            if self.num_max is None or number > self.num_max:
+                self.num_max = number
+            if kind is int:
+                text = str(value)
+            elif number - number == 0.0:  # finite
+                text = repr(value)
+            else:
+                return
+            counts = self.values
+            if text in counts:
+                counts[text] += 1
+            elif len(counts) < DISTINCT_CAP and len(text) <= MAX_VALUE_CHARS:
+                counts[text] = 1
+            else:
+                self.overflow = True
+            return
         if kind is bool:
             k = "boolean"
-        elif kind is int or kind is float:
-            k = "integer" if kind is int else "number"
-            self._number(float(value))
-        elif kind is str:
-            if NUMBER_RE.match(value):
-                k = "number" if "." in value else "integer"
-                self._number(float(value))
-            elif ISO_DATE_RE.match(value.strip(WS)):
-                k = "date"
-                day = value.strip(WS)
-                if self.date_min is None or day < self.date_min:
-                    self.date_min = day
-                if self.date_max is None or day > self.date_max:
-                    self.date_max = day
-            else:
-                k = "text"
         elif kind is dict:
             k = "object"
         elif kind is list:
@@ -171,18 +223,23 @@ class _Column:
 def profile_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     """The schema profile of ``records`` (see the module docstring)."""
     columns: dict[tuple[str, ...], _Column] = {}
+    by_key: dict[Any, _Column] = {}  # the record's own keys -> their column (no tuple per value)
     rows = 0
     for record in records:
         if not isinstance(record, dict):
             continue
         rows += 1
         for key, value in record.items():
-            path = (str(key),)
-            column = columns.get(path)
+            column = by_key.get(key) if type(key) is str else None
             if column is None:
-                if len(columns) >= MAX_COLUMNS:
-                    continue
-                column = columns[path] = _Column(str(key), path)
+                path = (str(key),)
+                column = columns.get(path)
+                if column is None:
+                    if len(columns) >= MAX_COLUMNS:
+                        continue
+                    column = columns[path] = _Column(str(key), path)
+                if type(key) is str:
+                    by_key[key] = column
             column.add(value)
             if type(value) is dict:
                 for sub, inner in value.items():
@@ -198,6 +255,17 @@ def profile_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": rows,
         "columns": [c.describe(rows) for c in columns.values()],
     }
+
+
+def key_like(column: dict[str, Any], rows: int) -> bool:
+    """A profile column holding a different value on every row: every value counted once
+    (``distinct == rows``), or, past the distinct cap, no repeated value among the tracked
+    ones and no empty value."""
+    if rows <= 0 or column.get("type") in ("object", "array", "empty"):
+        return False
+    if not column.get("distinct_capped"):
+        return column.get("distinct") == rows
+    return not column.get("top") and not column.get("nulls")
 
 
 # ---------------------------------------------------------------------------

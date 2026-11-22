@@ -66,6 +66,43 @@ _TOKENISH = re.compile(r"[A-Za-z]{1,4}|\d{1,2}|[^\sA-Za-z\d]")
 CountMany = Callable[[list[str]], list[int]]
 
 
+def _ascii_classes() -> dict[int, str]:
+    table = {}
+    for code in range(128):
+        char = chr(code)
+        if re.match(r"[A-Za-z]", char):
+            table[code] = "a"
+        elif re.match(r"\d", char):
+            table[code] = "0"
+        elif re.match(r"\s", char):
+            table[code] = " "
+        else:
+            table[code] = "."
+    return table
+
+
+# ASCII text: every character mapped to its class (letter, digit, blank, other visible).
+_CLASSES = str.maketrans(_ascii_classes())
+
+
+def _raw_tokens(text: str) -> int:
+    """The number of ``_TOKENISH`` matches in ``text`` (before the 20% margin).
+
+    ASCII text is counted with C string operations instead of the regex (about 2-3x faster,
+    identical counts): after mapping characters to classes, each run of 4 letters becomes
+    one ``b`` and a shorter remainder one ``a``; each pair of digits one ``d`` and a
+    remainder ``0``; every other visible character is one ``.``."""
+    if not text.isascii():
+        return len(_TOKENISH.findall(text))
+    s = text.translate(_CLASSES)
+    s = s.replace("aaaa", "b").replace("aaa", "a").replace("aa", "a").replace("00", "d")
+    return s.count("a") + s.count("b") + s.count("0") + s.count("d") + s.count(".")
+
+
+def _estimate(raw: int) -> int:
+    return -(-raw * 6 // 5)
+
+
 def estimate_tokens(text: str) -> int:
     """Upper-bound WordPiece/BPE token estimate when no tokenizer is available.
 
@@ -77,7 +114,7 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    return -(-len(_TOKENISH.findall(text)) * 6 // 5)
+    return _estimate(_raw_tokens(text))
 
 
 def _additive(count: TokenCounter) -> bool:
@@ -149,6 +186,35 @@ def _hard_split(text: str, budget: int, count: TokenCounter) -> list[str]:
     return pieces
 
 
+# Texts longer than this are split once per level and their parts' counts kept (``_tree``).
+_TREE_MIN = 2048
+Memo = dict[str, tuple[int, list[str], list[int], int]]
+
+
+def _tree(text: str, level: int, memo: Memo) -> int:
+    """``_raw_tokens(text)``, counting every character once however deep the split goes.
+
+    A long text is split at the first boundary present from ``level`` on and its parts are
+    counted recursively; ``memo[text]`` keeps ``(level, parts, part counts, total)`` so that
+    ``_split`` reuses them instead of counting the same characters again at each level. Raw
+    counts add up exactly across a whitespace boundary (no token spans whitespace)."""
+    if len(text) <= _TREE_MIN:
+        return _raw_tokens(text)
+    hit = memo.get(text)
+    if hit is not None:
+        return hit[3]
+    while level < len(_SEPARATORS) and not _SEPARATORS[level][0].search(text):
+        level += 1
+    if level >= len(_SEPARATORS):
+        return _raw_tokens(text)
+    pattern, sep = _SEPARATORS[level]
+    parts = pattern.split(text)
+    raws = [_tree(p, level + 1, memo) for p in parts]
+    total = sum(raws) + _raw_tokens(sep) * (len(parts) - 1)
+    memo[text] = (level, parts, raws, total)
+    return total
+
+
 def _split(
     text: str,
     budget: int,
@@ -156,18 +222,29 @@ def _split(
     level: int,
     known: int | None = None,
     count_many: CountMany | None = None,
+    memo: Memo | None = None,
 ) -> list[str]:
-    cost = count(text) if known is None else known
+    entry = None
+    if memo is not None and len(text) > _TREE_MIN:
+        raw = _tree(text, level, memo)
+        cost = _estimate(raw) if known is None else known
+        entry = memo.get(text)
+    else:
+        cost = count(text) if known is None else known
     if cost <= budget:
         return [text]
-    while level < len(_SEPARATORS) and not _SEPARATORS[level][0].search(text):
-        level += 1
-    if level >= len(_SEPARATORS):
-        return _hard_split(text, budget, count)
-    pattern, sep = _SEPARATORS[level]
+    if entry is not None:
+        level, parts, raws = entry[0], entry[1], entry[2]
+        costs = [_estimate(r) for r in raws]
+    else:
+        while level < len(_SEPARATORS) and not _SEPARATORS[level][0].search(text):
+            level += 1
+        if level >= len(_SEPARATORS):
+            return _hard_split(text, budget, count)
+        parts = _SEPARATORS[level][0].split(text)
+        costs = _counts(parts, count, count_many)
+    sep = _SEPARATORS[level][1]
     sep_cost = count(sep.strip()) if sep.strip() else 0
-    parts = pattern.split(text)
-    costs = _counts(parts, count, count_many)
     # (text, verified): a piece of one part, or a piece from a deeper split, is known to fit.
     pieces: list[tuple[str, bool]] = []
     current: list[str] = []
@@ -182,7 +259,7 @@ def _split(
     for part, part_cost in zip(parts, costs, strict=True):
         if part_cost > budget:
             flush()
-            deeper = _split(part, budget, count, level + 1, part_cost, count_many)
+            deeper = _split(part, budget, count, level + 1, part_cost, count_many, memo)
             pieces.extend((p, True) for p in deeper)
             continue
         extra = part_cost + (sep_cost if current else 0)
@@ -207,7 +284,7 @@ def _split(
         if piece_cost <= budget:
             checked.append(piece)
         else:
-            checked.extend(_split(piece, budget, count, level + 1, piece_cost, count_many))
+            checked.extend(_split(piece, budget, count, level + 1, piece_cost, count_many, memo))
     return checked
 
 
@@ -231,10 +308,17 @@ def fit_text(
     count = count or estimate_tokens
     if not text or len(text) <= max_tokens:
         return [text]
-    total = count(text) if known is None else known
+    # The estimate is counted once per character (``_tree``): linear in the text's length.
+    memo: Memo | None = {} if count is estimate_tokens else None
+    header, sep, body = split_header(text)
+    if known is not None:
+        total = known
+    elif memo is not None:  # the header ends at whitespace: raw counts add up
+        total = _estimate(_raw_tokens(header) + _tree(body, 0, memo))
+    else:
+        total = count(text)
     if total <= max_tokens:
         return [text]
-    header, sep, body = split_header(text)
     budget = max_tokens - (count(header) + 1 if header else 0)
     body_cost: int | None = None
     if budget < max(16, max_tokens // 4):  # a header that eats the window is not repeated
@@ -243,5 +327,5 @@ def fit_text(
         body_cost = total
     elif not header:
         body_cost = total
-    pieces = [p for p in _split(body, budget, count, 0, body_cost, count_many) if p.strip()]
+    pieces = [p for p in _split(body, budget, count, 0, body_cost, count_many, memo) if p.strip()]
     return [f"{header}{sep}{p}" if header else p for p in pieces] or [text]

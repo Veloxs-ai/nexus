@@ -39,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from .record_caps import cap_document, cap_record_values
 from .token_budget import DEFAULT_MAX_TOKENS, estimate_tokens, fit_text
 
 __all__ = ["document_digest", "prepare_chunks", "title_passages"]
@@ -47,6 +48,10 @@ TokenCounter = Callable[[str], int]
 CountMany = Callable[[list[str]], list[int]]
 
 ROW_KEYS = ("record", "records")
+# With the built-in estimate, a text longer than this is counted inside ``fit_text`` (once per
+# character, with its parts) instead of up front as well.
+_COUNT_IN_FIT = 16384
+_UNCOUNTED = -1
 
 
 def _clean(text: Any) -> str:
@@ -62,14 +67,17 @@ def _split(
     cost: int | None,
     count_many: CountMany | None,
 ) -> list[dict[str, Any]]:
-    """``text`` as one or more items; an item's ``"cost"`` is its token count when known."""
-    if cost is None or cost <= budget:
+    """``text`` as one or more items; an item's ``"cost"`` is its token count when known
+    (``_UNCOUNTED``: a long text ``fit_text`` counts)."""
+    if cost is None or 0 <= cost <= budget:
         return [{"text": text, "metadata": meta, "cost": cost}]
+    known = cost if cost >= 0 else None
     parts = [
-        p for p in fit_text(text, budget, count, known=cost, count_many=count_many) if p.strip()
+        p for p in fit_text(text, budget, count, known=known, count_many=count_many) if p.strip()
     ] or [text]
     if len(parts) == 1:
-        return [{"text": parts[0], "metadata": meta, "cost": cost if parts[0] == text else None}]
+        same = parts[0] == text and known is not None
+        return [{"text": parts[0], "metadata": meta, "cost": known if same else None}]
     rest = {k: v for k, v in meta.items() if k not in row_keys}
     out = []
     for n, part in enumerate(parts):
@@ -83,6 +91,30 @@ def _counts(texts: list[str], count: TokenCounter, count_many: CountMany | None)
     if count_many is not None and len(texts) > 1:
         return list(count_many(texts))
     return [count(t) for t in texts]
+
+
+def _cap_records(
+    cleaned: list[tuple[str, dict[str, Any]]], row_keys: tuple[str, ...], max_chars: int
+) -> int:
+    """Cap the records of every chunk's metadata in place; the number of records cut."""
+    capped = 0
+    for _, meta in cleaned:
+        for key in row_keys:
+            value = meta.get(key)
+            if isinstance(value, dict):
+                new = cap_record_values(value, max_chars)
+                if new is not value:
+                    meta[key] = new
+                    capped += 1
+            elif isinstance(value, list):
+                items = [
+                    cap_record_values(r, max_chars) if isinstance(r, dict) else r for r in value
+                ]
+                changed = sum(1 for a, b in zip(items, value, strict=True) if a is not b)
+                if changed:
+                    meta[key] = items
+                    capped += changed
+    return capped
 
 
 def _pack(group: list[dict[str, Any]], row_keys: tuple[str, ...]) -> dict[str, Any]:
@@ -116,6 +148,9 @@ def prepare_chunks(
     pack_target_tokens: int = 350,
     pack_max_chars: int = 1500,
     count_many: CountMany | None = None,
+    max_document_chars: int | None = None,
+    max_record_chars: int | None = None,
+    report: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalise ``chunks`` (``{"text", "metadata"}`` dicts) for storage; see the module docstring.
 
@@ -125,6 +160,13 @@ def prepare_chunks(
     budget shrinks by the difference so the title never pushes text out of the window.
     ``count_many`` is an optional batched form of ``count_tokens`` (one tokenizer call for
     many texts); each text is counted once.
+
+    Bounds for very large inputs (both off by default): ``max_document_chars`` keeps the
+    leading chunks up to that many characters (``record_caps.cap_document``) and
+    ``max_record_chars`` cuts long text values of each ``record`` / ``records`` entry
+    (``record_caps.cap_record_values``: the cut fields are listed under ``_truncated``; the
+    chunk text keeps the full value). ``report``, when given, receives
+    ``{"truncated", "chars", "kept_chars", "dropped_chunks", "capped_records"}``.
     """
     count = count_tokens or estimate_tokens
     budget = int(max_tokens or DEFAULT_MAX_TOKENS)
@@ -146,9 +188,28 @@ def prepare_chunks(
             if k not in dropped
         }
         cleaned.append((text, meta))
+    if max_document_chars is not None or report is not None:
+        kept, info = cap_document(
+            [{"text": t, "metadata": m} for t, m in cleaned], max_document_chars
+        )
+        cleaned = [(c["text"], c["metadata"]) for c in kept]
+        if report is not None:
+            report.update(info)
+    if max_record_chars is not None:
+        capped_records = _cap_records(cleaned, row_keys, max_record_chars)
+        if report is not None:
+            report["capped_records"] = capped_records
     # A text never has more tokens than characters: count only the longer ones, batched.
-    long_idx = [i for i, (text, _) in enumerate(cleaned) if len(text) > budget]
-    costs: list[int | None] = [None] * len(cleaned)
+    # With the built-in estimate a very long text is left to ``fit_text``, which counts it once.
+    defer = count is estimate_tokens
+    long_idx = [
+        i
+        for i, (text, _) in enumerate(cleaned)
+        if len(text) > budget and not (defer and len(text) > _COUNT_IN_FIT)
+    ]
+    costs: list[int | None] = [
+        _UNCOUNTED if defer and len(text) > _COUNT_IN_FIT else None for text, _ in cleaned
+    ]
     for i, n in zip(
         long_idx, _counts([cleaned[i][0] for i in long_idx], count, count_many), strict=False
     ):

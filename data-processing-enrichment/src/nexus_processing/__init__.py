@@ -137,6 +137,7 @@ from .pgoutput import (
     SlotInfo,
 )
 from .quality import assess_text
+from .record_caps import cap_document, cap_record_values
 from .slack_export import (
     SlackChunk,
     looks_like_slack_export,
@@ -240,6 +241,8 @@ __all__ = [
     "auto_detect_ocr_provider",
     "auto_detect_transcriber",
     "build_outline",
+    "cap_document",
+    "cap_record_values",
     "change_event_text",
     "chunk_mongo_collection",
     "chunk_mysql_table",
