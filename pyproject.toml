@@ -54,7 +54,7 @@ postgres = ["pgvector>=0.2.5", "psycopg2-binary>=2.9.9", "sqlalchemy>=2.0.0"]
 yaml = ["pyyaml>=6.0.1"]
 dev = [
     "pytest>=8.2.0",
-    "ruff>=0.5.0",
+    "ruff>=0.16.10",
 ]
 ocr = ["easyocr>=1.7.2", "pillow>=10.4.0"]
 audio-ml = ["faster-whisper>=1.0.3"]
